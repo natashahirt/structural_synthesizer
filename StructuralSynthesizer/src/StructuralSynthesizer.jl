@@ -12,6 +12,6 @@ include("./visualization/_visualization.jl")
 export gen_medium_office
 export StructureSkeleton
 export visualize
-export add_vertex!, add_element!
+export add_vertex!, add_element!, find_faces!, rebuild_levels!
 
 end # module StructuralSynthesizer

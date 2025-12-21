@@ -1,13 +1,25 @@
 # T can be Float64 (unitless meters) or Unitful.Quantity (units included)
 # Default constructor for unitless meters
 # StructureSkeleton() = StructureSkeleton{Float64}()
+
+# container for data at a specific elevation
+# links to main StructureSkeleton struct
+mutable struct Level{T}
+    elevation::T
+    vertices::Vector{Int}
+    edges::Vector{Int}
+    faces::Vector{Int}
+end
 mutable struct StructureSkeleton{T}
-    
     # raw geometry
     # three-element vector (always 3d) probably with a unit
     vertices::Vector{Meshes.Point}
     edges::Vector{Meshes.Segment}
     faces::Vector{Meshes.Polygon}
+
+    # connectivity
+    edge_indices::Vector{Tuple{Int, Int}} # stores (v1_idx, v2_idx) for each edge
+    face_indices::Vector{Vector{Int}}
 
     # categories
     groups_vertices::Dict{Symbol, Vector{Int}} # eg :support => [1,2,4], :beams => [3,5]
@@ -17,14 +29,22 @@ mutable struct StructureSkeleton{T}
     # topology
     graph::Graphs.SimpleGraph{Int}
 
+    # levels
+    levels::Dict{Int, Level{T}}
+    floors::Vector{T}
+
     StructureSkeleton{T}() where T = new{T}(
         Meshes.Point[], 
         Meshes.Segment[], 
-        Meshes.Polygon[], 
-        Dict(), 
-        Dict(), 
-        Dict(), 
-        Graphs.SimpleGraph(0)
+        Meshes.Polygon[],
+        Tuple{Int, Int}[],
+        Vector{Int}[],
+        Dict{Symbol, Vector{Int}}(), 
+        Dict{Symbol, Vector{Int}}(), 
+        Dict{Symbol, Vector{Int}}(), 
+        Graphs.SimpleGraph(0),
+        Dict{Int, Level{T}}(),
+        T[]
     )
 
 end

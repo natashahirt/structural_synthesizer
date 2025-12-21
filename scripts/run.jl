@@ -4,5 +4,11 @@ using Revise
 using Unitful
 using StructuralSynthesizer
 
-skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4)
+skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4);
+find_faces!(skel)
+
 display(visualize(skel))
+rebuild_levels!(skel)
+display(visualize(skel))
+
+println(keys(skel.levels))
