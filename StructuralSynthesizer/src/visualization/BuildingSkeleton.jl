@@ -1,4 +1,4 @@
-function visualize(skel::StructureSkeleton)
+function visualize(skel::BuildingSkeleton)
     # handle empty skeleton
     if isempty(skel.vertices)
         @warn "Skeleton is empty, nothing to visualize."

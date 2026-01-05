@@ -1,4 +1,4 @@
-function add_vertex!(skel::StructureSkeleton{T}, pt::Meshes.Point; group::Symbol=:unknown, level_idx::Int=-1) where T
+function add_vertex!(skel::BuildingSkeleton{T}, pt::Meshes.Point; group::Symbol=:unknown, level_idx::Int=-1) where T
     # check if vertex exists
     idx = findfirst(v -> v == pt, skel.vertices)
     if isnothing(idx)
@@ -16,12 +16,12 @@ function add_vertex!(skel::StructureSkeleton{T}, pt::Meshes.Point; group::Symbol
         push!(skel.groups_vertices[group], idx)
     end
 
-    # if level_idx is not provided, try to find it from skel.floors using Z-coordinate
+    # if level_idx is not provided, try to find it from skel.stories_z using Z-coordinate
     z_raw = ustrip(Meshes.coords(pt).z)
     z_round = round(z_raw, digits=2)
 
-    if level_idx == -1 && !isempty(skel.floors)
-        for (i, f_elev) in enumerate(skel.floors)
+    if level_idx == -1 && !isempty(skel.stories_z)
+        for (i, f_elev) in enumerate(skel.stories_z)
             if round(ustrip(f_elev), digits=2) == z_round
                 level_idx = i - 1 # 0-indexed levels
                 break
@@ -29,26 +29,24 @@ function add_vertex!(skel::StructureSkeleton{T}, pt::Meshes.Point; group::Symbol
         end
     end
 
-    # assign to level
+    # assign to story
     if level_idx != -1
-        if !haskey(skel.levels, level_idx)
-            # Use the exact rounded coordinate for the level definition
+        if !haskey(skel.stories, level_idx)
+            # Story creation logic if it doesn't exist
             z_val = Meshes.coords(pt).z
             elev = T <: Unitful.Quantity ? T(z_round * unit(z_val)) : T(z_round)
-            skel.levels[level_idx] = Level{T}(elev, Int[], Int[], Int[])
-            println("DEBUG: Created Level $level_idx at elevation $elev")
+            skel.stories[level_idx] = Story{T}(elev, Int[], Int[], Int[])
         end
         
-        if !(idx in skel.levels[level_idx].vertices)
-            push!(skel.levels[level_idx].vertices, idx)
-            println("DEBUG: Added Vertex $idx to Level $level_idx (z=$z_round)")
+        if !(idx in skel.stories[level_idx].vertices)
+            push!(skel.stories[level_idx].vertices, idx)
         end
     end
 
     return idx
 end
 
-function add_element!(skel::StructureSkeleton{T}, seg::Meshes.Segment; group::Symbol=:unknown, level_idx::Int=-1) where T
+function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; group::Symbol=:unknown, level_idx::Int=-1) where T
     # get/create vertex indices
     v_indices = Vector{Int}(undef, 2)
     
@@ -71,17 +69,17 @@ function add_element!(skel::StructureSkeleton{T}, seg::Meshes.Segment; group::Sy
         push!(skel.groups_edges[group], idx)
     end
 
-    # assign to level
+    # assign to story
     if level_idx != -1
-        if !(idx in skel.levels[level_idx].edges)
-            push!(skel.levels[level_idx].edges, idx)
+        if !(idx in skel.stories[level_idx].edges)
+            push!(skel.stories[level_idx].edges, idx)
         end
     end
 
     return idx
 end
 
-function add_face!(skel::StructureSkeleton{T}, face::Meshes.Polygon; group::Symbol=:unknown, level_idx::Int=-1, v_indices::Vector{Int}=Int[]) where T
+function add_face!(skel::BuildingSkeleton{T}, face::Meshes.Polygon; group::Symbol=:unknown, level_idx::Int=-1, v_indices::Vector{Int}=Int[]) where T
     # get vertex indices if not provided
     if isempty(v_indices)
         v_indices = [add_vertex!(skel, v) for v in Meshes.vertices(face)]
@@ -103,29 +101,27 @@ function add_face!(skel::StructureSkeleton{T}, face::Meshes.Polygon; group::Symb
         push!(skel.groups_faces[group], idx)
     end
 
-    # assign to level
+    # assign to story
     if level_idx != -1
-        if !haskey(skel.levels, level_idx)
-            # Level creation logic if it doesn't exist
+        if !haskey(skel.stories, level_idx)
+            # Story creation logic if it doesn't exist
             z_val = Meshes.coords(skel.vertices[v_indices[1]]).z
             r_z = round(ustrip(z_val), digits=2)
             elev = T <: Unitful.Quantity ? T(r_z * unit(z_val)) : T(r_z)
-            skel.levels[level_idx] = Level{T}(elev, Int[], Int[], Int[])
+            skel.stories[level_idx] = Story{T}(elev, Int[], Int[], Int[])
         end
         
-        if !(idx in skel.levels[level_idx].faces)
-            push!(skel.levels[level_idx].faces, idx)
+        if !(idx in skel.stories[level_idx].faces)
+            push!(skel.stories[level_idx].faces, idx)
         end
     end
 
     return idx
 end
 
-function find_faces!(skel::StructureSkeleton{T}) where T
-    println("DEBUG: Starting find_faces! for $(length(skel.levels)) levels")
-    for (level_idx, level) in skel.levels
-        v_indices = level.vertices
-        println("DEBUG: Processing Level $level_idx (elev=$(level.elevation)) with $(length(v_indices)) vertices")
+function find_faces!(skel::BuildingSkeleton{T}) where T
+    for (level_idx, story) in skel.stories
+        v_indices = story.vertices
         length(v_indices) < 3 && continue 
 
         # build local adjacency with CCW-sorted neighbors (rotation system)
@@ -166,21 +162,20 @@ function find_faces!(skel::StructureSkeleton{T}) where T
                     if length(cycle) >= 3
                         area = calculate_signed_area(skel, cycle)
                         if area > 0
-                            println("DEBUG: Found slab at Level $level_idx with area $(round(area, digits=2))")
                             polygon = Meshes.Ngon(skel.vertices[cycle]...)
                             add_face!(skel, polygon, group=:slabs, level_idx=level_idx, v_indices=cycle)
                             faces_found += 1
                         else
-                            println("DEBUG: Ignoring boundary cycle at Level $level_idx (area=$(round(area, digits=2)))")
                         end
                     end
                 end
             end
         end
-        println("DEBUG: Level $level_idx: Found $faces_found faces")
+        println("DEBUG: Story $level_idx: Found $faces_found faces")
     end
 end
 
+# utility for finding faces (clockwise vs anticlockwise)
 function calculate_signed_area(skel, indices)
     area = 0.0
     n = length(indices)
@@ -192,8 +187,8 @@ function calculate_signed_area(skel, indices)
     return area / 2.0
 end
 
-function rebuild_levels!(skel::StructureSkeleton{T}) where T
-    # get unique z coordinates and assign to corresponding levels
+function rebuild_stories!(skel::BuildingSkeleton{T}) where T
+    # get unique z coordinates and assign to corresponding stories
     rounded_z = map(skel.vertices) do v
         z_val = Meshes.coords(v).z
         r_z = round(ustrip(z_val), digits=2)
@@ -202,17 +197,17 @@ function rebuild_levels!(skel::StructureSkeleton{T}) where T
     unique_z = sort(unique(rounded_z))
     z_to_idx = Dict(z => i-1 for (i,z) in enumerate(unique_z))
 
-    # update levels dict
-    empty!(skel.levels)
+    # update stories dict
+    empty!(skel.stories)
 
     for (v_idx, v) in enumerate(skel.vertices)
         z = rounded_z[v_idx]
         level_idx = z_to_idx[z]
-        if !haskey(skel.levels, level_idx)
-            skel.levels[level_idx] = Level{T}(z, Int[], Int[], Int[])
+        if !haskey(skel.stories, level_idx)
+            skel.stories[level_idx] = Story{T}(z, Int[], Int[], Int[])
         end
-        if !(v_idx in skel.levels[level_idx].vertices)
-            push!(skel.levels[level_idx].vertices, v_idx)
+        if !(v_idx in skel.stories[level_idx].vertices)
+            push!(skel.stories[level_idx].vertices, v_idx)
         end
     end
 
@@ -220,11 +215,11 @@ function rebuild_levels!(skel::StructureSkeleton{T}) where T
         z1, z2 = rounded_z[v1_idx], rounded_z[v2_idx]
         if z1 == z2
             level_idx = z_to_idx[z1]
-            if !haskey(skel.levels, level_idx)
-                skel.levels[level_idx] = Level{T}(z1, Int[], Int[], Int[])
+            if !haskey(skel.stories, level_idx)
+                skel.stories[level_idx] = Story{T}(z1, Int[], Int[], Int[])
             end
-            if !(e_idx in skel.levels[level_idx].edges)
-                push!(skel.levels[level_idx].edges, e_idx)
+            if !(e_idx in skel.stories[level_idx].edges)
+                push!(skel.stories[level_idx].edges, e_idx)
             end
         end
     end
@@ -233,37 +228,12 @@ function rebuild_levels!(skel::StructureSkeleton{T}) where T
         z_vals = [rounded_z[i] for i in v_indices]
         if all(z -> z == z_vals[1], z_vals)
             level_idx = z_to_idx[z_vals[1]]
-            if !haskey(skel.levels, level_idx)
-                skel.levels[level_idx] = Level{T}(z_vals[1], Int[], Int[], Int[])
+            if !haskey(skel.stories, level_idx)
+                skel.stories[level_idx] = Story{T}(z_vals[1], Int[], Int[], Int[])
             end
-            if !(f_idx in skel.levels[level_idx].faces)
-                push!(skel.levels[level_idx].faces, f_idx)
+            if !(f_idx in skel.stories[level_idx].faces)
+                push!(skel.stories[level_idx].faces, f_idx)
             end
         end
     end
-end
-
-# just does geometry, no loads yet
-function to_asap(skel::StructureSkeleton{T};
-                 default_section::Asap.Section,
-                 default_dof::Vector{Bool} = [true, true, true, false, false, false]
-            ) where T
-        
-        nodes = map(enumerate(skel.vertices)) do (idx, pt)
-            coords = Meshes.coords(pt)
-            pos = [
-                round(ustrip(u"m", coords.x), digits=2), 
-                round(ustrip(u"m", coords.y), digits=2), 
-                round(ustrip(u"m", coords.z), digits=2)
-            ] 
-            is_support = idx in get(skel.groups_vertices, :support, Int[])
-            dof = is_support ? [false, false, false, false, false, false] : default_dof
-            return Asap.Node(pos, dof)
-        end
-
-        # Build elements from edge_indices to avoid duplicates from groups
-        elements = [Asap.Element(nodes[v1], nodes[v2], default_section) for (v1, v2) in skel.edge_indices]
-        println("DEBUG: Converted to Asap model with $(length(nodes)) nodes and $(length(elements)) elements")
-
-        return Asap.Model(nodes, elements, Asap.NodeForce[])
 end

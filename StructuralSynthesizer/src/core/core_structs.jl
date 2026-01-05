@@ -1,16 +1,8 @@
 # T can be Float64 (unitless meters) or Unitful.Quantity (units included)
 # Default constructor for unitless meters
-# StructureSkeleton() = StructureSkeleton{Float64}()
+# BuildingSkeleton() = BuildingSkeleton{Float64}()
 
-# container for data at a specific elevation
-# links to main StructureSkeleton struct
-mutable struct Level{T}
-    elevation::T
-    vertices::Vector{Int}
-    edges::Vector{Int}
-    faces::Vector{Int}
-end
-mutable struct StructureSkeleton{T}
+mutable struct BuildingSkeleton{T}
     # raw geometry
     # three-element vector (always 3d) probably with a unit
     vertices::Vector{Meshes.Point}
@@ -29,11 +21,11 @@ mutable struct StructureSkeleton{T}
     # topology
     graph::Graphs.SimpleGraph{Int}
 
-    # levels
-    levels::Dict{Int, Level{T}}
-    floors::Vector{T}
+    # stories
+    stories::Dict{Int, Story{T}}
+    stories_z::Vector{T}
 
-    StructureSkeleton{T}() where T = new{T}(
+    BuildingSkeleton{T}() where T = new{T}(
         Meshes.Point[], 
         Meshes.Segment[], 
         Meshes.Polygon[],
@@ -43,8 +35,32 @@ mutable struct StructureSkeleton{T}
         Dict{Symbol, Vector{Int}}(), 
         Dict{Symbol, Vector{Int}}(), 
         Graphs.SimpleGraph(0),
-        Dict{Int, Level{T}}(),
+        Dict{Int, Story{T}}(),
         T[]
     )
 
+end
+
+mutable struct BuildingStructure{T}
+    # BIM information (allows one BuildingSkeleton to have multiple structures, e.g.)
+
+    skeleton::BuildingSkeleton{T} # reference geometry
+
+    # BIM/analytical data
+    slabs::Vector{Slab{T}}
+    slab_sections::Dict{UInt64, SlabSection{T}}
+
+    # beams...
+    # columns...
+    # foundations...
+    
+    asap_model::Asap.Model
+
+    BuildingStructure(skel::BuildingSkeleton{T}) where T = new{T}(
+        skel,
+        Slab{T}[],
+        Dict{UInt64, SlabSection{T}}(),
+        Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[]),
+    )
+    
 end

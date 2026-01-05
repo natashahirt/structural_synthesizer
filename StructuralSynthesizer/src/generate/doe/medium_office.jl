@@ -1,4 +1,4 @@
-function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::Unitful.Length, x_bays::Int64, y_bays::Int64, n_floors::Int64)::StructureSkeleton
+function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::Unitful.Length, x_bays::Int64, y_bays::Int64, n_floors::Int64)::BuildingSkeleton
     # expect linear values
     # convert everything to meters internally
     x = uconvert(u"m", x)
@@ -6,20 +6,20 @@ function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::U
     floor_height = uconvert(u"m", floor_height)
 
     T = typeof(x)
-    skel = StructureSkeleton{T}()
+    skel = BuildingSkeleton{T}()
     
     # get bay spans
     x_span = round(ustrip(x/x_bays), digits=2) * unit(x)
     y_span = round(ustrip(y/y_bays), digits=2) * unit(y)
 
-    # get floors (starting from 0.0)
-    push!(skel.floors, round(ustrip(0.0*floor_height), digits=2) * unit(floor_height))
+    # get stories_z (starting from 0.0)
+    push!(skel.stories_z, round(ustrip(0.0*floor_height), digits=2) * unit(floor_height))
     for k in 1:n_floors
-        push!(skel.floors, round(ustrip(k*floor_height), digits=2) * unit(floor_height))
+        push!(skel.stories_z, round(ustrip(k*floor_height), digits=2) * unit(floor_height))
     end
 
-    # helper function (k is now 0-indexed offset for floors vector)
-    get_pt(i, j, k) = Meshes.Point(i*x_span, j*y_span, skel.floors[k+1])
+    # helper function (k is now 0-indexed offset for stories_z vector)
+    get_pt(i, j, k) = Meshes.Point(i*x_span, j*y_span, skel.stories_z[k+1])
 
     # get elements
     for k in 1:n_floors
@@ -45,11 +45,14 @@ function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::U
 
     # designate points (add_vertex! will assign known points to a group)
     for i in 0:x_bays, j in 0:y_bays
-        # level 0 points are support nodes
+        # story 0 points are support nodes
         add_vertex!(skel, get_pt(i, j, 0), group=:support)
-        # level n_floors points are the roof (no DOF implications but nice to have)
+        # story n_floors points are the roof (no DOF implications but nice to have)
         add_vertex!(skel, get_pt(i, j, n_floors), group=:roof)
     end
+
+    # postprocessing - find the faces
+    find_faces!(skel)
 
     return skel
 end
