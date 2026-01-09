@@ -9,23 +9,20 @@ end
 
 # container for engineering data of multiple slabs (e.g. one if all fifty in a structure are identical)
 mutable struct SlabSection{T}
-    # geometry metadata (calculated from Polygon)
-    area::Unitful.Area # e.g. 100m² 
-    n_vertices::Int
-    edge_lengths::Vector{T}
+    # matching key for identical counterparts logic (from get_slab_hash)
+    geometry_hash::UInt64
 
     # BIM metadata
     thickness::T # e.g. 10cm
-    material::Symbol # can change this to a material struct?
+    material::Symbol # can change this to a material struct? for now maybe :concrete_3000psi
+    area::Unitful.Area # e.g. 100m² 
 
     # engineering metadata
-    dead_load::Unitful.Pressure # e.g. 50psf
-    live_load::Unitful.Pressure # e.g. 100psf
-    slab_type::Symbol # unidirectional, bidirectional, isotropic
+    slab_type::Symbol # :one_way, :two_way, :isotropic
     span_axis::Union{Meshes.Vec{3, T}, Nothing} # direction of span (vector)
 
-    # matching key for identical counterparts logic (from get_slab_hash)
-    geometry_hash::UInt64
+    dead_load::Unitful.Pressure # e.g. 50psf
+    live_load::Unitful.Pressure # e.g. 100psf
 end
 
 # specific individual slabs (e.g. all fifty in a structure)
@@ -33,4 +30,5 @@ end
 mutable struct Slab{T}
     face_idx::Int # link to polygon in skeleton
     section::SlabSection{T} # link to the section
+    beams::Vector{Int} # relates to ASAP model element list
 end

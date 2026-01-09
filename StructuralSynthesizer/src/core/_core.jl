@@ -1,5 +1,8 @@
+# constants is its own module
 include("constants.jl")
-include("component_structs.jl")
-include("core_structs.jl")
+using .Constants
+
+include("structs_component.jl")
+include("structs_core.jl")
 include("utils_BuildingSkeleton.jl")
 include("utils_ASAP.jl")
