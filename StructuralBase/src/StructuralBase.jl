@@ -11,14 +11,8 @@ include("Constants.jl")
 include("types.jl")
 
 # Exports
-export AbstractMaterial, AbstractDesignCode
+export AbstractMaterial, AbstractDesignCode, AbstractSection
 export AbstractStructuralSynthesizer, AbstractBuildingSkeleton, AbstractBuildingStructure
 export Constants  # Allow qualified access: Constants.LL_FLOOR, Constants.ρ_STEEL, etc.
-
-# Package Initialization
-function __init__()
-    # Registers custom structural units (psf, kip, lbf) defined in Constants
-    Unitful.register(Constants)
-end
 
 end # module StructuralBase

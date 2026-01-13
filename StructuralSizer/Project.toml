@@ -14,5 +14,4 @@ StructuralBase = {path = "../StructuralBase"}
 
 [compat]
 CSV = "0.10"
-Logging = "1.11.0"
 Unitful = "1.27.0"
