@@ -8,18 +8,11 @@ using Unitful
 # Types (Metal, etc.)
 include("types.jl")
 
-# Materials
-include("materials/steel.jl")
-include("materials/concrete.jl")
+# Members (materials, sections, codes, optimization)
+include("members/_members.jl")
 
-# Sections (geometry + catalogs)
-include("sections/_sections.jl")
-
-# Design code checks
-include("codes/_codes.jl")
-
-# Optimization
-include("optimize/_optimize.jl")
+# Slabs (types, codes, optimization)
+include("slabs/_slabs.jl")
 
 # === Exports ===
 
@@ -27,8 +20,7 @@ include("optimize/_optimize.jl")
 export Metal, Concrete, ISymmSection
 
 # Demand types
-export AbstractDemand, FlexuralDemand, CompressionDemand, TensionDemand
-export demand_type
+export AbstractDemand, MemberDemand
 
 # Objectives
 export AbstractObjective, MinWeight, MinVolume, MinCost, MinCarbon
@@ -56,5 +48,56 @@ export check_interaction
 export get_slenderness, is_compact
 export get_Lp_Lr, get_Fcr_LTB, get_Fcr_flexural, get_Fe, get_Cv1
 export check_PM_interaction, check_PMxMy_interaction
+
+# =============================================================================
+# Floor System Types
+# =============================================================================
+
+# Abstract hierarchy
+export AbstractFloorSystem
+export AbstractConcreteSlab, AbstractSteelFloor, AbstractTimberFloor
+
+# CIP Concrete types
+export OneWay, TwoWay, FlatPlate, FlatSlab, PTBanded, Waffle
+export HollowCore, Vault
+
+# Steel floor types
+export CompositeDeck, NonCompositeDeck, JoistRoofDeck
+
+# Timber floor types
+export CLT, DLT, NLT, MassTimberJoist
+
+# Custom
+export ShapedSlab
+
+# Support conditions
+export SupportCondition, SIMPLE, ONE_END_CONT, BOTH_ENDS_CONT, CANTILEVER
+
+# Type mapping utilities
+export floor_type, floor_symbol, infer_slab_type
+export slab_type, slab_symbol  # legacy aliases
+export AbstractSlabType  # legacy alias
+
+# =============================================================================
+# Floor Section Result Types
+# =============================================================================
+
+export AbstractFloorSection
+export SlabSection, ProfileSection
+export CompositeDeckSpec, JoistDeckSpec
+export TimberPanelSection, TimberJoistSpec
+export VaultSection, ShapedSlabResult
+
+# Common interface
+export self_weight, total_depth, volume_per_area
+export has_structural_effects, apply_effects!
+export required_materials
+
+# =============================================================================
+# Floor Sizing Interface
+# =============================================================================
+
+export size_floor
+export min_thickness, required_thickness, check_slab_capacity
 
 end # module

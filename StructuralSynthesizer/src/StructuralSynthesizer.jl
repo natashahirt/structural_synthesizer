@@ -23,11 +23,16 @@ using .AsapToolkit
 export gen_medium_office
 
 # Core types
-export BuildingSkeleton, BuildingStructure, Story, Slab, SlabSection
+export BuildingSkeleton, BuildingStructure, Story
+export Cell, Slab, SlabGroup
+export Segment, Member, MemberGroup
 
 # Functions
 export visualize
-export add_vertex!, add_element!, find_faces!, rebuild_stories!, initialize_slabs!, to_asap!
+export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
+export initialize!
+export initialize_cells!, initialize_slabs!
+export initialize_segments!, initialize_members!, update_bracing!
 
 # Internal toolkit
 export AsapToolkit
