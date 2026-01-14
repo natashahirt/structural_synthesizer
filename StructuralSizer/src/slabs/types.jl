@@ -39,7 +39,7 @@ struct NLT <: AbstractTimberFloor end
 struct MassTimberJoist <: AbstractTimberFloor end
 
 # --- Custom/Shaped ---
-struct ShapedSlab <: AbstractFloorSystem
+struct ShapedSlab <: AbstractConcreteSlab
     sizing_fn::Function  # (span_x, span_y, load, material) → ShapedSlabResult
 end
 
@@ -58,23 +58,23 @@ end
 # Result Types (each floor system returns one of these)
 # =============================================================================
 
-abstract type AbstractFloorSection end
+abstract type AbstractFloorResult end
 
 """CIP concrete slab result."""
-struct SlabSection <: AbstractFloorSection
+struct CIPSlabResult <: AbstractFloorResult
     thickness::Float64
     self_weight::Float64
 end
 
 """Precast/catalog-based result."""
-struct ProfileSection <: AbstractFloorSection
+struct ProfileResult <: AbstractFloorResult
     profile_id::String
     depth::Float64
     self_weight::Float64
 end
 
 """Composite deck result."""
-struct CompositeDeckSpec <: AbstractFloorSection
+struct CompositeDeckResult <: AbstractFloorResult
     deck_profile::String
     deck_depth::Float64
     deck_gauge::Int
@@ -84,7 +84,7 @@ struct CompositeDeckSpec <: AbstractFloorSection
 end
 
 """Steel joist + deck result."""
-struct JoistDeckSpec <: AbstractFloorSection
+struct JoistDeckResult <: AbstractFloorResult
     joist_designation::String
     joist_depth::Float64
     joist_spacing::Float64
@@ -95,7 +95,7 @@ struct JoistDeckSpec <: AbstractFloorSection
 end
 
 """Timber panel result (CLT, DLT, NLT)."""
-struct TimberPanelSection <: AbstractFloorSection
+struct TimberPanelResult <: AbstractFloorResult
     panel_id::String
     depth::Float64
     ply_count::Int
@@ -103,7 +103,7 @@ struct TimberPanelSection <: AbstractFloorSection
 end
 
 """Mass timber joist result."""
-struct TimberJoistSpec <: AbstractFloorSection
+struct TimberJoistResult <: AbstractFloorResult
     joist_size::String
     joist_depth::Float64
     joist_spacing::Float64
@@ -113,7 +113,7 @@ struct TimberJoistSpec <: AbstractFloorSection
 end
 
 """Vault result (includes thrust)."""
-struct VaultSection <: AbstractFloorSection
+struct VaultResult <: AbstractFloorResult
     thickness::Float64
     rise::Float64
     thrust::Float64          # horizontal thrust magnitude
@@ -121,7 +121,7 @@ struct VaultSection <: AbstractFloorSection
 end
 
 """Custom/shaped slab result."""
-struct ShapedSlabResult <: AbstractFloorSection
+struct ShapedSlabResult <: AbstractFloorResult
     volume_per_area::Float64
     self_weight::Float64
     thickness_fn::Union{Function, Nothing}  # (x,y) → h(x,y) for visualization
@@ -135,20 +135,20 @@ ShapedSlabResult(vol, sw) = ShapedSlabResult(vol, sw, nothing, Dict{Symbol,Any}(
 # =============================================================================
 
 """Self-weight in force per area (kN/m² or similar)."""
-self_weight(s::AbstractFloorSection) = s.self_weight
+self_weight(s::AbstractFloorResult) = s.self_weight
 
 """Total depth of floor system."""
-total_depth(s::SlabSection) = s.thickness
-total_depth(s::ProfileSection) = s.depth
-total_depth(s::CompositeDeckSpec) = s.total_depth
-total_depth(s::JoistDeckSpec) = s.total_depth
-total_depth(s::TimberPanelSection) = s.depth
-total_depth(s::TimberJoistSpec) = s.total_depth
-total_depth(s::VaultSection) = s.thickness + s.rise
+total_depth(s::CIPSlabResult) = s.thickness
+total_depth(s::ProfileResult) = s.depth
+total_depth(s::CompositeDeckResult) = s.total_depth
+total_depth(s::JoistDeckResult) = s.total_depth
+total_depth(s::TimberPanelResult) = s.depth
+total_depth(s::TimberJoistResult) = s.total_depth
+total_depth(s::VaultResult) = s.thickness + s.rise
 total_depth(s::ShapedSlabResult) = s.volume_per_area  # approximate
 
 """Volume per unit area (for carbon calculations)."""
-volume_per_area(s::SlabSection) = s.thickness
+volume_per_area(s::CIPSlabResult) = s.thickness
 volume_per_area(s::ShapedSlabResult) = s.volume_per_area
 # Other types: implement as needed
 
@@ -202,24 +202,24 @@ const FLOOR_TYPE_MAP = Dict{Symbol, AbstractFloorSystem}(
 )
 
 const FLOOR_SYMBOL_MAP = Dict{Type, Symbol}(
-    v => k for (k, v) in pairs(FLOOR_TYPE_MAP) if v isa AbstractFloorSystem
+    typeof(v) => k for (k, v) in pairs(FLOOR_TYPE_MAP)
 )
 
-"""Convert symbol to floor type for dispatch."""
-floor_type(s::Symbol) = get(FLOOR_TYPE_MAP, s, OneWay())
+"""Convert symbol to floor type for dispatch. Throws KeyError for unknown symbols."""
+function floor_type(s::Symbol)
+    haskey(FLOOR_TYPE_MAP, s) || throw(KeyError("Unknown floor type: $s"))
+    return FLOOR_TYPE_MAP[s]
+end
 
-"""Convert floor type to symbol for storage."""
-floor_symbol(t::AbstractFloorSystem) = get(FLOOR_SYMBOL_MAP, typeof(t), :one_way)
+"""Convert floor type to symbol for storage. Throws KeyError for unknown types."""
+function floor_symbol(t::AbstractFloorSystem)
+    T = typeof(t)
+    haskey(FLOOR_SYMBOL_MAP, T) || throw(KeyError("Unknown floor type: $T"))
+    return FLOOR_SYMBOL_MAP[T]
+end
 
-# Legacy aliases for backwards compatibility
-const slab_type = floor_type
-const slab_symbol = floor_symbol
-const AbstractSlabType = AbstractConcreteSlab
-const SLAB_TYPE_MAP = FLOOR_TYPE_MAP
-const SLAB_SYMBOL_MAP = FLOOR_SYMBOL_MAP
-
-"""Infer CIP slab type from aspect ratio."""
-function infer_slab_type(span_x::Real, span_y::Real)
+"""Infer slab type from aspect ratio."""
+function infer_floor_type(span_x::Real, span_y::Real)
     ratio = max(span_x, span_y) / min(span_x, span_y)
     return ratio > 2.0 ? :one_way : :two_way
 end

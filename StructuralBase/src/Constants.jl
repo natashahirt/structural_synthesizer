@@ -10,24 +10,19 @@ module Constants
     # 2. Physical Constants
     const GRAVITY = 9.80665u"m/s^2" # acceleration due to gravity
 
-    # 3. Material Densities (kg/m³)
-    const ρ_CONCRETE = 2400.0u"kg/m^3"
-    const ρ_STEEL = 7850.0u"kg/m^3"
-    const ρ_REBAR = 7850.0u"kg/m^3"
-
-    # 4. Embodied Carbon Coefficients (kgCO2e/kg or kgCO2e/m³)
+    # 3. Embodied Carbon Coefficients (kgCO2e/kg or kgCO2e/m³)
     const ECC_STEEL = 1.22
     const ECC_CONCRETE = 0.152 # from CLF
     const ECC_REBAR = 0.854
 
-    # 5. Solver/Optimization Constants
+    # 4. Solver/Optimization Constants
     const BIG_M = 1e9
 
-    # 6. Load Factors (ASCE 7 Strength)
+    # 5. Load Factors (ASCE 7 Strength)
     const DL_FACTOR = 1.2
     const LL_FACTOR = 1.6
 
-    # 7. Standard Building Loads (needs to be kN/m² for ASAP compatibility)
+    # 6. Standard Building Loads (needs to be kN/m² for ASAP compatibility)
     # Live loads (converted to kN/m^2)
     const LL_GRADE = uconvert(u"kN/m^2", 100.0 * psf)
     const LL_FLOOR = uconvert(u"kN/m^2", 80.0 * psf) # above grade
@@ -38,7 +33,7 @@ module Constants
     const SDL_ROOF  = uconvert(u"kN/m^2", 15.0 * psf)
     const SDL_WALL  = uconvert(u"kN/m^2", 10.0 * psf) # per wall area
 
-    # 8. Factored Loads (Pre-calculated for convenience)
+    # 7. Factored Loads (Pre-calculated for convenience)
     const LL_GRADE_f = LL_GRADE * LL_FACTOR
     const LL_FLOOR_f = LL_FLOOR * LL_FACTOR
     const LL_ROOF_f  = LL_ROOF  * LL_FACTOR
@@ -46,7 +41,7 @@ module Constants
     const SDL_FLOOR_f = SDL_FLOOR * DL_FACTOR
     const SDL_ROOF_f  = SDL_ROOF  * DL_FACTOR
 
-    # 9. Metric Reinforcement (Standard units for the package)
+    # 8. Metric Reinforcement (Standard units for the package)
     const STANDARD_LENGTH = u"m"
     const STANDARD_AREA   = u"m^2"
     const STANDARD_FORCE  = u"kN"

@@ -13,9 +13,8 @@ using Asap
 skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4);
 struc = BuildingStructure(skel);
 
-# Initialize slabs and convert to analysis model
-initialize_slabs!(struc);
-to_asap!(struc);
+# Fully initialize the structure
+initialize!(struc) # auto-infers one-way and two-way slabs from the aspect ratio
 
 # Visualize
 visualize(skel)

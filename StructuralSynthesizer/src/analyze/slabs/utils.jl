@@ -1,5 +1,25 @@
 # Cell and Slab initialization from skeleton faces
 
+# =============================================================================
+# Unit Conversion Helpers
+# =============================================================================
+
+"""Convert thickness from StructuralSizer result (Float64 in m) to typed length."""
+function to_thickness(::Type{T}, result::AbstractFloorResult) where T
+    h = total_depth(result)
+    return T <: Unitful.Quantity ? h * u"m" : T(h)
+end
+
+"""Convert self-weight from StructuralSizer result (Float64 in kN/m²) to factored pressure."""
+function to_factored_self_weight(result::AbstractFloorResult)
+    sw = self_weight(result)
+    return sw * u"kN/m^2" * Constants.DL_FACTOR
+end
+
+# =============================================================================
+# Geometry Helpers
+# =============================================================================
+
 """Compute cell spans from skeleton face."""
 function get_cell_spans(skel::BuildingSkeleton{T}, face_idx::Int) where T
     polygon = skel.faces[face_idx]
@@ -14,18 +34,8 @@ function get_cell_spans(skel::BuildingSkeleton{T}, face_idx::Int) where T
     return span_x, span_y
 end
 
-"""
-Compute slab thickness using StructuralSizer.min_thickness.
-Dispatches on slab_type symbol → AbstractSlabType.
-"""
-function compute_thickness(slab_type_sym::Symbol, span_short::Real, material::AbstractMaterial)
-    st = slab_type(slab_type_sym)  # Symbol → dispatch type
-    return min_thickness(st, span_short, material)
-end
-
-"""Initialize cells from skeleton faces (geometry + loads, no thickness)."""
-function initialize_cells!(struc::BuildingStructure{T, A, P}; 
-                           material::AbstractMaterial=NWC_4000) where {T, A, P}
+"""Initialize cells from skeleton faces (geometry + superimposed loads)."""
+function initialize_cells!(struc::BuildingStructure{T, A, P}) where {T, A, P}
     skel = struc.skeleton
     empty!(struc.cells)
     
@@ -48,15 +58,9 @@ function initialize_cells!(struc::BuildingStructure{T, A, P};
             polygon = skel.faces[face_idx]
             area = Meshes.measure(polygon)
             span_x, span_y = get_cell_spans(skel, face_idx)
-            l_short = min(ustrip(span_x), ustrip(span_y))
             
-            # Estimate thickness for self-weight calc
-            thickness_est = max(0.125, l_short / 28.0)
-            sw = thickness_est * u"m" * material.ρ * Constants.GRAVITY
-            sw_f = uconvert(Constants.STANDARD_PRESSURE, sw * Constants.DL_FACTOR)
-            total_dl_f = sdl_f + sw_f
-            
-            cell = Cell(face_idx, area, span_x, span_y, total_dl_f, ll_f)
+            # Store SDL only; self-weight computed after slab sizing
+            cell = Cell(face_idx, area, span_x, span_y, sdl_f, ll_f)
             push!(struc.cells, cell)
         end
     end
@@ -65,22 +69,22 @@ function initialize_cells!(struc::BuildingStructure{T, A, P};
 end
 
 """
-Initialize slabs from cells.
+Initialize slabs from cells using unified size_floor API.
 
 # Arguments
 - `struc`: BuildingStructure to populate
-- `material`: Concrete material for thickness calculation (default: NWC_4000)
-- `default_slab_type`: Override auto-inference (:one_way, :two_way, :flat_plate, etc.)
+- `material`: Material for sizing (default: NWC_4000)
+- `floor_type`: Override auto-inference (:auto, :one_way, :two_way, :flat_plate, etc.)
 - `cell_groupings`: Explicit cell→slab mappings for PT/continuous slabs
 
-# Slab type inference
-If `default_slab_type` is `:auto`, infers from aspect ratio:
+# Floor type inference
+If `floor_type` is `:auto`, infers from aspect ratio:
 - ratio > 2.0 → :one_way
 - else → :two_way
 """
 function initialize_slabs!(struc::BuildingStructure{T};
                            material::AbstractMaterial=NWC_4000,
-                           default_slab_type::Symbol=:auto,
+                           floor_type::Symbol=:auto,
                            cell_groupings::Union{Nothing, Vector{Vector{Int}}}=nothing) where T
     empty!(struc.slabs)
     
@@ -89,16 +93,19 @@ function initialize_slabs!(struc::BuildingStructure{T};
         for (cell_idx, cell) in enumerate(struc.cells)
             span_x, span_y = ustrip(cell.span_x), ustrip(cell.span_y)
             l_short = min(span_x, span_y)
+            load = ustrip(cell.sdl + cell.live_load)
             
-            # Determine slab type
-            st_sym = default_slab_type == :auto ? infer_slab_type(span_x, span_y) : default_slab_type
+            # Determine floor type
+            ft_sym = floor_type == :auto ? infer_floor_type(span_x, span_y) : floor_type
+            ft = StructuralSizer.floor_type(ft_sym)
             
-            # Compute thickness via StructuralSizer
-            thickness_val = compute_thickness(st_sym, l_short, material)
-            thickness = T <: Unitful.Quantity ? thickness_val * u"m" : T(thickness_val)
+            # Size floor via unified API
+            result = size_floor(ft, l_short, load; material=material)
+            thickness = to_thickness(T, result)
+            cell.self_weight = to_factored_self_weight(result)
             
             span_axis = span_x <= span_y ? (1.0, 0.0, 0.0) : (0.0, 1.0, 0.0)
-            slab = Slab(cell_idx, thickness; slab_type=st_sym, span_axis=span_axis)
+            slab = Slab(cell_idx, thickness; floor_type=ft_sym, span_axis=span_axis)
             push!(struc.slabs, slab)
         end
     else
@@ -106,16 +113,23 @@ function initialize_slabs!(struc::BuildingStructure{T};
         for cell_indices in cell_groupings
             cells = [struc.cells[i] for i in cell_indices]
             
-            # Governing span for thickness
+            # Governing span for sizing
             l_short_gov = maximum(min(ustrip(c.span_x), ustrip(c.span_y)) for c in cells)
+            load_gov = maximum(ustrip(c.sdl + c.live_load) for c in cells)
             
             # For grouped slabs, default to :pt_banded unless specified
-            st_sym = default_slab_type == :auto ? :pt_banded : default_slab_type
+            ft_sym = floor_type == :auto ? :pt_banded : floor_type
+            ft = StructuralSizer.floor_type(ft_sym)
             
-            thickness_val = compute_thickness(st_sym, l_short_gov, material)
-            thickness = T <: Unitful.Quantity ? thickness_val * u"m" : T(thickness_val)
+            result = size_floor(ft, l_short_gov, load_gov; material=material)
+            thickness = to_thickness(T, result)
+            sw_factored = to_factored_self_weight(result)
             
-            slab = Slab(cell_indices, thickness; slab_type=st_sym)
+            for c in cells
+                c.self_weight = sw_factored
+            end
+            
+            slab = Slab(cell_indices, thickness; floor_type=ft_sym)
             push!(struc.slabs, slab)
         end
     end

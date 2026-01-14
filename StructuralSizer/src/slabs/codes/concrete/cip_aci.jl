@@ -161,12 +161,22 @@ function min_thickness(::Waffle, span_long::Real, mat::Concrete;
 end
 
 # =============================================================================
-# Unitful overloads
+# size_floor implementation (unified public API)
 # =============================================================================
 
-for SlabT in (OneWay, TwoWay, FlatPlate, FlatSlab, PTBanded, Waffle)
-    @eval function min_thickness(st::$SlabT, span::Unitful.Length, mat::Concrete; kwargs...)
-        h_m = min_thickness(st, ustrip(u"m", span), mat; kwargs...)
-        return h_m * u"m"
-    end
+# Union type for all CIP concrete slabs (excludes HollowCore, Vault, ShapedSlab)
+const CIPSlabType = Union{OneWay, TwoWay, FlatPlate, FlatSlab, PTBanded, Waffle}
+
+"""
+Size CIP concrete slab. Returns CIPSlabResult with thickness and self-weight.
+
+Note: `load` is accepted for interface consistency but not used for thickness
+calculation. ACI 318-19 minimum thickness tables are span-governed, not load-governed.
+Future: may be used for deflection checks under heavy loads.
+"""
+function size_floor(st::CIPSlabType, span::Real, load::Real; 
+                    material::Concrete=NWC_4000, kwargs...)
+    h = min_thickness(st, span, material; kwargs...)
+    sw = h * ustrip(material.ρ) * 9.81 / 1000  # kN/m²
+    return CIPSlabResult(h, sw)
 end

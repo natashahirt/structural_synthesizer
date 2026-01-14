@@ -11,32 +11,36 @@ end
 Story{T}(elev::T) where T = Story{T}(elev, Int[], Int[], Int[])
 
 """Per-face analysis data (one bay)."""
-struct Cell{T, A, P}
+mutable struct Cell{T, A, P}
     face_idx::Int
     area::A
     span_x::T
     span_y::T
-    dead_load::P
+    sdl::P         # superimposed dead load (excludes self-weight)
     live_load::P
+    self_weight::P # computed after slab thickness is known
 end
 
 function Cell(face_idx::Int, area::A, span_x::T, span_y::T, 
-              dead_load::P, live_load::P) where {T, A, P}
-    Cell{T, A, P}(face_idx, area, span_x, span_y, dead_load, live_load)
+              sdl::P, live_load::P) where {T, A, P}
+    Cell{T, A, P}(face_idx, area, span_x, span_y, sdl, live_load, zero(P))
 end
+
+"""Total factored dead load (SDL + self-weight)."""
+total_dead_load(c::Cell) = c.sdl + c.self_weight
 
 """Physical slab (one or more connected cells)."""
 mutable struct Slab{T}
     cell_indices::Vector{Int}
     thickness::T              # governing
-    slab_type::Symbol         # :one_way, :two_way, :pt_banded, :flat_plate
+    floor_type::Symbol        # :one_way, :two_way, :pt_banded, :flat_plate
     span_axis::Union{Tuple{Float64, Float64, Float64}, Nothing}
     group_id::Union{UInt64, Nothing}
 end
 
 function Slab(cell_indices::Vector{Int}, thickness::T; 
-              slab_type=:one_way, span_axis=nothing, group_id=nothing) where T
-    Slab{T}(cell_indices, thickness, slab_type, span_axis, group_id)
+              floor_type=:one_way, span_axis=nothing, group_id=nothing) where T
+    Slab{T}(cell_indices, thickness, floor_type, span_axis, group_id)
 end
 
 # Single-cell slab convenience

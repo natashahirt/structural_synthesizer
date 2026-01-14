@@ -4,6 +4,8 @@ using Logging
 using CSV
 using StructuralBase
 using Unitful
+using QuadGK: quadgk
+using Roots: find_zero, Brent, Order0
 
 # Types (Metal, etc.)
 include("types.jl")
@@ -74,19 +76,17 @@ export ShapedSlab
 export SupportCondition, SIMPLE, ONE_END_CONT, BOTH_ENDS_CONT, CANTILEVER
 
 # Type mapping utilities
-export floor_type, floor_symbol, infer_slab_type
-export slab_type, slab_symbol  # legacy aliases
-export AbstractSlabType  # legacy alias
+export floor_type, floor_symbol, infer_floor_type
 
 # =============================================================================
-# Floor Section Result Types
+# Floor Result Types
 # =============================================================================
 
-export AbstractFloorSection
-export SlabSection, ProfileSection
-export CompositeDeckSpec, JoistDeckSpec
-export TimberPanelSection, TimberJoistSpec
-export VaultSection, ShapedSlabResult
+export AbstractFloorResult
+export CIPSlabResult, ProfileResult
+export CompositeDeckResult, JoistDeckResult
+export TimberPanelResult, TimberJoistResult
+export VaultResult, ShapedSlabResult
 
 # Common interface
 export self_weight, total_depth, volume_per_area
@@ -98,6 +98,13 @@ export required_materials
 # =============================================================================
 
 export size_floor
-export min_thickness, required_thickness, check_slab_capacity
+
+# =============================================================================
+# Vault Analysis (advanced)
+# =============================================================================
+
+export vault_stress_symmetric, vault_stress_asymmetric
+export solve_equilibrium_rise
+export parabolic_arc_length
 
 end # module

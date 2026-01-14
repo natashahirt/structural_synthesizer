@@ -24,7 +24,7 @@ export gen_medium_office
 
 # Core types
 export BuildingSkeleton, BuildingStructure, Story
-export Cell, Slab, SlabGroup
+export Cell, Slab, SlabGroup, total_dead_load
 export Segment, Member, MemberGroup
 
 # Functions

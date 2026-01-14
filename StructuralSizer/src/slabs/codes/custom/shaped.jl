@@ -15,22 +15,25 @@ The user's `sizing_fn` should have signature:
 
 # Arguments
 - `slab`: ShapedSlab with user's sizing function
-- `span_x`, `span_y`: Panel dimensions
+- `span`: Primary span (used as span_x)
 - `load`: Superimposed load
-- `material`: Primary material
+- `material`: Primary material (default: NWC_4000)
+- `span_y`: Secondary span (default: same as span, i.e., square panel)
 
 # Returns
 - `ShapedSlabResult` from user's function
-"""
-function size_floor(slab::ShapedSlab, span_x::Real, span_y::Real, 
-                    load::Real, material::AbstractMaterial)
-    return slab.sizing_fn(span_x, span_y, load, material)
-end
 
-# Unitful overload
-function size_floor(slab::ShapedSlab, span_x::Unitful.Length, span_y::Unitful.Length,
-                    load, material::AbstractMaterial)
-    return slab.sizing_fn(ustrip(u"m", span_x), ustrip(u"m", span_y), load, material)
+# Example
+```julia
+tapered = ShapedSlab(tapered_slab_fn)
+result = size_floor(tapered, 8.0, 5.0; material=NWC_4000, span_y=8.0)
+```
+"""
+function size_floor(slab::ShapedSlab, span::Real, load::Real;
+                    material::AbstractMaterial=NWC_4000,
+                    span_y::Union{Real,Nothing}=nothing)
+    span_y_val = isnothing(span_y) ? span : span_y
+    return slab.sizing_fn(span, span_y_val, load, material)
 end
 
 # =============================================================================
@@ -40,9 +43,11 @@ end
 """
 Example: Tapered slab (thick at edges, thin at center).
 
-Usage:
-    tapered = ShapedSlab(tapered_slab_fn)
-    result = size_floor(tapered, 8.0, 8.0, 5.0, NWC_4000)
+# Example
+```julia
+tapered = ShapedSlab(tapered_slab_fn)
+result = size_floor(tapered, 8.0, 5.0; material=NWC_4000, span_y=8.0)
+```
 """
 function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete)
     # Thick at edges, thin at center
@@ -71,9 +76,11 @@ end
 """
 Example: Coffered/waffle slab with ribs.
 
-Usage:
-    coffered = ShapedSlab(coffered_slab_fn)
-    result = size_floor(coffered, 10.0, 10.0, 5.0, NWC_4000)
+# Example
+```julia
+coffered = ShapedSlab(coffered_slab_fn)
+result = size_floor(coffered, 10.0, 5.0; material=NWC_4000, span_y=10.0)
+```
 """
 function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete;
                           rib_spacing::Real=1.0, rib_width::Real=0.15)

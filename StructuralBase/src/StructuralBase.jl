@@ -13,6 +13,6 @@ include("types.jl")
 # Exports
 export AbstractMaterial, AbstractDesignCode, AbstractSection
 export AbstractStructuralSynthesizer, AbstractBuildingSkeleton, AbstractBuildingStructure
-export Constants  # Allow qualified access: Constants.LL_FLOOR, Constants.ρ_STEEL, etc.
+export Constants  # Allow qualified access: Constants.LL_FLOOR, Constants.GRAVITY, etc.
 
 end # module StructuralBase
