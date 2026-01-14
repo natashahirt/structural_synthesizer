@@ -16,9 +16,9 @@ mutable struct Cell{T, A, P}
     area::A
     span_x::T
     span_y::T
-    sdl::P         # superimposed dead load (excludes self-weight)
-    live_load::P
-    self_weight::P # computed after slab thickness is known
+    sdl::P         # superimposed dead load (service)
+    live_load::P   # service
+    self_weight::P # service (computed after slab sizing)
 end
 
 function Cell(face_idx::Int, area::A, span_x::T, span_y::T, 
@@ -27,24 +27,55 @@ function Cell(face_idx::Int, area::A, span_x::T, span_y::T,
 end
 
 """Total factored dead load (SDL + self-weight)."""
-total_dead_load(c::Cell) = c.sdl + c.self_weight
+total_dead_load(c::Cell) = c.sdl * Constants.DL_FACTOR + c.self_weight * Constants.DL_FACTOR
+
+"""Total factored pressure (SDL + LL + SW)."""
+total_factored_pressure(c::Cell) = (c.sdl + c.self_weight) * Constants.DL_FACTOR + c.live_load * Constants.LL_FACTOR
 
 """Physical slab (one or more connected cells)."""
-mutable struct Slab{T}
+mutable struct Slab{T, R<:AbstractFloorResult}
     cell_indices::Vector{Int}
-    thickness::T              # governing
+    result::R
     floor_type::Symbol        # :one_way, :two_way, :pt_banded, :flat_plate
     span_axis::Union{Tuple{Float64, Float64, Float64}, Nothing}
     group_id::Union{UInt64, Nothing}
 end
 
-function Slab(cell_indices::Vector{Int}, thickness::T; 
-              floor_type=:one_way, span_axis=nothing, group_id=nothing) where T
-    Slab{T}(cell_indices, thickness, floor_type, span_axis, group_id)
+function Slab(cell_indices::Vector{Int}, result::R; 
+              floor_type=:one_way, span_axis=nothing, group_id=nothing) where {R<:AbstractFloorResult}
+    # T is the length type of the result thickness
+    T = typeof(StructuralSizer.total_depth(result))
+    Slab{T, R}(cell_indices, result, floor_type, span_axis, group_id)
 end
 
 # Single-cell slab convenience
-Slab(cell_idx::Int, thickness::T; kwargs...) where T = Slab([cell_idx], thickness; kwargs...)
+Slab(cell_idx::Int, result::R; kwargs...) where {R<:AbstractFloorResult} = Slab([cell_idx], result; kwargs...)
+
+# Interface for Slab to mirror Result interface
+thickness(s::Slab) = StructuralSizer.total_depth(s.result)
+self_weight(s::Slab) = StructuralSizer.self_weight(s.result)
+structural_effects(s::Slab) = StructuralSizer.structural_effects(s.result)
+
+"""
+Backend-agnostic edge load specs produced from slabs.
+
+These are converted to analysis-backend loads (e.g. ASAP) in `to_asap!`.
+All magnitudes are expected to be plain Float64 in base SI.
+"""
+abstract type AbstractEdgeLoadSpec end
+
+"""Point loads on an edge at normalized positions `xs ∈ [0,1]` (forces in N)."""
+struct EdgePointLoadSpec <: AbstractEdgeLoadSpec
+    edge_idx::Int
+    xs::Vector{Float64}
+    F::Vector{NTuple{3, Float64}}
+end
+
+"""Constant line load on an edge (global line-load vector in N/m)."""
+struct EdgeLineLoadSpec <: AbstractEdgeLoadSpec
+    edge_idx::Int
+    w::NTuple{3, Float64}
+end
 
 """Optimization grouping for similar slabs."""
 mutable struct SlabGroup
@@ -127,7 +158,7 @@ mutable struct BuildingStructure{T, A, P} <: AbstractBuildingStructure
     skeleton::BuildingSkeleton{T}
     # Slabs
     cells::Vector{Cell{T, A, P}}
-    slabs::Vector{Slab{T}}
+    slabs::Vector{Slab{T, <:AbstractFloorResult}}
     slab_groups::Dict{UInt64, SlabGroup}
     # Framing
     segments::Vector{Segment{T}}
@@ -142,7 +173,7 @@ function BuildingStructure(skel::BuildingSkeleton{T}) where T
     P = typeof(1.0u"kN/m^2")
     BuildingStructure{T, A, P}(
         skel,
-        Cell{T, A, P}[], Slab{T}[], Dict{UInt64, SlabGroup}(),
+        Cell{T, A, P}[], Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
     )
@@ -151,7 +182,7 @@ end
 function BuildingStructure{T, A, P}(skel::BuildingSkeleton{T}) where {T, A, P}
     BuildingStructure{T, A, P}(
         skel,
-        Cell{T, A, P}[], Slab{T}[], Dict{UInt64, SlabGroup}(),
+        Cell{T, A, P}[], Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
     )

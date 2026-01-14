@@ -1,5 +1,3 @@
-using Unitful
-
 data = XLSX.readdata(joinpath(@__DIR__, "data/aisc-shapes-database-v15.0.xlsx"), "Database v15.0!A2:ED2041")
 
 const Wrange = 1:283

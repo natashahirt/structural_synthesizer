@@ -8,16 +8,14 @@
 Select composite deck system for given span and load.
 
 # Arguments
-- `span`: Clear span (unshored construction assumed)
-- `load`: Superimposed dead + live load
-- `material`: Primary material (concrete fill, default: NWC_4000)
-- `deck_mat`: Steel material for deck (default: A992_Steel)
-
-# Returns
-- `CompositeDeckResult` with deck and fill parameters
+- `span`: Clear span
+- `sdl`: Superimposed dead load
+- `live`: Live load
+- `material`: Primary material (concrete fill)
+- `deck_mat`: Steel material for deck
 """
-function size_floor(::CompositeDeck, span::Real, load::Real;
+function size_floor(::CompositeDeck, span::L, sdl::F, live::F;
                     material::Concrete=NWC_4000,
-                    deck_mat::Metal=A992_Steel)
+                    deck_mat::Metal=A992_Steel) where {L, F}
     error("CompositeDeck sizing not yet implemented")
 end

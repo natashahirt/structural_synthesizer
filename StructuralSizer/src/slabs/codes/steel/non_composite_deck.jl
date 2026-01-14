@@ -12,7 +12,7 @@ Select non-composite deck for given span and load.
 # Returns
 - `ProfileResult` with deck profile
 """
-function size_floor(::NonCompositeDeck, span::Real, load::Real;
-                    material::Metal=A992_Steel)
+function size_floor(::NonCompositeDeck, span::L, sdl::F, live::F;
+                    material::Metal=A992_Steel) where {L, F}
     error("NonCompositeDeck sizing not yet implemented")
 end

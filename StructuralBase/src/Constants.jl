@@ -7,6 +7,10 @@ module Constants
     Unitful.@unit psf "psf" PoundPerSquareFoot 47.88025898u"N/m^2" false
     Unitful.@unit ksi "ksi" KipPerSquareInch 6.894757e6u"Pa" false  # 1 ksi = 6.895 MPa
 
+    # Make these units available to Unitful's `u"..."` macro everywhere.
+    # Without this, `u"ksi"` will throw "Symbol ksi could not be found...".
+    Unitful.register(@__MODULE__)
+
     # 2. Physical Constants
     const GRAVITY = 9.80665u"m/s^2" # acceleration due to gravity
 
@@ -33,15 +37,7 @@ module Constants
     const SDL_ROOF  = uconvert(u"kN/m^2", 15.0 * psf)
     const SDL_WALL  = uconvert(u"kN/m^2", 10.0 * psf) # per wall area
 
-    # 7. Factored Loads (Pre-calculated for convenience)
-    const LL_GRADE_f = LL_GRADE * LL_FACTOR
-    const LL_FLOOR_f = LL_FLOOR * LL_FACTOR
-    const LL_ROOF_f  = LL_ROOF  * LL_FACTOR
-
-    const SDL_FLOOR_f = SDL_FLOOR * DL_FACTOR
-    const SDL_ROOF_f  = SDL_ROOF  * DL_FACTOR
-
-    # 8. Metric Reinforcement (Standard units for the package)
+    # 7. Metric Reinforcement (Standard units for the package)
     const STANDARD_LENGTH = u"m"
     const STANDARD_AREA   = u"m^2"
     const STANDARD_FORCE  = u"kN"

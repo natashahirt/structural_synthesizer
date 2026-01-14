@@ -16,9 +16,9 @@ Select NLT panel for given span and load.
 # Returns
 - `TimberPanelResult` with panel specification
 """
-function size_floor(::NLT, span::Real, load::Real;
+function size_floor(::NLT, span::L, sdl::F, live::F;
                     material::AbstractMaterial=NWC_4000,  # placeholder until Timber type exists
                     lumber_size::Symbol=:auto,
-                    fire_rating::Int=1)
+                    fire_rating::Int=1) where {L, F}
     error("NLT sizing not yet implemented")
 end

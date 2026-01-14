@@ -16,8 +16,8 @@ Select DLT panel for given span and load.
 # Returns
 - `TimberPanelResult` with panel specification
 """
-function size_floor(::DLT, span::Real, load::Real;
+function size_floor(::DLT, span::L, sdl::F, live::F;
                     material::AbstractMaterial=NWC_4000,  # placeholder until Timber type exists
-                    fire_rating::Int=1)
+                    fire_rating::Int=1) where {L, F}
     error("DLT sizing not yet implemented")
 end

@@ -1,5 +1,3 @@
-using XLSX
-using Unitful
 include("utilities.jl")
 
 include("types.jl")

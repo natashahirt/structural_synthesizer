@@ -13,12 +13,13 @@ using Asap
 skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4);
 struc = BuildingStructure(skel);
 
-# Fully initialize the structure
-initialize!(struc) # auto-infers one-way and two-way slabs from the aspect ratio
+# Fully initialize the structure|
+initialize!(struc, floor_type=:vault); # auto-infers one-way and two-way CIP slabs from the aspect ratio if :floor_type is not specified
+to_asap!(struc);
 
 # Visualize
 visualize(skel)
-visualize(skel, struc.asap_model, mode=:deflected, color_by=:displacement)
+visualize(skel, struc.asap_model, mode=:deflected, color_by=:displacement, show_original_geometry=false)
 
 # Example: access materials from StructuralSizer
 println("A992 Steel Fy: ", A992_Steel.Fy)

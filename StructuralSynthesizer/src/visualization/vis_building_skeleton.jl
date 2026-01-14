@@ -1,5 +1,3 @@
-import LinearAlgebra: normalize
-
 # Helper to handle different Meshes coordinate formats
 function extract_point3f(v)
     c = Meshes.coords(v)

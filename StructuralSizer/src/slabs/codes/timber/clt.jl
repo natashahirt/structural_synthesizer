@@ -17,8 +17,8 @@ Select CLT panel for given span and load.
 # Returns
 - `TimberPanelResult` with panel specification
 """
-function size_floor(::CLT, span::Real, load::Real;
-                    material::AbstractMaterial=NWC_4000,  # placeholder until Timber type exists
-                    fire_rating::Int=1)
+function size_floor(::CLT, span::L, sdl::F, live::F;
+                    material::AbstractMaterial=NWC_4000,
+                    fire_rating::Int=1) where {L, F}
     error("CLT sizing not yet implemented")
 end

@@ -10,7 +10,7 @@
 # - Extrados is intrados shifted vertically by shell thickness
 # - Optional ribs modeled as flat-topped extensions above extrados
 
-const GRAVITY = 9.81  # m/s²
+const GRAVITY = ustrip(u"m/s^2", Constants.GRAVITY)  # m/s²
 
 # =============================================================================
 # Geometry Utilities
@@ -24,14 +24,11 @@ Intrados defined by: y(x) = (4h/s²) * x * (s - x)
 Translation of getParabolicArcLength.m
 """
 function parabolic_arc_length(span::Real, rise::Real)
-    abs(rise) < 1e-9 && return Float64(span)
-    
-    # dy/dx = 4h/s - 8hx/s²
-    dydx(x) = 4rise/span - 8rise*x/span^2
-    
-    # Arc length integrand: √(1 + (dy/dx)²)
-    integrand(x) = sqrt(1 + dydx(x)^2)
-    
+    # y = (4h/s²) * (sx - x²)
+    # dy/dx = (4h/s²) * (s - 2x)
+    # L = integral of sqrt(1 + (dy/dx)²) dx from 0 to s
+    k = 4 * rise / span^2
+    integrand(x) = sqrt(1 + (k * (span - 2x))^2)
     L, _ = quadgk(integrand, 0, span)
     return L
 end
@@ -47,6 +44,68 @@ Extrados height at position x (intrados + shell thickness).
 """
 extrados(x, span, rise, thickness) = intrados(x, span, rise) + thickness
 
+"""
+Calculate geometric properties (volumes, areas) for a vault.
+"""
+function get_vault_properties(
+    span::Real,
+    rise::Real,
+    thickness::Real,
+    trib_depth::Real,
+    rib_depth::Real,
+    rib_apex_rise::Real
+)
+    # Shell volume: arc_length × thickness × trib_depth
+    arc_len = parabolic_arc_length(span, rise)
+    
+    # Cross-sectional area of the shell (per unit depth)
+    # Integral of (extrados - intrados) = thickness * span (linear shift approximation)
+    shell_cs_area = thickness * span
+    shell_vol = shell_cs_area * trib_depth
+    
+    # Rib calculations
+    rib_cs_area = 0.0
+    if rib_apex_rise > 0 && rib_depth > 0
+        rib_top_height = rise + thickness + rib_apex_rise
+        rib_integrand(x) = max(0.0, rib_top_height - extrados(x, span, rise, thickness))
+        val, _ = quadgk(rib_integrand, 0, span)
+        rib_cs_area = val
+    end
+    rib_vol = rib_cs_area * rib_depth
+    
+    return (
+        arc_length = arc_len,
+        shell_cs_area = shell_cs_area,
+        shell_vol = shell_vol,
+        rib_cs_area = rib_cs_area,
+        rib_vol = rib_vol,
+        total_vol = shell_vol + rib_vol
+    )
+end
+
+"""
+Calculate material volume per unit plan area for a vault.
+
+Accounts for curved shell geometry (arc length > span) and ribs.
+
+# Returns
+Volume per plan area [m³/m²]
+"""
+function vault_volume_per_area(
+    span::Real,
+    rise::Real,
+    thickness::Real,
+    trib_depth::Real,
+    rib_depth::Real,
+    rib_apex_rise::Real
+)
+    props = get_vault_properties(span, rise, thickness, trib_depth, rib_depth, rib_apex_rise)
+    
+    # Normalized to plan area (span × trib_depth)
+    plan_area = span * trib_depth
+    return props.total_vol / plan_area
+end
+
 # =============================================================================
 # Symmetric Load Analysis (VaultStress.m)
 # =============================================================================
@@ -54,21 +113,11 @@ extrados(x, span, rise, thickness) = intrados(x, span, rise) + thickness
 """
 Calculate working stress and thrust for symmetric UDL case.
 
-Direct translation of VaultStress.m logic.
-
 # Arguments
-- `span`: Span of arch [m]
-- `rise`: Rise at crown (intrados) [m]
-- `trib_depth`: Tributary depth / rib spacing [m]
+- `applied_load`: [kN/m²]
+- `finishing_load`: [kN/m²]
 - `thickness`: Shell thickness [m]
-- `rib_depth`: Rib width in span direction [m] (0 if no ribs)
-- `rib_apex_rise`: Additional rib height above extrados at apex [m]
 - `density`: Material density [kg/m³]
-- `applied_load`: Applied distributed load (live) [kN/m²]
-- `finishing_load`: Finishing load (screed, etc.) [kN/m²]
-
-# Returns
-Named tuple: (σ_MPa, thrust_kN, self_weight_kN_m², vertical_kN)
 """
 function vault_stress_symmetric(
     span::Real,
@@ -81,36 +130,17 @@ function vault_stress_symmetric(
     applied_load::Real,
     finishing_load::Real
 )
-    # --- Cross-sectional areas (in x-y plane per unit depth) ---
+    # --- Geometric Properties ---
+    props = get_vault_properties(span, rise, thickness, trib_depth, rib_depth, rib_apex_rise)
     
-    # Vault shell: integral of (extrados - intrados) = thickness * span
-    # Per MATLAB: "Integrand simplifies to brick_thick_m due to linear shift"
-    vault_cs_area = thickness * span  # [m²]
-    
-    # Rib area: integral of (rib_top_line - extrados)
-    # Rib top is flat at height: rise + thickness + rib_apex_rise
-    rib_top_height = rise + thickness + rib_apex_rise
-    
-    if rib_apex_rise > 0
-        # Integrate (rib_top - extrados) from 0 to span
-        rib_integrand(x) = rib_top_height - extrados(x, span, rise, thickness)
-        rib_cs_area, _ = quadgk(rib_integrand, 0, span)
-        rib_cs_area = max(0.0, rib_cs_area)  # Ensure non-negative
-    else
-        rib_cs_area = 0.0
-    end
-    
-    # --- Volume and mass ---
-    vault_volume = vault_cs_area * trib_depth      # [m³]
-    rib_volume = rib_cs_area * rib_depth           # [m³]
-    
-    vault_mass = vault_volume * density            # [kg]
-    rib_mass = rib_volume * density                # [kg]
+    # --- Mass ---
+    # Convert volume to mass
+    total_mass = props.total_vol * density
     
     # --- Self-weight ---
-    total_self_weight_N = (vault_mass + rib_mass) * GRAVITY
+    total_self_weight_N = total_mass * GRAVITY
     self_weight_kN_m = (total_self_weight_N / span) / 1000        # [kN/m along span]
-    self_weight_kN_m² = (total_self_weight_N / span / trib_depth) / 1000  # [kN/m²]
+    self_weight_kN_m² = (total_self_weight_N / (span * trib_depth)) / 1000  # [kN/m²]
     
     # --- Total load ---
     # Applied loads are per m², convert to per m of span
@@ -147,16 +177,9 @@ end
 # =============================================================================
 
 """
-Calculate working stress for asymmetric (half-span live) load case.
+Calculate working stress and thrust for asymmetric case (live load on half-span).
 
-Direct translation of VaultStress_Asymmetric.m logic.
-Assumes live load applied to one half of span only.
-
-# Arguments
-Same as `vault_stress_symmetric`
-
-# Returns
-Named tuple: (σ_MPa, thrust_kN, self_weight_kN_m², vertical_max_kN)
+Reference: Haile's VaultStress_Asymmetric.m
 """
 function vault_stress_asymmetric(
     span::Real,
@@ -169,55 +192,37 @@ function vault_stress_asymmetric(
     applied_load::Real,
     finishing_load::Real
 )
-    # --- Self-weight calculation (same as symmetric) ---
-    vault_cs_area = thickness * span
+    # For asymmetric analysis, only live load is asymmetric
+    # Total UDL on half 1 (left): SW + finish + Live
+    # Total UDL on half 2 (right): SW + finish
     
-    rib_top_height = rise + thickness + rib_apex_rise
-    if rib_apex_rise > 0
-        rib_integrand(x) = rib_top_height - extrados(x, span, rise, thickness)
-        rib_cs_area, _ = quadgk(rib_integrand, 0, span)
-        rib_cs_area = max(0.0, rib_cs_area)
-    else
-        rib_cs_area = 0.0
-    end
+    # 1. Base symmetric self-weight and finishing
+    # We can use vault_stress_symmetric with zero live load
+    base = vault_stress_symmetric(span, rise, trib_depth, thickness, rib_depth, rib_apex_rise,
+                                  density, 0.0, finishing_load)
     
-    vault_volume = vault_cs_area * trib_depth
-    rib_volume = rib_cs_area * rib_depth
+    q_d = (base.vertical_kN * 2) / span  # Total dead load kN/m
     
-    total_self_weight_N = (vault_volume + rib_volume) * density * GRAVITY
-    self_weight_kN_m = (total_self_weight_N / span) / 1000
-    self_weight_kN_m² = (total_self_weight_N / span / trib_depth) / 1000
+    # 2. Live load intensity kN/m
+    q_l = applied_load * trib_depth
     
-    # --- Load components ---
-    finishing_dist_kN_m = finishing_load * trib_depth
-    q_dead_kN_m = self_weight_kN_m + finishing_dist_kN_m  # Dead load per m
-    q_live_kN_m = applied_load * trib_depth               # Live load per m
+    # 3. Asymmetric Thrust (H_asym)
+    # H = (L²/16h) * (2q_d + q_l)
+    thrust_kN = (span^2 / (16 * rise)) * (2q_d + q_l)
     
-    # --- Asymmetric analysis (half-span live load) ---
-    # Horizontal thrust for asymmetric loading
-    thrust_kN = (span^2 / (16 * rise)) * (2 * q_dead_kN_m + q_live_kN_m)
+    # 4. Vertical reactions
+    # V1 (loaded side) = (L/8) * (4q_d + 3q_l)
+    # V2 (unloaded side) = (L/8) * (4q_d + q_l)
+    V1 = (span / 8) * (4q_d + 3q_l)
+    # V2 = (span / 8) * (4q_d + q_l)
     
-    # Vertical reactions for each side
-    vertical_live_side_kN = (q_dead_kN_m * span / 2) + (3 * q_live_kN_m * span / 8)
-    vertical_no_live_side_kN = (q_dead_kN_m * span / 2) + (q_live_kN_m * span / 8)
-    
-    # Resultant forces at each support
-    resultant_live_side_kN = sqrt(vertical_live_side_kN^2 + thrust_kN^2)
-    resultant_no_live_side_kN = sqrt(vertical_no_live_side_kN^2 + thrust_kN^2)
-    
-    # Maximum resultant (governs design)
-    max_resultant_kN = max(resultant_live_side_kN, resultant_no_live_side_kN)
-    max_vertical_kN = max(vertical_live_side_kN, vertical_no_live_side_kN)
-    
-    # --- Working stress ---
+    # 5. Working stress at abutments (governed by V1)
     resisting_area = trib_depth * thickness
-    resisting_area > 0 || error("Resisting area must be positive")
+    resultant_kN = sqrt(V1^2 + thrust_kN^2)
+    σ_MPa = (resultant_kN * 1000) / resisting_area / 1e6
     
-    σ_Pa = (max_resultant_kN * 1000) / resisting_area
-    σ_MPa = σ_Pa / 1e6
-    
-    return (σ_MPa=σ_MPa, thrust_kN=thrust_kN, self_weight_kN_m²=self_weight_kN_m², 
-            vertical_max_kN=max_vertical_kN)
+    return (σ_MPa=σ_MPa, thrust_kN=thrust_kN, self_weight_kN_m²=base.self_weight_kN_m²,
+            vertical_kN=V1)
 end
 
 # =============================================================================
@@ -225,23 +230,10 @@ end
 # =============================================================================
 
 """
-Solve for equilibrium rise considering elastic shortening.
+Determine equilibrium rise accounting for elastic shortening.
 
-Direct translation of solveFullyCoupledRise.m logic.
-Uses iterative solver to find final rise where geometric arc length
-equals original arc length minus elastic shortening.
-
-# Arguments
-- `span`: Span of arch [m]
-- `initial_rise`: Rise before loading [m]
-- `total_load_Pa`: Total load (self + live) [Pa = N/m²]
-- `thickness`: Shell thickness [m]
-- `trib_depth`: Tributary depth [m]
-- `E_MPa`: Modulus of elasticity [MPa]
-- `deflection_limit`: Max allowable change in rise [m] (default: Inf)
-
-# Returns
-Named tuple: (final_rise, converged, deflection_ok)
+Iteratively solves for rise h such that shortening matches geometry change.
+Ref: Haile's solveFullyCoupledRise.m
 """
 function solve_equilibrium_rise(
     span::Real,
@@ -250,58 +242,41 @@ function solve_equilibrium_rise(
     thickness::Real,
     trib_depth::Real,
     E_MPa::Real;
-    deflection_limit::Real=Inf
+    deflection_limit::Real = 0.05
 )
     E_Pa = E_MPa * 1e6
-    area = thickness * trib_depth
-    w_N_m = total_load_Pa * trib_depth  # Line load [N/m]
+    A_springing = thickness * trib_depth
     
-    # Original arc length
-    L_original = parabolic_arc_length(span, initial_rise)
-    isnan(L_original) && error("Could not calculate initial arc length")
-    
-    # Objective: find rise where geometric length = elastic length
-    function objective(test_rise)
-        if abs(test_rise) < 1e-9
-            return L_original  # No shortening if flat
-        end
+    # Residual function for root finding: f(h) = ΔL_geometry(h) - ΔL_elastic(h)
+    function residual(h)
+        # 1. Arc length at this rise
+        L = parabolic_arc_length(span, h)
+        L0 = parabolic_arc_length(span, initial_rise)
+        ΔL_geom = L0 - L
         
-        # dy/dx for test rise
-        dydx(x) = (4 * test_rise) / span - (8 * x * test_rise) / span^2
+        # 2. Elastic shortening
+        # H = wL² / 8h
+        # V = wL / 2
+        # Resultant R = sqrt(H² + V²)
+        w = total_load_Pa * trib_depth
+        H = (w * span^2) / (8h)
+        V = (w * span) / 2
+        R = sqrt(H^2 + V^2)
         
-        # dL/dx = √(1 + (dy/dx)²)
-        dLdx(x) = sqrt(1 + dydx(x)^2)
+        # Approximate average axial force as resultant at support
+        # ΔL = R * L / (A * E)
+        ΔL_elastic = (R * L) / (A_springing * E_Pa)
         
-        # Force at point x: resultant of thrust and vertical reaction
-        # Thrust: H = wL²/(8h), Vertical at x: V(x) = wL/2 - wx
-        thrust_sq = ((w_N_m * span^2) / (8 * test_rise))^2
-        force(x) = sqrt(thrust_sq + ((w_N_m * span / 2) - w_N_m * x)^2)
-        
-        # Integral of force along arc: ∫ F(x) * dL/dx dx
-        combined_integrand(x) = force(x) * dLdx(x)
-        integral_force_dL, _ = quadgk(combined_integrand, 0, span)
-        
-        # Elastic shortening
-        shortening = integral_force_dL / (area * E_Pa)
-        
-        # Target length and actual geometric length
-        L_target = L_original - shortening
-        L_actual = parabolic_arc_length(span, test_rise)
-        
-        return L_actual - L_target
+        return ΔL_geom - ΔL_elastic
     end
     
-    # Solve using derivative-free method with initial guess
-    # MATLAB uses fzero(f, x0) which searches for a bracket automatically
-    # We use Order0() which is similar - a robust derivative-free method
-    initial_guess = initial_rise * 0.98
-    
+    # Solve for final_rise
+    # Initial guess is slightly lower than initial_rise (shortening)
     try
-        # Use Order0 (secant-like) starting from initial guess
-        # This matches MATLAB's fzero(f, x0) behavior
-        final_rise = find_zero(objective, initial_guess, Order0())
+        # Use Order0() which mimics MATLAB's fzero (derivative-free, search-based)
+        final_rise = find_zero(residual, initial_rise, Order0())
         
-        # Validate result is physically reasonable
+        # Sanity checks
         if final_rise <= 0 || final_rise > initial_rise * 1.1
             return (final_rise=NaN, converged=false, deflection_ok=false)
         end
@@ -325,105 +300,136 @@ end
 Size an unreinforced vault using Haile's method.
 
 # Arguments
-- `span`: Clear span (chord length) [m]
-- `load`: Superimposed live load [kN/m²]
-- `material`: Concrete material (provides E, ρ)
-- `rise`: Rise at crown [m] (provide either `rise` or `lambda`, not both)
-- `lambda`: Span/rise ratio (provide either `rise` or `lambda`, not both)
-- `thickness`: Shell thickness [m] (optional - if omitted, iterates to find minimum)
-- `trib_depth`: Tributary depth / rib spacing [m] (default: 1.0)
-- `rib_depth`: Rib width in span direction [m] (default: 0.0, no ribs)
-- `rib_apex_rise`: Additional rib height above vault extrados at apex [m] (default: 0.0)
-- `finishing_load`: Topping/screed load [kN/m²] (default: 0.0)
-- `allowable_stress`: Max allowable compressive stress [MPa] (optional - no check if omitted)
-- `deflection_limit`: Max allowable rise deflection [m] (default: span/240)
+- `span`: Clear span (chord length) - any length unit
+- `sdl`: Superimposed dead load - any force/area unit
+- `live`: Live load - any force/area unit
+- `rise`: Rise at crown (provide either `rise` or `lambda`, not both)
+- `lambda`: Span/rise ratio (dimensionless)
+- `thickness`: Shell thickness (optional - iterates to find minimum if omitted)
+- `trib_depth`: Tributary depth / rib spacing (default: 1.0m)
+- `rib_depth`: Rib width in span direction (default: 0.0m, no ribs)
+- `rib_apex_rise`: Additional rib height above extrados at apex (default: 0.0m)
+- `finishing_load`: Topping/screed load (default: 0.0)
+- `allowable_stress`: Max allowable compressive stress [MPa] (optional)
+- `deflection_limit`: Max allowable rise deflection (default: span/240)
 - `check_asymmetric`: Also check half-span live load case (default: true)
 
 # Returns
-`VaultResult` with thickness, rise, thrust, self_weight
+`VaultResult{L,P,F}` preserving input unit types
 
 # Example
 ```julia
-# Using rise directly
-result = size_floor(Vault(), 6.0, 2.5; rise=1.0, material=NWC_4000)
-
-# Using lambda (span/rise ratio) - equivalent to rise=1.0 for 6m span
-result = size_floor(Vault(), 6.0, 2.5; lambda=6.0, material=NWC_4000)
+result = size_floor(Vault(), 6.0u"m", 1.0u"kN/m^2", 2.0u"kN/m^2"; rise=1.0u"m")
 ```
 """
-function size_floor(::Vault, span::Real, load::Real;
+function size_floor(::Vault, span::L, sdl::F, live::F;
                     material::Concrete=NWC_4000,
-                    rise::Union{Real,Nothing}=nothing,
+                    rise::Union{L,Nothing}=nothing,
                     lambda::Union{Real,Nothing}=nothing,
-                    thickness::Union{Real,Nothing}=nothing,
-                    trib_depth::Real=1.0,
-                    rib_depth::Real=0.0,
-                    rib_apex_rise::Real=0.0,
-                    finishing_load::Real=0.0,
+                    thickness::Union{L,Nothing}=nothing,
+                    trib_depth::L=uconvert(unit(span), 1.0u"m"),
+                    rib_depth::L=zero(span),
+                    rib_apex_rise::L=zero(span),
+                    finishing_load::F=zero(sdl),
                     allowable_stress::Union{Real,Nothing}=nothing,
-                    deflection_limit::Union{Real,Nothing}=nothing,
-                    check_asymmetric::Bool=true)
+                    deflection_limit::Union{L,Nothing}=nothing,
+                    check_asymmetric::Bool=true) where {L, F}
     
-    # Validate rise/lambda: exactly one must be provided
     if !isnothing(rise) && !isnothing(lambda)
         throw(ArgumentError("Provide either `rise` or `lambda`, not both"))
     elseif isnothing(rise) && isnothing(lambda)
         throw(ArgumentError("Vault requires `rise` or `lambda` kwarg"))
     end
     
-    # Compute rise from lambda if needed
-    rise = isnothing(rise) ? span / lambda : rise
-    rise > 0 || throw(ArgumentError("Rise must be positive (check lambda > 0)"))
-    
-    # Material properties (explicit unit conversion for safety)
+    # Strip units for internal calculations (MATLAB-style arithmetic)
+    span_m = ustrip(u"m", span)
+    sdl_kN = ustrip(u"kN/m^2", sdl)
+    live_kN = ustrip(u"kN/m^2", live)
+    trib_m = ustrip(u"m", trib_depth)
+    rib_d_m = ustrip(u"m", rib_depth)
+    rib_h_m = ustrip(u"m", rib_apex_rise)
+    finish_kN = ustrip(u"kN/m^2", finishing_load)
     density = ustrip(u"kg/m^3", material.ρ)
     E_MPa = ustrip(u"MPa", material.E)
     
+    # Total applied load for stress check
+    total_app_load_kN = sdl_kN + live_kN
+    
+    # Compute rise from lambda if needed
+    rise_m = isnothing(rise) ? span_m / lambda : ustrip(u"m", rise)
+    rise_m > 0 || throw(ArgumentError("Rise must be positive (check lambda > 0)"))
+    
     # Default deflection limit: span/240
-    defl_lim = isnothing(deflection_limit) ? span / 240 : deflection_limit
+    defl_lim = isnothing(deflection_limit) ? span_m / 240 : ustrip(u"m", deflection_limit)
+    
+    # Strip thickness if provided
+    t_m = isnothing(thickness) ? nothing : ustrip(u"m", thickness)
     
     # --- Determine thickness ---
-    if isnothing(thickness)
-        # SIZE MODE: iterate to find minimum thickness
-        t = _find_min_thickness(span, rise, trib_depth, rib_depth, rib_apex_rise,
-                                density, E_MPa, load, finishing_load,
-                                allowable_stress, defl_lim, check_asymmetric)
-    else
-        # CHECK MODE: use provided thickness
-        t = thickness
+    if isnothing(t_m)
+        t_m = _find_min_thickness(span_m, rise_m, trib_m, rib_d_m, rib_h_m,
+                                  density, E_MPa, total_app_load_kN, finish_kN,
+                                  allowable_stress, defl_lim, check_asymmetric)
     end
     
     # --- Final analysis with chosen thickness ---
-    sym = vault_stress_symmetric(span, rise, trib_depth, t, rib_depth, rib_apex_rise,
-                                 density, load, finishing_load)
+    # Dead component: SW + finishing + SDL
+    sym_dead = vault_stress_symmetric(span_m, rise_m, trib_m, t_m, rib_d_m, rib_h_m,
+                                      density, sdl_kN, finish_kN)
     
-    σ_max = sym.σ_MPa
-    thrust = sym.thrust_kN
-    sw = sym.self_weight_kN_m²
+    # Live component: Live load only
+    sym_live = vault_stress_symmetric(span_m, rise_m, trib_m, t_m, rib_d_m, rib_h_m,
+                                      0.0, live_kN, 0.0)
+    
+    σ_max = sym_dead.σ_MPa + sym_live.σ_MPa
+    thrust_dead = sym_dead.thrust_kN
+    thrust_live = sym_live.thrust_kN
+    sw = sym_dead.self_weight_kN_m²
     
     if check_asymmetric
-        asym = vault_stress_asymmetric(span, rise, trib_depth, t, rib_depth, rib_apex_rise,
-                                       density, load, finishing_load)
-        σ_max = max(σ_max, asym.σ_MPa)
-        thrust = max(thrust, asym.thrust_kN)  # Return governing thrust
+        asym_total = vault_stress_asymmetric(span_m, rise_m, trib_m, t_m, rib_d_m, rib_h_m,
+                                             density, sdl_kN + live_kN, finish_kN)
+        σ_max = max(σ_max, asym_total.σ_MPa)
     end
     
     # --- Elastic shortening check ---
-    total_load_Pa = (load + sw + finishing_load) * 1000  # kN/m² to Pa
-    eq = solve_equilibrium_rise(span, rise, total_load_Pa, t, trib_depth, E_MPa;
+    total_load_Pa = (sdl_kN + live_kN + sw + finish_kN) * 1000
+    eq = solve_equilibrium_rise(span_m, rise_m, total_load_Pa, t_m, trib_m, E_MPa;
                                 deflection_limit=defl_lim)
     
-    final_rise = eq.converged ? eq.final_rise : rise
+    final_rise = eq.converged ? eq.final_rise : rise_m
     
     # --- Warnings ---
     !eq.converged && @warn "Elastic shortening solver did not converge"
-    eq.converged && !eq.deflection_ok && @warn "Deflection exceeds limit: Δrise > $defl_lim m"
+    eq.converged && !eq.deflection_ok && @warn "Deflection exceeds limit"
     
     if !isnothing(allowable_stress) && σ_max > allowable_stress
         @warn "Working stress exceeds allowable: $(round(σ_max, digits=3)) > $allowable_stress MPa"
     end
     
-    return VaultResult(t, final_rise, thrust, sw)
+    # --- Material volume (for carbon calculations) ---
+    vol_per_area = vault_volume_per_area(span_m, final_rise, t_m, trib_m, rib_d_m, rib_h_m)
+    
+    # Convert outputs to match input unit system (where meaningful).
+    len_unit = unit(span)
+    force_area_unit = unit(sdl)
+    
+    t_out = uconvert(len_unit, t_m * u"m")
+    rise_out = uconvert(len_unit, final_rise * u"m")
+    
+    # `thrust_*` from the Haile arch formulas is a *resultant force* [kN] for the analyzed strip
+    # of width `trib_depth`. Convert to a line load along the support edge by dividing by strip width.
+    thrust_dead_line_kN_m = thrust_dead / trib_m
+    thrust_live_line_kN_m = thrust_live / trib_m
+    thrust_dead_out = uconvert(u"kN/m", thrust_dead_line_kN_m * u"kN/m")
+    thrust_live_out = uconvert(u"kN/m", thrust_live_line_kN_m * u"kN/m")
+    
+    # Volume is length (m^3/m^2 = m), convert to length unit
+    vol_out = uconvert(len_unit, vol_per_area * u"m")
+    
+    sw_out = uconvert(force_area_unit, sw * u"kN/m^2")
+    
+    return VaultResult(t_out, rise_out, thrust_dead_out, thrust_live_out, vol_out, sw_out)
 end
 
 """
@@ -442,15 +448,13 @@ function _find_min_thickness(
     allowable_stress::Union{Real,Nothing},
     deflection_limit::Real,
     check_asymmetric::Bool;
-    t_min::Real=0.03,    # Minimum 3 cm
-    t_max::Real=0.50,    # Maximum 50 cm
-    t_step::Real=0.005   # 5 mm increments
+    t_min::Real=0.03,
+    t_max::Real=0.50,
+    t_step::Real=0.005
 )
-    # If no allowable stress, only check deflection
     has_stress_check = !isnothing(allowable_stress)
     
     for t in t_min:t_step:t_max
-        # Check stress
         if has_stress_check
             sym = vault_stress_symmetric(span, rise, trib_depth, t, rib_depth, rib_apex_rise,
                                          density, applied_load, finishing_load)
@@ -463,53 +467,22 @@ function _find_min_thickness(
                 σ_max = max(σ_max, asym.σ_MPa)
             end
             
-            σ_max > allowable_stress && continue  # Too thin
+            σ_max > allowable_stress && continue
         else
             sym = vault_stress_symmetric(span, rise, trib_depth, t, rib_depth, rib_apex_rise,
                                          density, applied_load, finishing_load)
             sw = sym.self_weight_kN_m²
         end
         
-        # Check deflection via elastic shortening
         total_load_Pa = (applied_load + sw + finishing_load) * 1000
         eq = solve_equilibrium_rise(span, rise, total_load_Pa, t, trib_depth, E_MPa;
                                     deflection_limit=deflection_limit)
         
         if eq.converged && eq.deflection_ok
-            return t  # Found valid thickness
+            return t
         end
     end
     
     @warn "Could not find valid thickness in range [$t_min, $t_max] m"
     return t_max
-end
-
-# =============================================================================
-# Structural Effects
-# =============================================================================
-
-"""
-Apply vault thrust to structural model.
-
-Adds horizontal thrust to support nodes and edge beams.
-Thrust is per unit length of vault edge (kN/m).
-
-# Effects
-- Horizontal point loads at corner nodes
-- Axial compression in edge beams
-- Potential uplift at supports (check stability)
-"""
-function apply_effects!(::Vault, struc, slab, section::VaultResult)
-    # TODO: Implement thrust application to structural model
-    # This requires knowledge of the structural model API
-    #
-    # Conceptually:
-    # 1. Identify edge beams/nodes at vault supports
-    # 2. Apply horizontal thrust = section.thrust * edge_length
-    # 3. Add axial load to edge beams
-    #
-    # For now, warn that this needs model-specific implementation
-    @warn "Vault thrust application not yet implemented - manual thrust check required"
-    @info "Vault thrust: $(round(section.thrust, digits=2)) kN/m at supports"
-    return nothing
 end

@@ -1,8 +1,3 @@
-import .AsapToolkit
-import GLMakie
-import Asap
-import LinearAlgebra: norm
-
 is_released_start(::Type{<:Asap.Release}) = false
 is_released_start(::Type{Asap.FreeFixed}) = true
 is_released_start(::Type{Asap.FreeFree}) = true
@@ -63,6 +58,7 @@ Karamba-style visualization for Asap models, using skeleton groups for supports.
 - `show_supports::Bool=true`: Whether to show supports.
 - `show_releases::Bool=true`: Whether to show element releases (gaps).
 - `show_dofs::Bool=false`: Whether to show degrees of freedom (arrows).
+- `show_original_geometry::Bool=true`: Whether to show the dotted lines of the original geometry to emphasise deflection.
 - `resolution::Int=20`: Number of segments per element for curved shapes.
 - `linewidth::Float64=1.0`: Line width for elements.
 - `markersize::Float64=10.0`: Marker size for nodes/supports.
@@ -75,6 +71,7 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
     show_supports = true,
     show_releases = true,
     show_dofs = false,
+    show_original_geometry = true,
     resolution = 20,
     linewidth = 1.0,
     markersize = 10.0
@@ -102,15 +99,17 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         push!(leg_labels, "Elements")
 
     elseif mode == :deflected
-        # Draw original geometry as thin dotted lines for reference
-        for element in model.elements
-            p1 = element.nodeStart.position
-            p2 = element.nodeEnd.position
-            GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]], 
-                          color = (:black, 0.75), linewidth = 0.5, linestyle = :dash)
+        if show_original_geometry
+            # Draw original geometry as thin dotted lines for reference
+            for element in model.elements
+                p1 = element.nodeStart.position
+                p2 = element.nodeEnd.position
+                GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]], 
+                            color = (:black, 0.75), linewidth = 0.5, linestyle = :dash)
+            end
+            push!(leg_elems, GLMakie.LineElement(color = (:black, 0.4), linewidth = 1, linestyle = :dot))
+            push!(leg_labels, "Original Geometry")
         end
-        push!(leg_elems, GLMakie.LineElement(color = (:black, 0.4), linewidth = 1, linestyle = :dot))
-        push!(leg_labels, "Original Geometry")
 
         # Calculate displacements/forces with a reasonable increment
         avg_len = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0
@@ -118,6 +117,7 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         
         # AsapToolkit provides high-level helpers for displacements and forces
         edisps = AsapToolkit.displacements(model, increment)
+        isempty(edisps) && error("No element displacements available. Is the model empty or unsolved? (nElements=$(model.nElements), nLoads=$(length(model.loads)))")
         println("First element uglobal: ", edisps[1].uglobal[:, 1:3])
 
         # Auto-scale: make max displacement ~10% of avg element length

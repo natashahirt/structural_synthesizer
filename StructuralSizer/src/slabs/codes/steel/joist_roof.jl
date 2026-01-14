@@ -16,8 +16,8 @@ Select steel joist and deck system.
 # Returns
 - `JoistDeckResult` with joist and deck parameters
 """
-function size_floor(::JoistRoofDeck, span::Real, load::Real;
+function size_floor(::JoistRoofDeck, span::L, sdl::F, live::F;
                     material::Metal=A992_Steel,
-                    spacing::Real=1.5)
+                    spacing::L=uconvert(unit(span), 1.5u"m")) where {L, F}
     error("JoistRoofDeck sizing not yet implemented")
 end

@@ -12,171 +12,129 @@ const ACI_ONE_WAY_DIVISORS = Dict(
     CANTILEVER => 10.0
 )
 
-# Yield strength modification factor per ACI 7.3.1.1.1 (one-way only)
-fy_factor_one_way(fy_ksi::Real) = 0.4 + fy_ksi / 100.0
+"""Yield strength modification factor per ACI 7.3.1.1.1."""
+fy_factor_one_way(fy) = 0.4 + ustrip(u"ksi", fy) / 100.0
 
-"""
-ACI 318-19 Table 7.3.1.1: One-way slab minimum thickness.
-For solid one-way slabs of normal-weight concrete.
-"""
-function min_thickness(::OneWay, span::Real, mat::Concrete;
+"""ACI 318-19 Table 7.3.1.1: One-way slab minimum thickness."""
+function min_thickness(::OneWay, span, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy_ksi::Real=60.0)
+                       fy=60.0u"ksi")
     divisor = get(ACI_ONE_WAY_DIVISORS, support, 28.0)
-    h = span * fy_factor_one_way(fy_ksi) / divisor
-    return max(MIN_SLAB_THICKNESS, h)
+    h = span * fy_factor_one_way(fy) / divisor
+    # Ensure thickness uses the same length unit as `span` (avoids unit-mismatch
+    # when the minimum thickness governs).
+    return uconvert(unit(span), max(5.0u"inch", h))
 end
 
 # =============================================================================
 # Table 8.3.1.1 - Two-way slabs without interior beams
 # =============================================================================
-# Structure: [fy_ksi][panel_type][drop_panels] => divisor
-# Panel types: :interior, :exterior_with_beam, :exterior_no_beam
 
 const ACI_TWO_WAY_TABLE = Dict(
-    # Without drop panels
-    40 => Dict(
-        :interior => 36, :exterior_with_beam => 36, :exterior_no_beam => 33
-    ),
-    60 => Dict(
-        :interior => 33, :exterior_with_beam => 33, :exterior_no_beam => 30
-    ),
-    80 => Dict(
-        :interior => 30, :exterior_with_beam => 30, :exterior_no_beam => 27
-    )
+    40 => Dict(:interior => 36, :exterior_with_beam => 36, :exterior_no_beam => 33),
+    60 => Dict(:interior => 33, :exterior_with_beam => 33, :exterior_no_beam => 30),
+    80 => Dict(:interior => 30, :exterior_with_beam => 30, :exterior_no_beam => 27)
 )
 
 const ACI_TWO_WAY_DROP_TABLE = Dict(
-    # With drop panels
-    40 => Dict(
-        :interior => 40, :exterior_with_beam => 40, :exterior_no_beam => 36
-    ),
-    60 => Dict(
-        :interior => 36, :exterior_with_beam => 36, :exterior_no_beam => 33
-    ),
-    80 => Dict(
-        :interior => 33, :exterior_with_beam => 33, :exterior_no_beam => 30
-    )
+    40 => Dict(:interior => 40, :exterior_with_beam => 40, :exterior_no_beam => 36),
+    60 => Dict(:interior => 36, :exterior_with_beam => 36, :exterior_no_beam => 33),
+    80 => Dict(:interior => 33, :exterior_with_beam => 33, :exterior_no_beam => 30)
 )
 
-# Minimum thicknesses per ACI 8.3.1.1
-const MIN_TWO_WAY_NO_DROP = 0.127    # 5 inches in meters
-const MIN_TWO_WAY_WITH_DROP = 0.102  # 4 inches in meters
+const MIN_TWO_WAY_NO_DROP = 5.0u"inch"
+const MIN_TWO_WAY_WITH_DROP = 4.0u"inch"
 
 """Map support condition to panel type for two-way lookup."""
 function get_panel_type(support::SupportCondition, has_edge_beam::Bool)
-    if support == BOTH_ENDS_CONT
-        return :interior
-    else
-        return has_edge_beam ? :exterior_with_beam : :exterior_no_beam
-    end
+    support == BOTH_ENDS_CONT ? :interior : 
+        (has_edge_beam ? :exterior_with_beam : :exterior_no_beam)
 end
 
 """Get divisor from two-way table with fy interpolation."""
-function get_two_way_divisor(table::Dict, fy_ksi::Real, panel_type::Symbol)
-    # Clamp to table bounds
+function get_two_way_divisor(table::Dict, fy, panel_type::Symbol)
+    fy_ksi = ustrip(u"ksi", fy)
     fy_clamped = clamp(fy_ksi, 40.0, 80.0)
     
-    if fy_clamped in keys(table)
-        return Float64(table[Int(fy_clamped)][panel_type])
-    end
+    fy_clamped in keys(table) && return Float64(table[Int(fy_clamped)][panel_type])
     
-    # Linear interpolation between table values
     if fy_clamped < 60.0
-        d40 = table[40][panel_type]
-        d60 = table[60][panel_type]
-        t = (fy_clamped - 40.0) / 20.0
-        return d40 + t * (d60 - d40)
+        d40, d60 = table[40][panel_type], table[60][panel_type]
+        return d40 + (fy_clamped - 40.0) / 20.0 * (d60 - d40)
     else
-        d60 = table[60][panel_type]
-        d80 = table[80][panel_type]
-        t = (fy_clamped - 60.0) / 20.0
-        return d60 + t * (d80 - d60)
+        d60, d80 = table[60][panel_type], table[80][panel_type]
+        return d60 + (fy_clamped - 60.0) / 20.0 * (d80 - d60)
     end
 end
 
-"""
-ACI 318-19 Table 8.3.1.1: Two-way slab minimum thickness.
-Uses longer clear span ln.
-"""
-function min_thickness(::TwoWay, span_long::Real, mat::Concrete;
+"""ACI 318-19 Table 8.3.1.1: Two-way slab minimum thickness."""
+function min_thickness(::TwoWay, span_long, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy_ksi::Real=60.0,
+                       fy=60.0u"ksi",
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
-    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy_ksi, panel_type)
-    h = span_long / divisor
-    return max(MIN_TWO_WAY_NO_DROP, h)
+    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, panel_type)
+    return uconvert(unit(span_long), max(MIN_TWO_WAY_NO_DROP, span_long / divisor))
 end
 
-"""
-ACI 318-19 Table 8.3.1.1: Flat plate (two-way, no drop panels).
-"""
-function min_thickness(::FlatPlate, span_long::Real, mat::Concrete;
+"""ACI 318-19 Table 8.3.1.1: Flat plate (two-way, no drop panels)."""
+function min_thickness(::FlatPlate, span_long, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy_ksi::Real=60.0,
+                       fy=60.0u"ksi",
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
-    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy_ksi, panel_type)
-    h = span_long / divisor
-    return max(MIN_TWO_WAY_NO_DROP, h)
+    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, panel_type)
+    return uconvert(unit(span_long), max(MIN_TWO_WAY_NO_DROP, span_long / divisor))
 end
 
-"""
-ACI 318-19 Table 8.3.1.1: Flat slab (two-way with drop panels).
-"""
-function min_thickness(::FlatSlab, span_long::Real, mat::Concrete;
+"""ACI 318-19 Table 8.3.1.1: Flat slab (two-way with drop panels)."""
+function min_thickness(::FlatSlab, span_long, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy_ksi::Real=60.0,
+                       fy=60.0u"ksi",
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
-    divisor = get_two_way_divisor(ACI_TWO_WAY_DROP_TABLE, fy_ksi, panel_type)
-    h = span_long / divisor
-    return max(MIN_TWO_WAY_WITH_DROP, h)
+    divisor = get_two_way_divisor(ACI_TWO_WAY_DROP_TABLE, fy, panel_type)
+    return uconvert(unit(span_long), max(MIN_TWO_WAY_WITH_DROP, span_long / divisor))
 end
 
-"""
-PT slab minimum thickness per ACI 318-19 Section 8.6.2.2.
-Post-tensioned slabs: ln/45 for spans ≤ 35 ft, larger for longer spans.
-"""
-function min_thickness(::PTBanded, span_long::Real, mat::Concrete;
+"""PT slab minimum thickness per ACI 318-19 Section 8.6.2.2."""
+function min_thickness(::PTBanded, span_long, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
                        has_drop_panels::Bool=false)
     divisor = has_drop_panels ? 50.0 : 45.0
-    h = span_long / divisor
     min_h = has_drop_panels ? MIN_TWO_WAY_WITH_DROP : MIN_TWO_WAY_NO_DROP
-    return max(min_h, h)
+    return uconvert(unit(span_long), max(min_h, span_long / divisor))
 end
 
-"""
-Waffle slab minimum thickness.
-ACI treats as two-way joist system; use interior panel values.
-"""
-function min_thickness(::Waffle, span_long::Real, mat::Concrete;
+"""Waffle slab minimum thickness (ACI two-way joist system)."""
+function min_thickness(::Waffle, span_long, mat::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy_ksi::Real=60.0)
-    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy_ksi, :interior)
-    h = span_long / divisor
-    return max(MIN_TWO_WAY_NO_DROP, h)
+                       fy=60.0u"ksi")
+    divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, :interior)
+    return uconvert(unit(span_long), max(MIN_TWO_WAY_NO_DROP, span_long / divisor))
 end
 
 # =============================================================================
-# size_floor implementation (unified public API)
+# size_floor implementation
 # =============================================================================
 
-# Union type for all CIP concrete slabs (excludes HollowCore, Vault, ShapedSlab)
 const CIPSlabType = Union{OneWay, TwoWay, FlatPlate, FlatSlab, PTBanded, Waffle}
 
 """
-Size CIP concrete slab. Returns CIPSlabResult with thickness and self-weight.
-
-Note: `load` is accepted for interface consistency but not used for thickness
-calculation. ACI 318-19 minimum thickness tables are span-governed, not load-governed.
-Future: may be used for deflection checks under heavy loads.
+Size CIP concrete slab per ACI 318-19 minimum thickness tables.
+Returns `CIPSlabResult{L,F}` preserving input unit types.
 """
-function size_floor(st::CIPSlabType, span::Real, load::Real; 
-                    material::Concrete=NWC_4000, kwargs...)
+function size_floor(st::CIPSlabType, span::L, sdl::F, live::F; 
+                    material::Concrete=NWC_4000, kwargs...) where {L, F}
     h = min_thickness(st, span, material; kwargs...)
-    sw = h * ustrip(material.ρ) * 9.81 / 1000  # kN/m²
-    return CIPSlabResult(h, sw)
+    
+    # Self-weight: thickness × density × g
+    ρ = ustrip(u"kg/m^3", material.ρ)
+    h_m = ustrip(u"m", h)
+    sw = h_m * ρ * 9.81  # N/m² = Pa
+    
+    # Convert to same unit system as load
+    sw_unit = uconvert(unit(sdl), sw * u"Pa")
+    # Keep `thickness` and `volume_per_area` in the same length unit/type.
+    return CIPSlabResult(h, h, sw_unit)
 end

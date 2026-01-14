@@ -1,9 +1,9 @@
 """
     to_asap!(struc)
 Converts a BuildingStructure into an Asap.Model.
-Hard SI Metric Boundary: All values sent to Asap are stripped of units and forced to base SI.
+Hard SI boundary: all loads/coords sent to ASAP are plain Float64 in base SI.
 """
-function to_asap!(struc::BuildingStructure{T}) where T
+function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
     skel = struc.skeleton
     
     # 1. nodes
@@ -21,48 +21,200 @@ function to_asap!(struc::BuildingStructure{T}) where T
         return Asap.Node([x, y, z], dofs)
     end
 
-    # 2. elements
+    # 2. Elements
     default_section = AsapToolkit.toASAPframe("W10x22", unit=u"m")
     elements = map(skel.edge_indices) do (v1, v2)
-        return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed) # placeholder section
+        return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed)
     end
     
-    # 3. loads - distribute slab loads to supporting edges
+    # 3. loads
     loads = Asap.AbstractLoad[]
+    # Temporarily set model so apply_effects! can find it
+    struc.asap_model = Asap.Model(nodes, elements, loads)
+    
     for slab in struc.slabs
-        sec = slab.section
-        # Pressure (N/m²) applied to this slab
-        pressure = ustrip(uconvert(u"N/m^2", sec.dead_load + sec.live_load))
-        
-        # edges of this slab's face
-        face_edge_indices = skel.face_edge_indices[slab.face_idx]
-        
-        # total perimeter for tributary distribution
-        total_perimeter = sum(face_edge_indices) do edge_idx
-            v1, v2 = skel.edge_indices[edge_idx]
-            p1, p2 = skel.vertices[v1], skel.vertices[v2]
-            ustrip(uconvert(u"m", Meshes.measure(Meshes.Segment(p1, p2))))
-        end
-        
-        # area in m²
-        area_m2 = ustrip(uconvert(u"m^2", sec.area))
-        
-        # trib width = area / perimeter
-        tributary_width = area_m2 / total_perimeter
-        
-        # line load (N/m) = pressure (N/m²) × tributary_width (m)
-        line_load = pressure * tributary_width
-        
-        for edge_idx in face_edge_indices
-            push!(loads, Asap.LineLoad(elements[edge_idx], [0.0, 0.0, -line_load]))
+        # 3. Slab-derived loads (gravity + effects) as unified edge specs
+        for spec in slab_edge_load_specs(struc, slab; xs=[0.5])
+            el = elements[spec.edge_idx]
+            push_asap_loads!(loads, el, spec)
         end
     end
 
-    model = Asap.Model(nodes, elements, loads)
-    @debug "Converted to Asap.Model" nodes=length(nodes) elements=length(elements)
+    model = struc.asap_model
+    @debug "Converted to Asap.Model" nodes=length(nodes) elements=length(elements) loads=length(model.loads)
 
     Asap.process!(model)
     Asap.solve!(model)
 
-    struc.asap_model = model
+    return model
+end
+
+# =============================================================================
+# Slab → edge load interface
+# =============================================================================
+
+"""
+    push_asap_loads!(loads, element, spec)
+
+Convert a backend-agnostic edge load spec into ASAP loads.
+Assumes `spec` magnitudes are base SI (N, N/m).
+"""
+function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::AbstractEdgeLoadSpec)
+    error("No ASAP conversion defined for $(typeof(spec))")
+end
+
+function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgePointLoadSpec)
+    for (x, F) in zip(spec.xs, spec.F)
+        # ASAP expects a *normalized* position in (0,1), not an absolute distance.
+        # Also, it rejects exactly 0.0 and 1.0, so clamp slightly inward.
+        x01 = clamp(Float64(x), eps(Float64), 1.0 - eps(Float64))
+        push!(loads, Asap.PointLoad(el, x01, collect(F)))
+    end
+    return loads
+end
+
+function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgeLineLoadSpec)
+    push!(loads, Asap.LineLoad(el, collect(spec.w)))
+    return loads
+end
+
+"""
+    slab_total_factored_force(struc, slab) -> (Fx, Fy, Fz) [N]
+
+Compute the factored slab resultant in global coordinates (SI N).
+Currently gravity-only: `(0, 0, -total_Fz)` using `total_factored_pressure(cell) * cell.area`.
+"""
+function slab_total_factored_force(struc::BuildingStructure, slab::Slab)
+    total_Fz = 0.0
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        p = ustrip(uconvert(u"N/m^2", total_factored_pressure(cell)))
+        a = ustrip(uconvert(u"m^2", cell.area))
+        total_Fz += p * a
+    end
+    return (0.0, 0.0, -total_Fz)
+end
+
+"""
+    slab_face_edge_ids(struc, slab) -> Vector{Int}
+
+Return the unique set of skeleton edges referenced by the slab's faces.
+"""
+function slab_face_edge_ids(struc::BuildingStructure, slab::Slab)
+    skel = struc.skeleton
+
+    edge_set = Set{Int}()
+    for cell_idx in slab.cell_indices
+        face_idx = struc.cells[cell_idx].face_idx
+        for e_idx in skel.face_edge_indices[face_idx]
+            push!(edge_set, e_idx)
+        end
+    end
+
+    edge_ids = collect(edge_set)
+    sort!(edge_ids)  # deterministic ordering (useful for reproducibility/debug)
+    return edge_ids
+end
+
+"""Internal helper: gravity point loads as `EdgePointLoadSpec`."""
+function slab_edge_point_loads(
+    struc::BuildingStructure,
+    slab::Slab;
+    xs::AbstractVector{<:Real} = [0.5],
+    total_force::Union{Nothing, NTuple{3, Float64}} = nothing,
+)::Vector{EdgePointLoadSpec}
+    edge_ids = slab_face_edge_ids(struc, slab)
+    n_edges = length(edge_ids)
+    n_edges > 0 || return EdgePointLoadSpec[]
+
+    xs_vec = Float64.(xs)
+    n_pts = length(xs_vec)
+    n_pts > 0 || return EdgePointLoadSpec[]
+
+    Fx, Fy, Fz = isnothing(total_force) ? slab_total_factored_force(struc, slab) : total_force
+    scale = 1.0 / n_edges
+    f_per_edge = (Fx * scale, Fy * scale, Fz * scale)
+
+    return [
+        EdgePointLoadSpec(Int(e), xs_vec, fill(f_per_edge, n_pts))
+        for e in edge_ids
+    ]
+end
+
+"""Internal helper: structural effects as `EdgeLineLoadSpec` (e.g. vault thrust)."""
+function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{EdgeLineLoadSpec}
+    effects = StructuralSizer.structural_effects(slab.result)
+    isempty(effects) && return EdgeLineLoadSpec[]
+
+    loads = EdgeLineLoadSpec[]
+
+    for eff in effects
+        if eff isa StructuralSizer.LateralThrust
+            append!(loads, vault_thrust_line_loads(struc, slab, eff))
+        end
+    end
+
+    return loads
+end
+
+"""
+    slab_edge_load_specs(struc, slab; xs=[0.5])
+
+Unified slab load API: returns a single list of edge load specs (point + line).
+"""
+function slab_edge_load_specs(
+    struc::BuildingStructure,
+    slab::Slab;
+    xs::AbstractVector{<:Real} = [0.5],
+)::Vector{AbstractEdgeLoadSpec}
+    specs = AbstractEdgeLoadSpec[]
+    append!(specs, slab_edge_point_loads(struc, slab; xs=xs))
+    append!(specs, slab_edge_line_loads(struc, slab))
+    return specs
+end
+
+# --- Vault thrust → edge line loads (simple implementation) ---
+function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, eff::StructuralSizer.LateralThrust)::Vector{EdgeLineLoadSpec}
+    # Factored thrust (consistent with other factored load usage in the model)
+    thrust_factored = eff.dead * Constants.DL_FACTOR + eff.live * Constants.LL_FACTOR
+    mag_N_m = ustrip(u"N/m", uconvert(u"N/m", thrust_factored))
+
+    # Span axis (default to X)
+    span_vec = isnothing(slab.span_axis) ? [1.0, 0.0, 0.0] : collect(slab.span_axis)
+
+    # Vault slabs are enforced as single rectangular faces; thrust acts on that perimeter.
+    face_idx = struc.cells[first(slab.cell_indices)].face_idx
+    skel = struc.skeleton
+    boundary_edges = skel.face_edge_indices[face_idx]
+
+    out = EdgeLineLoadSpec[]
+    for e_idx in boundary_edges
+        edge = skel.edges[e_idx]
+        p1, p2 = Meshes.vertices(edge)
+        c1, c2 = Meshes.coords(p1), Meshes.coords(p2)
+
+        v = [c2.x - c1.x, c2.y - c1.y, c2.z - c1.z]
+        v_norm = v / sqrt(sum(v .^ 2))
+        is_perpendicular = abs(sum(v_norm .* span_vec)) < 0.1
+        is_perpendicular || continue
+
+        # Determine "outward" direction (simple heuristic from previous implementation)
+        mid = [(c1.x + c2.x) / 2, (c1.y + c2.y) / 2, (c1.z + c2.z) / 2]
+        f_poly = skel.faces[face_idx]
+        f_pts = Meshes.vertices(f_poly)
+        f_xs = [Meshes.coords(p).x for p in f_pts]
+        f_ys = [Meshes.coords(p).y for p in f_pts]
+        f_zs = [Meshes.coords(p).z for p in f_pts]
+        f_mid = [sum(f_xs) / length(f_pts), sum(f_ys) / length(f_pts), sum(f_zs) / length(f_pts)]
+
+        out_vec = mid .- f_mid
+        proj = sum(out_vec .* span_vec)
+        # `proj` carries length units; compare against a unit-consistent zero.
+        dir = proj > zero(proj) ? span_vec : -span_vec
+
+        w = (dir[1] * mag_N_m, dir[2] * mag_N_m, dir[3] * mag_N_m)
+        push!(out, EdgeLineLoadSpec(Int(e_idx), w))
+    end
+
+    return out
 end

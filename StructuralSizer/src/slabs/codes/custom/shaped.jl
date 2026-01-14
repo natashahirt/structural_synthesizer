@@ -26,13 +26,14 @@ The user's `sizing_fn` should have signature:
 # Example
 ```julia
 tapered = ShapedSlab(tapered_slab_fn)
-result = size_floor(tapered, 8.0, 5.0; material=NWC_4000, span_y=8.0)
+result = size_floor(tapered, 8.0, 2.0, 3.0; material=NWC_4000, span_y=8.0)
 ```
 """
-function size_floor(slab::ShapedSlab, span::Real, load::Real;
+function size_floor(slab::ShapedSlab, span::L, sdl::F, live::F;
                     material::AbstractMaterial=NWC_4000,
-                    span_y::Union{Real,Nothing}=nothing)
+                    span_y::Union{L,Nothing}=nothing) where {L, F}
     span_y_val = isnothing(span_y) ? span : span_y
+    load = sdl + live
     return slab.sizing_fn(span, span_y_val, load, material)
 end
 
@@ -46,7 +47,7 @@ Example: Tapered slab (thick at edges, thin at center).
 # Example
 ```julia
 tapered = ShapedSlab(tapered_slab_fn)
-result = size_floor(tapered, 8.0, 5.0; material=NWC_4000, span_y=8.0)
+result = size_floor(tapered, 8.0, 2.0, 3.0; material=NWC_4000, span_y=8.0)
 ```
 """
 function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete)
@@ -79,7 +80,7 @@ Example: Coffered/waffle slab with ribs.
 # Example
 ```julia
 coffered = ShapedSlab(coffered_slab_fn)
-result = size_floor(coffered, 10.0, 5.0; material=NWC_4000, span_y=10.0)
+result = size_floor(coffered, 10.0, 2.0, 3.0; material=NWC_4000, span_y=10.0)
 ```
 """
 function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete;

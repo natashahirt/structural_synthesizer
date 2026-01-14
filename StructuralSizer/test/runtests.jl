@@ -5,5 +5,6 @@ using Test
 using StructuralSizer
 
 @testset "StructuralSizer Tests" begin
+    include("cip/test_cip.jl")
     include("haile_vault/test_vault.jl")
 end

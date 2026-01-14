@@ -7,6 +7,9 @@ using Unitful
 using QuadGK: quadgk
 using Roots: find_zero, Brent, Order0
 
+# Ensure StructuralBase custom units (e.g. `ksi`) are visible to `u"..."` here.
+Unitful.register(StructuralBase.Constants)
+
 # Types (Metal, etc.)
 include("types.jl")
 
@@ -87,11 +90,17 @@ export CIPSlabResult, ProfileResult
 export CompositeDeckResult, JoistDeckResult
 export TimberPanelResult, TimberJoistResult
 export VaultResult, ShapedSlabResult
+export total_thrust
 
 # Common interface
 export self_weight, total_depth, volume_per_area
 export has_structural_effects, apply_effects!
 export required_materials
+export load_distribution, get_gravity_loads, LoadDistributionType
+export DISTRIBUTION_ONE_WAY, DISTRIBUTION_TWO_WAY, DISTRIBUTION_POINT, DISTRIBUTION_CUSTOM
+
+# Material volumes interface
+export materials, material_volumes
 
 # =============================================================================
 # Floor Sizing Interface
@@ -105,6 +114,6 @@ export size_floor
 
 export vault_stress_symmetric, vault_stress_asymmetric
 export solve_equilibrium_rise
-export parabolic_arc_length
+export parabolic_arc_length, vault_volume_per_area
 
 end # module
