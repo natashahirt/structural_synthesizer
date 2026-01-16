@@ -43,7 +43,7 @@ export NWC_4000, NWC_6000, NWC_GGBS, NWC_PFA
 export area, depth, width, weight_per_length
 
 # Sections
-export W, W_names, all_W
+export W, W_names, all_W, preferred_W
 export Rebar, rebar, rebar_sizes, all_rebar
 export update!, update, geometry, get_coords
 

@@ -40,12 +40,15 @@ mutable struct ISymmSection <: AbstractSection
     rx::LengthQ
     ry::LengthQ
     rts::LengthQ
+    # AISC preferred (bolded) section flag
+    is_preferred::Bool
 end
 
 # Constructor with optional database overrides for J, Cw, rts, ho
 function ISymmSection(d, bf, tw, tf;
                       name=nothing, material=nothing,
-                      J_db=nothing, Cw_db=nothing, rts_db=nothing, ho_db=nothing)
+                      J_db=nothing, Cw_db=nothing, rts_db=nothing, ho_db=nothing,
+                      is_preferred=false)
     props = compute_all_properties(d, bf, tw, tf)
     ho  = ho_db  !== nothing ? ho_db  : props.ho
     J   = J_db   !== nothing ? J_db   : props.J
@@ -56,7 +59,8 @@ function ISymmSection(d, bf, tw, tf;
         props.h, ho, props.λ_f, props.λ_w, props.d_tw, props.Aw, props.Af,
         material,
         props.A, props.Ix, props.Iy, props.Iyc, J, Cw,
-        props.Sx, props.Sy, props.Zx, props.Zy, props.rx, props.ry, rts)
+        props.Sx, props.Sy, props.Zx, props.Zy, props.rx, props.ry, rts,
+        is_preferred)
 end
 
 function Base.copy(s::ISymmSection)
@@ -66,7 +70,8 @@ function Base.copy(s::ISymmSection)
         s.h, s.ho, s.λ_f, s.λ_w, s.d_tw, s.Aw, s.Af,
         s.material,
         s.A, s.Ix, s.Iy, s.Iyc, s.J, s.Cw,
-        s.Sx, s.Sy, s.Zx, s.Zy, s.rx, s.ry, s.rts
+        s.Sx, s.Sy, s.Zx, s.Zy, s.rx, s.ry, s.rts,
+        s.is_preferred
     )
 end
 

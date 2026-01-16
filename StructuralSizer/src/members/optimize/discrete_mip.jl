@@ -46,6 +46,7 @@ end
         n_max_sections::Integer=0,
         optimizer::Symbol=:auto,
         objective::AbstractObjective=MinVolume(),
+        prefer_penalty::Real=1.0,
         ϕ_b=0.9,
         ϕ_v=1.0,
         mip_gap=1e-4,
@@ -60,6 +61,11 @@ Strength checks (AISC 360-16):
   - Checks **Compression** interaction (`Pu_c`, `Mux`, `Muy`) using `ϕPnc` (Flexural/Torsional Buckling).
   - Checks **Tension** interaction (`Pu_t`, `Mux`, `Muy`) using `ϕPnt` (Yielding/Rupture).
   - Flexure checks include LTB (`Cb`) and FLB.
+
+# Preferred Sections
+If `prefer_penalty > 1.0`, non-preferred (non-bolded) sections are penalized in the objective.
+E.g., `prefer_penalty=1.05` makes non-preferred sections appear 5% heavier, biasing the
+optimizer toward AISC "economical" sections when weights are close.
 
 Returns a named tuple:
 `(; section_indices, sections, status, objective_value)`.
@@ -77,6 +83,7 @@ function optimize_member_groups_discrete(
     n_max_sections::Integer=0,
     optimizer::Symbol=:auto,
     objective::AbstractObjective=MinVolume(),
+    prefer_penalty::Real=1.0,
     ϕ_b=0.9,
     ϕ_v=1.0,
     mip_gap=1e-4,
@@ -154,6 +161,11 @@ function optimize_member_groups_discrete(
             obj_coeffs[j] = ustrip(uconvert(ref_unit, val))
         else
             obj_coeffs[j] = val
+        end
+        
+        # Apply penalty to non-preferred sections (biases toward AISC "economical" shapes)
+        if prefer_penalty > 1.0 && !s.is_preferred
+            obj_coeffs[j] *= prefer_penalty
         end
     end
 
