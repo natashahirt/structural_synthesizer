@@ -68,73 +68,209 @@ function initialize_slabs!(struc::BuildingStructure{T};
                            material::AbstractMaterial=NWC_4000,
                            floor_type::Symbol=:auto,
                            floor_kwargs::NamedTuple=NamedTuple(),
-                           cell_groupings::Union{Nothing, Vector{Vector{Int}}}=nothing) where T
+                           cell_groupings::Union{Nothing, Vector{Vector{Int}}}=nothing,
+                           slab_group_ids::Union{Nothing, AbstractVector}=nothing) where T
     empty!(struc.slabs)
     
+    # 1. Build per-slab "specs"
+    slab_specs = _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
+
+    # 2. Assign fallback deterministic group IDs if needed
+    _assign_deterministic_group_ids!(slab_specs)
+
+    # 3. Group specs by ID
+    groups = _group_slab_specs(slab_specs)
+
+    # 4. Size once per slab group
+    group_results, group_sw = _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
+
+    # 5. Fan out results to cells and create Slab objects
+    _apply_slab_results!(struc, slab_specs, group_results, group_sw)
+
+    # 6. Finalize grouping structure in BuildingStructure
+    groups = build_slab_groups!(struc)
+
+    for sg in values(groups)
+        sg.material = material
+    end
+
+
+    @debug "Initialized $(length(struc.slabs)) slabs from $(length(struc.cells)) cells"
+end
+
+# =============================================================================
+# Initialization Helpers
+# =============================================================================
+
+function _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
+    slab_specs = NamedTuple[]
+
     if isnothing(cell_groupings)
         # Default: 1 slab per cell
         for (cell_idx, cell) in enumerate(struc.cells)
             span_x, span_y = cell.span_x, cell.span_y
-            
-            # Determine floor type
+
             ft_sym = floor_type == :auto ? infer_floor_type(span_x, span_y) : floor_type
-            ft = StructuralSizer.floor_type(ft_sym)
+            gid = _resolve_slab_group_id(slab_group_ids, cell_idx; tag=:cell)
 
-            if ft isa Vault
-                _assert_rectangular_vault_face!(struc, cell.face_idx)
-            end
-
-            # Choose the governing span expected by each sizing implementation.
-            span_for_sizing = _sizing_span(ft, span_x, span_y)
-            
-            # Build kwargs with type-specific defaults
-            kwargs = _build_floor_kwargs(ft, span_for_sizing, floor_kwargs)
-            
-            # Size floor via unified API (using service loads)
-            result = size_floor(ft, span_for_sizing, cell.sdl, cell.live_load; material=material, kwargs...)
-            cell.self_weight = StructuralSizer.self_weight(result)
-            
             span_axis = span_x <= span_y ? (1.0, 0.0, 0.0) : (0.0, 1.0, 0.0)
-            slab = Slab(cell_idx, result; floor_type=ft_sym, span_axis=span_axis)
-            push!(struc.slabs, slab)
+            push!(slab_specs, (; cell_indices=[cell_idx],
+                              span_x_gov=span_x, span_y_gov=span_y,
+                              sdl_gov=cell.sdl, live_gov=cell.live_load,
+                              floor_type=ft_sym, span_axis=span_axis, group_id=gid))
         end
     else
-        # Explicit groupings: combine cells into slabs (PT, etc.)
+        # Explicit groupings: combine cells into physical slabs (PT, etc.)
         for cell_indices in cell_groupings
             cells = [struc.cells[i] for i in cell_indices]
-            
-            # Governing spans for sizing (using service loads)
+
             span_x_gov = maximum(c.span_x for c in cells)
             span_y_gov = maximum(c.span_y for c in cells)
             sdl_gov = maximum(c.sdl for c in cells)
             live_gov = maximum(c.live_load for c in cells)
-            
+
             # For grouped slabs, default to :pt_banded unless specified
             ft_sym = floor_type == :auto ? :pt_banded : floor_type
-            ft = StructuralSizer.floor_type(ft_sym)
 
-            if ft isa Vault
-                throw(ArgumentError("Vault slabs must be a single rectangular face; got a grouped slab with $(length(cell_indices)) cells."))
-            end
+            # Group id: must be consistent across all cells participating in this physical slab
+            gid = _resolve_group_id_for_cell_set(slab_group_ids, cell_indices)
 
-            span_for_sizing = _sizing_span(ft, span_x_gov, span_y_gov)
-            
-            # Build kwargs with type-specific defaults
-            kwargs = _build_floor_kwargs(ft, span_for_sizing, floor_kwargs)
-            
-            result = size_floor(ft, span_for_sizing, sdl_gov, live_gov; material=material, kwargs...)
-            sw_service = StructuralSizer.self_weight(result)
-            
-            for c in cells
-                c.self_weight = sw_service
-            end
-            
-            slab = Slab(cell_indices, result; floor_type=ft_sym)
-            push!(struc.slabs, slab)
+            push!(slab_specs, (; cell_indices=cell_indices,
+                              span_x_gov=span_x_gov, span_y_gov=span_y_gov,
+                              sdl_gov=sdl_gov, live_gov=live_gov,
+                              floor_type=ft_sym, span_axis=nothing, group_id=gid))
         end
     end
-    
-    @debug "Initialized $(length(struc.slabs)) slabs from $(length(struc.cells)) cells"
+    return slab_specs
+end
+
+function _assign_deterministic_group_ids!(slab_specs)
+    for (i, spec) in enumerate(slab_specs)
+        if spec.group_id === nothing
+            # Create a new named tuple with the assigned group_id
+            # Note: slab_specs is a Vector{NamedTuple}, so we replace the entry
+            slab_specs[i] = merge(spec, (; group_id=UInt64(hash((:singleton_slab_group, i)))))
+        end
+    end
+end
+
+function _group_slab_specs(slab_specs)
+    groups = Dict{UInt64, Vector{Int}}()
+    for (i, spec) in enumerate(slab_specs)
+        push!(get!(groups, spec.group_id, Int[]), i)
+    end
+    return groups
+end
+
+function _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
+    group_results = Dict{UInt64, AbstractFloorResult}()
+    group_sw = Dict{UInt64, Any}()  # pressure units vary by input type/units
+
+    for (gid, spec_idxs) in groups
+        specs = slab_specs[spec_idxs]
+        result, sw_service = _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
+        
+        group_results[gid] = result
+        group_sw[gid] = sw_service
+    end
+
+    return group_results, group_sw
+end
+
+function _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
+    # Enforce consistent type per group (caller-defined groups should be "similar slabs").
+    ft_syms = unique(getfield.(specs, :floor_type))
+    length(ft_syms) == 1 || throw(ArgumentError("Slab group $gid has mixed floor types: $(ft_syms). Provide a consistent `floor_type` or use separate `slab_group_ids`."))
+
+    ft_sym = only(ft_syms)
+    ft = StructuralSizer.floor_type(ft_sym)
+
+    # Disallow physical multi-cell vault slabs (still OK to have multiple *slabs* in a vault group).
+    if ft isa Vault
+        for s in specs
+            length(s.cell_indices) == 1 || throw(ArgumentError("Vault slabs must be a single rectangular face; got a slab with $(length(s.cell_indices)) cells in group $gid."))
+            cell = struc.cells[only(s.cell_indices)]
+            _assert_rectangular_vault_face!(struc, cell.face_idx)
+        end
+    end
+
+    span_x_gov = maximum(getfield.(specs, :span_x_gov))
+    span_y_gov = maximum(getfield.(specs, :span_y_gov))
+    sdl_gov = maximum(getfield.(specs, :sdl_gov))
+    live_gov = maximum(getfield.(specs, :live_gov))
+
+    span_for_sizing = _sizing_span(ft, span_x_gov, span_y_gov)
+    kwargs = _build_floor_kwargs(ft, span_for_sizing, floor_kwargs)
+
+    result = size_floor(ft, span_for_sizing, sdl_gov, live_gov; material=material, kwargs...)
+    sw_service = StructuralSizer.self_weight(result)
+
+    return result, sw_service
+end
+
+function _apply_slab_results!(struc, slab_specs, group_results, group_sw)
+    for spec in slab_specs
+        gid = spec.group_id
+        result = group_results[gid]
+        sw_service = group_sw[gid]
+
+        for c_idx in spec.cell_indices
+            struc.cells[c_idx].self_weight = sw_service
+        end
+
+        slab = Slab(spec.cell_indices, result; floor_type=spec.floor_type, span_axis=spec.span_axis, group_id=gid)
+        push!(struc.slabs, slab)
+    end
+end
+
+# =============================================================================
+# Slab grouping helpers
+# =============================================================================
+
+"""
+    build_slab_groups!(struc::BuildingStructure)
+
+Populate `struc.slab_groups` from `struc.slabs` using `Slab.group_id`.
+
+- If `slab.group_id === nothing`, the slab is treated as its own singleton group
+  and a deterministic `UInt64` group id is assigned.
+- If `slab.group_id` is set, all slabs with the same id are grouped together.
+"""
+function build_slab_groups!(struc::BuildingStructure)
+    empty!(struc.slab_groups)
+
+    for (s_idx, s) in enumerate(struc.slabs)
+        gid = s.group_id === nothing ? UInt64(hash((:singleton_slab_group, s_idx))) : UInt64(s.group_id)
+        s.group_id = gid
+
+        sg = get!(struc.slab_groups, gid) do
+            SlabGroup(gid)
+        end
+        push!(sg.slab_indices, s_idx)
+    end
+
+    return struc.slab_groups
+end
+
+function _resolve_slab_group_id(slab_group_ids, idx::Int; tag::Symbol)
+    isnothing(slab_group_ids) && return nothing
+    length(slab_group_ids) >= idx || throw(ArgumentError("slab_group_ids too short: need at least $idx entries for $tag indexing"))
+    v = slab_group_ids[idx]
+    v === nothing && return nothing
+    return UInt64(v)
+end
+
+function _resolve_group_id_for_cell_set(slab_group_ids, cell_indices::Vector{Int})
+    isnothing(slab_group_ids) && return nothing
+    gids = UInt64[]
+    for c_idx in cell_indices
+        g = _resolve_slab_group_id(slab_group_ids, c_idx; tag=:cell)
+        g === nothing && continue
+        push!(gids, g)
+    end
+    isempty(gids) && return nothing
+    all(g -> g == first(gids), gids) || throw(ArgumentError("Cells in a physical slab have inconsistent slab_group_ids: $(unique(gids))"))
+    return first(gids)
 end
 
 # =============================================================================
@@ -224,8 +360,17 @@ function _default_floor_kwargs(::Vault, span, user_kwargs::NamedTuple)
     # Only add lambda if user hasn't provided rise or lambda
     has_rise = haskey(user_kwargs, :rise) && !isnothing(user_kwargs.rise)
     has_lambda = haskey(user_kwargs, :lambda) && !isnothing(user_kwargs.lambda)
+
+    # If caller passes `options=FloorOptions(...)`, respect vault rise/lambda there too.
+    has_options_lambda = false
+    has_options_rise = false
+    if haskey(user_kwargs, :options) && user_kwargs.options isa StructuralSizer.FloorOptions
+        vopt = user_kwargs.options.vault
+        has_options_lambda = !isnothing(vopt.lambda)
+        has_options_rise = vopt.rise !== nothing
+    end
     
-    if !has_rise && !has_lambda
+    if !has_rise && !has_lambda && !has_options_lambda && !has_options_rise
         return (lambda=10.0,)
     end
     return NamedTuple()

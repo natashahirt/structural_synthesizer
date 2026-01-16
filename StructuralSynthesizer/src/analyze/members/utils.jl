@@ -4,24 +4,33 @@
 function get_segment_length(skel::BuildingSkeleton{T}, edge_idx::Int) where T
     seg = skel.edges[edge_idx]
     L = Meshes.measure(seg)
-    return T <: Unitful.Quantity ? L : ustrip(L)
+    # If the structure uses plain floats, ensure we return meters.
+    # If it uses Quantities, return as-is (assuming consistent unit system).
+    if T <: Unitful.Quantity
+        return L
+    else
+        return ustrip(uconvert(u"m", L))
+    end
 end
 
-"""Initialize segments from all skeleton edges."""
-function initialize_segments!(struc::BuildingStructure{T}; 
-                              default_Lb_ratio=1.0, default_Cb=1.0) where T
+"""
+Initialize segments from all skeleton edges.
+
+Default: Lb = L (unbraced, conservative). Call `update_bracing!` after to set Lb = 0
+for slab-supported beams.
+"""
+function initialize_segments!(struc::BuildingStructure{T}; default_Cb=1.0) where T
     skel = struc.skeleton
     empty!(struc.segments)
     
     for edge_idx in eachindex(skel.edges)
         L = get_segment_length(skel, edge_idx)
-        Lb = L * default_Lb_ratio
-        
-        segment = Segment(edge_idx, L; Lb=Lb, Cb=default_Cb)
+        # Default: full span unbraced (conservative)
+        segment = Segment(edge_idx, L; Lb=L, Cb=default_Cb)
         push!(struc.segments, segment)
     end
     
-    @debug "Initialized $(length(struc.segments)) segments"
+    @debug "Initialized $(length(struc.segments)) segments (Lb=L by default)"
 end
 
 """
@@ -57,10 +66,273 @@ function initialize_members!(struc::BuildingStructure{T};
     @debug "Initialized $(length(struc.members)) members from $(length(struc.segments)) segments"
 end
 
-"""Update Lb for segments based on bracing conditions."""
-function update_bracing!(struc::BuildingStructure{T}; braced_by_slabs=true) where T
-    if braced_by_slabs
-        # TODO: compute Lb from slab attachment points
+"""
+    update_bracing!(struc; braced_by_slabs=true)
+
+Update Lb for segments based on bracing conditions.
+
+If `braced_by_slabs=true`, sets Lb=0 for any segment whose edge supports a slab
+(top flange continuously braced by deck).
+"""
+function update_bracing!(struc::BuildingStructure{T}; braced_by_slabs::Bool=true) where T
+    braced_by_slabs || return struc
+    
+    # Collect all edges that support slabs
+    slab_edge_set = Set{Int}()
+    for slab in struc.slabs
+        for edge_idx in slab_face_edge_ids(struc, slab)
+            push!(slab_edge_set, edge_idx)
+        end
     end
-    @debug "Updated bracing for $(length(struc.segments)) segments"
+    
+    n_braced = 0
+    for seg in struc.segments
+        if seg.edge_idx in slab_edge_set
+            seg.Lb = zero(seg.L)  # Fully braced by slab
+            n_braced += 1
+        end
+    end
+    
+    @debug "Updated bracing: $(n_braced)/$(length(struc.segments)) segments braced by slabs (Lb=0)"
+    return struc
+end
+
+# =============================================================================
+# Discrete steel member sizing (simultaneous, catalog-based)
+# =============================================================================
+
+"""
+    build_member_groups!(struc::BuildingStructure)
+
+Populate `struc.member_groups` from `struc.members` using `Member.group_id`.
+
+- If `member.group_id === nothing`, the member is treated as its own singleton group
+  and a deterministic `UInt64` group id is assigned.
+- If `member.group_id` is set, all members with the same id are grouped together.
+"""
+function build_member_groups!(struc::BuildingStructure)
+    empty!(struc.member_groups)
+
+    for (m_idx, m) in enumerate(struc.members)
+        gid = m.group_id === nothing ? UInt64(hash((:singleton_member_group, m_idx))) : m.group_id
+        # Persist the resolved group id back onto the member (useful for downstream operations)
+        m.group_id = gid
+
+        mg = get!(struc.member_groups, gid) do
+            MemberGroup(gid)
+        end
+        push!(mg.member_indices, m_idx)
+    end
+
+    return struc.member_groups
+end
+
+"""
+    member_group_demands(struc; member_edge_group=:beams, resolution=200)
+
+Compute governing demands and geometry for each `MemberGroup` by enveloping ASAP internal
+forces across all segments of all members in the group.
+
+Conventions:
+- gravity bending (strong axis) demand uses `My`
+- weak-axis bending demand uses `Mz`
+- shear demand uses `Vy`/`Vz` (mapped to weak/strong)
+
+Returns `(group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs)`.
+"""
+function member_group_demands(struc::BuildingStructure; member_edge_group::Symbol=:beams, resolution::Int=200)
+    isempty(struc.asap_model.elements) && throw(ArgumentError("ASAP model is empty. Call `to_asap!(struc)` before sizing."))
+
+    skel = struc.skeleton
+    beam_edge_ids = Set(get(skel.groups_edges, member_edge_group, Int[]))
+
+    # Build member groups if needed
+    isempty(struc.member_groups) && build_member_groups!(struc)
+
+    # Only include groups that actually contain at least one segment in `beam_edge_ids`.
+    all_group_ids = sort!(collect(keys(struc.member_groups)))  # deterministic ordering
+
+    group_ids = UInt64[]
+    demands = StructuralSizer.MemberDemand{Float64}[]
+    
+    # We enforce base SI units (meters) for geometry passed to the optimizer,
+    # consistent with `get_segment_length` returning meters for Float64 structures.
+    L_totals = Float64[]
+    Lb_govs  = Float64[]
+    Cb_govs  = Float64[]
+    Kx_govs  = Float64[]
+    Ky_govs  = Float64[]
+
+    for gid in all_group_ids
+        mg = struc.member_groups[gid]
+
+        # Envelope over segments in the requested edge group
+        Pu_comp = 0.0
+        Pu_tens = 0.0
+        Mux = 0.0
+        Muy = 0.0
+        Vu_strong = 0.0
+        Vu_weak = 0.0
+
+        # Geometry accumulation
+        L_total = 0.0
+        Lb_gov = 0.0
+        Cb_gov = Inf
+        Kx_gov = 0.0
+        Ky_gov = 0.0
+        
+        has_any_segment = false
+
+        for m_idx in mg.member_indices
+            m = struc.members[m_idx]
+            
+            # Group geometry governance (take worst case K across members in group)
+            Kx_gov = max(Kx_gov, m.Kx)
+            Ky_gov = max(Ky_gov, m.Ky)
+
+            for seg_idx in m.segment_indices
+                seg = struc.segments[seg_idx]
+                edge_idx = seg.edge_idx
+                edge_idx in beam_edge_ids || continue
+
+                has_any_segment = true
+                
+                # Assume seg.L and seg.Lb are already compatible (meters or consistent units).
+                len_val = seg.L isa Unitful.Quantity ? ustrip(uconvert(u"m", seg.L)) : seg.L
+                lb_val  = seg.Lb isa Unitful.Quantity ? ustrip(uconvert(u"m", seg.Lb)) : seg.Lb
+
+                L_total += len_val
+                Lb_gov = max(Lb_gov, lb_val)
+                Cb_gov = min(Cb_gov, seg.Cb)
+
+                el = struc.asap_model.elements[edge_idx]
+                f = AsapToolkit.InternalForces(el, struc.asap_model; resolution=resolution)
+
+                # Convention check:
+                # ASAP P: Tension is positive. Compression is negative.
+                P_vals = f.P
+                min_P = minimum(P_vals)
+                max_P = maximum(P_vals)
+                
+                if min_P < 0
+                    Pu_comp = max(Pu_comp, abs(min_P))
+                end
+                if max_P > 0
+                    Pu_tens = max(Pu_tens, max_P)
+                end
+
+                # ASAP My: Moment about local y-axis. (Strong axis bending for W-shapes)
+                # ASAP Mz: Moment about local z-axis. (Weak axis bending)
+                # Strong Axis: My (moment), Vz (shear)
+                Mux = max(Mux, maximum(abs.(f.My)))
+                Vu_strong = max(Vu_strong, maximum(abs.(f.Vz)))
+
+                # Weak Axis: Mz (moment), Vy (shear)
+                Muy = max(Muy, maximum(abs.(f.Mz)))
+                Vu_weak = max(Vu_weak, maximum(abs.(f.Vy)))
+            end
+        end
+
+        has_any_segment || continue
+
+        push!(group_ids, gid)
+        g_idx = length(group_ids)  # group index in the filtered ordering
+        
+        d = StructuralSizer.MemberDemand(g_idx; 
+            Pu_c=Pu_comp, Pu_t=Pu_tens, 
+            Mux=Mux, Muy=Muy, 
+            Vu_strong=Vu_strong, Vu_weak=Vu_weak)
+            
+        push!(demands, d)
+        push!(L_totals, L_total)
+        push!(Lb_govs, Lb_gov)
+        push!(Cb_govs, Cb_gov)
+        push!(Kx_govs, Kx_gov)
+        push!(Ky_govs, Ky_gov)
+    end
+
+    return group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs
+end
+
+"""
+    size_members_discrete!(
+        struc::BuildingStructure;
+        catalogue=StructuralSizer.all_W(),
+        material=StructuralSizer.A992_Steel,
+        member_edge_group::Symbol=:beams,
+        max_depth=Inf*u"m",
+        n_max_sections::Integer=0,
+        optimizer::Symbol=:auto,
+        resolution::Int=200,
+        reanalyze::Bool=true,
+    )
+
+Discrete, simultaneous catalog-based sizing for physical members using a MIP.
+Respects `Member.group_id` by solving at the group level.
+
+Side effects:
+- populates/overwrites `struc.member_groups[gid].section` and `.material`
+- updates ASAP element sections for all member segments in `member_edge_group`
+"""
+function size_members_discrete!(
+    struc::BuildingStructure;
+    catalogue=StructuralSizer.all_W(),
+    material=StructuralSizer.A992_Steel,
+    member_edge_group::Symbol=:beams,
+    max_depth=Inf * u"m",
+    n_max_sections::Integer=0,
+    optimizer::Symbol=:auto,
+    resolution::Int=200,
+    reanalyze::Bool=true,
+)
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
+
+    result = StructuralSizer.optimize_member_groups_discrete(
+        demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs;
+        catalogue=catalogue,
+        material=material,
+        max_depth=max_depth,
+        n_max_sections=n_max_sections,
+        optimizer=optimizer,
+    )
+
+    skel = struc.skeleton
+    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[]))
+
+    # Apply results to member groups + ASAP elements
+    for (g_idx, gid) in enumerate(group_ids)
+        chosen_template = result.sections[g_idx]
+        
+        # Create a copy with the specific material for this group
+        # (Catalog sections usually have material=nothing)
+        chosen = copy(chosen_template)
+        chosen.material = material
+
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+        mg.material = material
+
+        # Build ASAP section once per group
+        chosen.name === nothing && throw(ArgumentError("Chosen section has no name; cannot convert to ASAP section via `toASAPframe(name, ...)`."))
+        sec_name = chosen.name
+        asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, unit=u"m")
+
+        for m_idx in mg.member_indices
+            m = struc.members[m_idx]
+            for seg_idx in m.segment_indices
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
+    @info "Sized $(length(group_ids)) member groups using discrete MIP" optimizer=optimizer n_max_sections=n_max_sections
+    return struc
 end

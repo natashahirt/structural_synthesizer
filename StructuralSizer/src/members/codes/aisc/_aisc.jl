@@ -5,4 +5,5 @@ include("slenderness.jl")  # Table B4.1b - must come first (used by flexure)
 include("flexure.jl")      # Chapter F
 include("shear.jl")        # Chapter G
 include("compression.jl")  # Chapter E
+include("tension.jl")      # Chapter D
 include("interaction.jl")  # Chapter H

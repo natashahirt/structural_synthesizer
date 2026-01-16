@@ -46,6 +46,12 @@ function add_vertex!(skel::BuildingSkeleton{T}, pt::Meshes.Point; group::Symbol=
     return idx
 end
 
+# Convenience method for vector coordinates
+function add_vertex!(skel::BuildingSkeleton{T}, coords::AbstractVector{<:Real}; kwargs...) where T
+    pt = Meshes.Point(Tuple(coords))
+    return add_vertex!(skel, pt; kwargs...)
+end
+
 function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; group::Symbol=:unknown, level_idx::Int=-1) where T
     # get/create vertex indices
     v_indices = Vector{Int}(undef, 2)
@@ -77,6 +83,14 @@ function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; group::Sym
     end
 
     return idx
+end
+
+# Convenience method for element by vertex indices
+function add_element!(skel::BuildingSkeleton{T}, v1_idx::Int, v2_idx::Int; kwargs...) where T
+    p1 = skel.vertices[v1_idx]
+    p2 = skel.vertices[v2_idx]
+    seg = Meshes.Segment(p1, p2)
+    return add_element!(skel, seg; kwargs...)
 end
 
 function add_face!(skel::BuildingSkeleton{T}, face::Meshes.Polygon; group::Symbol=:unknown, level_idx::Int=-1, v_indices::Vector{Int}=Int[]) where T

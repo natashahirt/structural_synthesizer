@@ -1,52 +1,73 @@
 """Doubly-symmetric I-section with computed properties."""
-mutable struct ISymmSection{T} <: AbstractSection
+
+# -----------------------------------------------------------------------------
+# Unitful dimension-typed aliases (units may vary: inch, m, etc.)
+# -----------------------------------------------------------------------------
+const LengthQ = Unitful.Quantity{T, Unitful.𝐋, U} where {T<:Real, U}
+const AreaQ   = Unitful.Quantity{T, Unitful.𝐋^2, U} where {T<:Real, U}
+const ModQ    = Unitful.Quantity{T, Unitful.𝐋^3, U} where {T<:Real, U}  # Sx, Zx, etc.
+const InertQ  = Unitful.Quantity{T, Unitful.𝐋^4, U} where {T<:Real, U}  # Ix, Iy, J, etc.
+const WarpQ   = Unitful.Quantity{T, Unitful.𝐋^6, U} where {T<:Real, U}  # Cw
+
+mutable struct ISymmSection <: AbstractSection
     name::Union{String, Nothing}
     # input geometry
-    d::T       # total depth
-    bf::T      # flange width
-    tw::T      # web thickness
-    tf::T      # flange thickness
+    d::LengthQ       # total depth
+    bf::LengthQ      # flange width
+    tw::LengthQ      # web thickness
+    tf::LengthQ      # flange thickness
     # derived geometry
-    h::T       # clear web height (d - 2tf)
-    ho::T      # distance between flange centroids (d - tf)
-    λ_f::T     # flange slenderness (bf / 2tf)
-    λ_w::T     # web slenderness (h / tw)
-    d_tw::T    # depth-to-web ratio (d / tw)
-    Aw::T      # web area
-    Af::T      # flange area
+    h::LengthQ       # clear web height (d - 2tf)
+    ho::LengthQ      # distance between flange centroids (d - tf)
+    λ_f::Float64  # flange slenderness (bf / 2tf)
+    λ_w::Float64  # web slenderness (h / tw)
+    d_tw::Float64 # depth-to-web ratio (d / tw)
+    Aw::AreaQ        # web area
+    Af::AreaQ        # flange area
     # material
     material::Union{Metal, Nothing}
     # section properties
-    A::T
-    Ix::T
-    Iy::T
-    Iyc::T
-    J::T
-    Cw::T
-    Sx::T
-    Sy::T
-    Zx::T
-    Zy::T
-    rx::T
-    ry::T
-    rts::T
+    A::AreaQ
+    Ix::InertQ
+    Iy::InertQ
+    Iyc::InertQ
+    J::InertQ
+    Cw::WarpQ
+    Sx::ModQ
+    Sy::ModQ
+    Zx::ModQ
+    Zy::ModQ
+    rx::LengthQ
+    ry::LengthQ
+    rts::LengthQ
 end
 
 # Constructor with optional database overrides for J, Cw, rts, ho
-function ISymmSection(d::T, bf::T, tw::T, tf::T; 
+function ISymmSection(d, bf, tw, tf;
                       name=nothing, material=nothing,
-                      J_db=nothing, Cw_db=nothing, rts_db=nothing, ho_db=nothing) where T
+                      J_db=nothing, Cw_db=nothing, rts_db=nothing, ho_db=nothing)
     props = compute_all_properties(d, bf, tw, tf)
     ho  = ho_db  !== nothing ? ho_db  : props.ho
     J   = J_db   !== nothing ? J_db   : props.J
     Cw  = Cw_db  !== nothing ? Cw_db  : props.Cw
     rts = rts_db !== nothing ? rts_db : props.rts
     
-    ISymmSection{T}(name, d, bf, tw, tf,
+    ISymmSection(name, d, bf, tw, tf,
         props.h, ho, props.λ_f, props.λ_w, props.d_tw, props.Aw, props.Af,
         material,
         props.A, props.Ix, props.Iy, props.Iyc, J, Cw,
         props.Sx, props.Sy, props.Zx, props.Zy, props.rx, props.ry, rts)
+end
+
+function Base.copy(s::ISymmSection)
+    ISymmSection(
+        s.name,
+        s.d, s.bf, s.tw, s.tf,
+        s.h, s.ho, s.λ_f, s.λ_w, s.d_tw, s.Aw, s.Af,
+        s.material,
+        s.A, s.Ix, s.Iy, s.Iyc, s.J, s.Cw,
+        s.Sx, s.Sy, s.Zx, s.Zy, s.rx, s.ry, s.rts
+    )
 end
 
 # Update in place
@@ -127,9 +148,9 @@ compute_rts(Iy, Cw, Sx) = sqrt(sqrt(Iy * Cw) / Sx)
 function compute_all_properties(d, bf, tw, tf)
     h    = d - 2 * tf
     ho   = d - tf
-    λ_f  = bf / (2 * tf)
-    λ_w  = h / tw
-    d_tw = d / tw
+    λ_f  = ustrip(bf / (2 * tf))
+    λ_w  = ustrip(h / tw)
+    d_tw = ustrip(d / tw)
     Aw   = h * tw
     Af   = bf * tf
     A   = compute_A(d, bf, tw, tf)

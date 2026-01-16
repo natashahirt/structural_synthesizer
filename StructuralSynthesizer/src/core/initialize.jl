@@ -1,6 +1,8 @@
 # Top-level initialization for BuildingStructure
 
 """
+    initialize!(struc; material, floor_type, floor_kwargs, cell_groupings, slab_group_ids, braced_by_slabs)
+
 Initialize all structural components of a BuildingStructure.
 
 # Arguments
@@ -8,22 +10,29 @@ Initialize all structural components of a BuildingStructure.
 - `floor_type`: Floor type (:auto, :one_way, :two_way, :flat_plate, :pt_banded, :vault, etc.)
 - `floor_kwargs`: Extra kwargs forwarded to `StructuralSizer.size_floor` (e.g. `(lambda=10.0,)` for vaults)
 - `cell_groupings`: Optional explicit slab groupings (vector of cell index vectors)
-- `default_Lb_ratio`: Unbraced length ratio for members
+- `slab_group_ids`: Optional per-cell slab design group ids; cells/slabs with the same id are sized together (enveloped)
+- `braced_by_slabs`: If true (default), beams supporting slabs get Lb=0 (top flange braced)
 """
 function initialize!(struc::BuildingStructure; 
                      material::AbstractMaterial=NWC_4000,
                      floor_type::Symbol=:auto,
                      floor_kwargs::NamedTuple=NamedTuple(),
                      cell_groupings::Union{Nothing, Vector{Vector{Int}}}=nothing,
-                     default_Lb_ratio=1.0)
+                     slab_group_ids::Union{Nothing, AbstractVector}=nothing,
+                     braced_by_slabs::Bool=true)
     skel = struc.skeleton
     
     find_faces!(skel)
     # Slabs: cells → slabs (material only needed for slabs)
     initialize_cells!(struc)
-    initialize_slabs!(struc; material=material, floor_type=floor_type, floor_kwargs=floor_kwargs, cell_groupings=cell_groupings)
+    initialize_slabs!(struc; material=material, floor_type=floor_type, floor_kwargs=floor_kwargs, cell_groupings=cell_groupings, slab_group_ids=slab_group_ids)
+    
     # Framing: segments → members
-    initialize_segments!(struc; default_Lb_ratio=default_Lb_ratio)
+    # 1. Initialize segments with Lb=L (conservative default)
+    initialize_segments!(struc)
+    # 2. Update Lb for slab-supported beams (Lb=0 if top flange braced)
+    update_bracing!(struc; braced_by_slabs=braced_by_slabs)
+    # 3. Create members from segments (uses updated Lb values)
     initialize_members!(struc)
     
     @debug "Initialized BuildingStructure" cells=length(struc.cells) slabs=length(struc.slabs) segments=length(struc.segments) members=length(struc.members)

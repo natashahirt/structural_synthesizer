@@ -1,5 +1,8 @@
 [deps]
 Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
+Gurobi = "2e9cd046-0924-5485-92f1-d5272153d98b"
+HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 StructuralBase = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
 StructuralSizer = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"

@@ -7,7 +7,8 @@
 include("demands.jl")
 include("objectives.jl")
 
+# Discrete selection (MIP)
+include("discrete_mip.jl")
+
 # Future:
-# include("selectors.jl")    # Discrete selection algorithms
 # include("continuous.jl")   # Continuous optimization (NLP)
-# include("integer.jl")      # Integer programming (MIP)

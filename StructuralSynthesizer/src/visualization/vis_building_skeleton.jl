@@ -1,10 +1,17 @@
 # Helper to handle different Meshes coordinate formats
 function extract_point3f(v)
     c = Meshes.coords(v)
+    # Ensure coordinates are in meters before visualization
     if hasproperty(c, :x)
-        return GLMakie.Point3f(ustrip(c.x), ustrip(c.y), ustrip(c.z))
+        x = ustrip(uconvert(u"m", c.x))
+        y = ustrip(uconvert(u"m", c.y))
+        z = ustrip(uconvert(u"m", c.z))
+        return GLMakie.Point3f(x, y, z)
     else
-        return GLMakie.Point3f(ustrip(c[1]), ustrip(c[2]), ustrip(c[3]))
+        x = ustrip(uconvert(u"m", c[1]))
+        y = ustrip(uconvert(u"m", c[2]))
+        z = ustrip(uconvert(u"m", c[3]))
+        return GLMakie.Point3f(x, y, z)
     end
 end
 
@@ -29,10 +36,8 @@ function visualize(skel::BuildingSkeleton;
         return GLMakie.Figure()
     end
 
-    # get units from first vertex
-    c1 = Meshes.coords(skel.vertices[1])
-    z_coord = hasproperty(c1, :x) ? c1.x : c1[1]
-    vertex_units = Unitful.unit(z_coord)
+    # We enforce meters for visualization consistency
+    vertex_units = u"m"
 
     fig = GLMakie.Figure(size = (1200, 800))
     ax = GLMakie.Axis3(
@@ -59,7 +64,7 @@ function visualize(skel::BuildingSkeleton;
         y_rng = [minimum(ys), maximum(ys)]
         
         for (i, z) in enumerate(skel.stories_z)
-            z_val = ustrip(z)
+            z_val = ustrip(uconvert(u"m", z))
             # Use a mesh for 3D planes to avoid poly!/SizedVector issues
             pts = GLMakie.Point3f[
                 (x_rng[1], y_rng[1], z_val), 

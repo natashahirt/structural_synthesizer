@@ -16,9 +16,9 @@ const ACI_ONE_WAY_DIVISORS = Dict(
 fy_factor_one_way(fy) = 0.4 + ustrip(u"ksi", fy) / 100.0
 
 """ACI 318-19 Table 7.3.1.1: One-way slab minimum thickness."""
-function min_thickness(::OneWay, span, mat::Concrete;
+function min_thickness(::OneWay, span, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy=60.0u"ksi")
+                       fy=Rebar_60.Fy)
     divisor = get(ACI_ONE_WAY_DIVISORS, support, 28.0)
     h = span * fy_factor_one_way(fy) / divisor
     # Ensure thickness uses the same length unit as `span` (avoids unit-mismatch
@@ -68,9 +68,9 @@ function get_two_way_divisor(table::Dict, fy, panel_type::Symbol)
 end
 
 """ACI 318-19 Table 8.3.1.1: Two-way slab minimum thickness."""
-function min_thickness(::TwoWay, span_long, mat::Concrete;
+function min_thickness(::TwoWay, span_long, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy=60.0u"ksi",
+                       fy=Rebar_60.Fy,
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
     divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, panel_type)
@@ -78,9 +78,9 @@ function min_thickness(::TwoWay, span_long, mat::Concrete;
 end
 
 """ACI 318-19 Table 8.3.1.1: Flat plate (two-way, no drop panels)."""
-function min_thickness(::FlatPlate, span_long, mat::Concrete;
+function min_thickness(::FlatPlate, span_long, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy=60.0u"ksi",
+                       fy=Rebar_60.Fy,
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
     divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, panel_type)
@@ -88,9 +88,9 @@ function min_thickness(::FlatPlate, span_long, mat::Concrete;
 end
 
 """ACI 318-19 Table 8.3.1.1: Flat slab (two-way with drop panels)."""
-function min_thickness(::FlatSlab, span_long, mat::Concrete;
+function min_thickness(::FlatSlab, span_long, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy=60.0u"ksi",
+                       fy=Rebar_60.Fy,
                        has_edge_beam::Bool=false)
     panel_type = get_panel_type(support, has_edge_beam)
     divisor = get_two_way_divisor(ACI_TWO_WAY_DROP_TABLE, fy, panel_type)
@@ -98,7 +98,7 @@ function min_thickness(::FlatSlab, span_long, mat::Concrete;
 end
 
 """PT slab minimum thickness per ACI 318-19 Section 8.6.2.2."""
-function min_thickness(::PTBanded, span_long, mat::Concrete;
+function min_thickness(::PTBanded, span_long, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
                        has_drop_panels::Bool=false)
     divisor = has_drop_panels ? 50.0 : 45.0
@@ -107,9 +107,9 @@ function min_thickness(::PTBanded, span_long, mat::Concrete;
 end
 
 """Waffle slab minimum thickness (ACI two-way joist system)."""
-function min_thickness(::Waffle, span_long, mat::Concrete;
+function min_thickness(::Waffle, span_long, material::Concrete;
                        support::SupportCondition=BOTH_ENDS_CONT,
-                       fy=60.0u"ksi")
+                       fy=Rebar_60.Fy)
     divisor = get_two_way_divisor(ACI_TWO_WAY_TABLE, fy, :interior)
     return uconvert(unit(span_long), max(MIN_TWO_WAY_NO_DROP, span_long / divisor))
 end
@@ -124,9 +124,26 @@ const CIPSlabType = Union{OneWay, TwoWay, FlatPlate, FlatSlab, PTBanded, Waffle}
 Size CIP concrete slab per ACI 318-19 minimum thickness tables.
 Returns `CIPSlabResult{L,F}` preserving input unit types.
 """
-function size_floor(st::CIPSlabType, span::L, sdl::F, live::F; 
-                    material::Concrete=NWC_4000, kwargs...) where {L, F}
-    h = min_thickness(st, span, material; kwargs...)
+function size_floor(
+    st::CIPSlabType,
+    span::L,
+    sdl::F,
+    live::F;
+    material::Concrete=NWC_4000,
+    options::FloorOptions=FloorOptions(),
+    kwargs...,
+) where {L, F}
+    cip = options.cip
+    fy = cip.rebar_material.Fy
+
+    # Route only the relevant options to each min_thickness implementation.
+    h = if st isa OneWay
+        min_thickness(st, span, material; support=cip.support, fy=fy)
+    elseif st isa PTBanded
+        min_thickness(st, span, material; support=cip.support, has_drop_panels=cip.has_drop_panels)
+    else
+        min_thickness(st, span, material; support=cip.support, fy=fy, has_edge_beam=cip.has_edge_beam)
+    end
     
     # Self-weight: thickness × density × g
     ρ = ustrip(u"kg/m^3", material.ρ)

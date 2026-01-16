@@ -139,8 +139,11 @@ function vault_stress_symmetric(
     
     # --- Self-weight ---
     total_self_weight_N = total_mass * GRAVITY
-    self_weight_kN_m = (total_self_weight_N / span) / 1000        # [kN/m along span]
-    self_weight_kN_m² = (total_self_weight_N / (span * trib_depth)) / 1000  # [kN/m²]
+    # Convert N -> kN
+    total_self_weight_kN = ustrip(u"kN", total_self_weight_N * u"N")
+    
+    self_weight_kN_m = total_self_weight_kN / span        # [kN/m along span]
+    self_weight_kN_m² = total_self_weight_kN / (span * trib_depth)  # [kN/m²]
     
     # --- Total load ---
     # Applied loads are per m², convert to per m of span
@@ -165,8 +168,9 @@ function vault_stress_symmetric(
     resisting_area > 0 || error("Resisting area must be positive")
     
     # Working stress [Pa] then convert to [MPa]
+    # resultant_kN -> N = * 1000
     σ_Pa = (resultant_kN * 1000) / resisting_area
-    σ_MPa = σ_Pa / 1e6
+    σ_MPa = ustrip(u"MPa", σ_Pa * u"Pa")
     
     return (σ_MPa=σ_MPa, thrust_kN=thrust_kN, self_weight_kN_m²=self_weight_kN_m², 
             vertical_kN=vertical_reaction_kN)
@@ -219,7 +223,7 @@ function vault_stress_asymmetric(
     # 5. Working stress at abutments (governed by V1)
     resisting_area = trib_depth * thickness
     resultant_kN = sqrt(V1^2 + thrust_kN^2)
-    σ_MPa = (resultant_kN * 1000) / resisting_area / 1e6
+    σ_MPa = ustrip(u"MPa", ((resultant_kN * 1000) / resisting_area) * u"Pa")
     
     return (σ_MPa=σ_MPa, thrust_kN=thrust_kN, self_weight_kN_m²=base.self_weight_kN_m²,
             vertical_kN=V1)
@@ -244,7 +248,7 @@ function solve_equilibrium_rise(
     E_MPa::Real;
     deflection_limit::Real = 0.05
 )
-    E_Pa = E_MPa * 1e6
+    E_Pa = ustrip(u"Pa", E_MPa * u"MPa")
     A_springing = thickness * trib_depth
     
     # Residual function for root finding: f(h) = ΔL_geometry(h) - ΔL_elastic(h)
@@ -324,6 +328,7 @@ result = size_floor(Vault(), 6.0u"m", 1.0u"kN/m^2", 2.0u"kN/m^2"; rise=1.0u"m")
 """
 function size_floor(::Vault, span::L, sdl::F, live::F;
                     material::Concrete=NWC_4000,
+                    options::FloorOptions=FloorOptions(),
                     rise::Union{L,Nothing}=nothing,
                     lambda::Union{Real,Nothing}=nothing,
                     thickness::Union{L,Nothing}=nothing,
@@ -335,6 +340,28 @@ function size_floor(::Vault, span::L, sdl::F, live::F;
                     deflection_limit::Union{L,Nothing}=nothing,
                     check_asymmetric::Bool=true) where {L, F}
     
+    vopt = options.vault
+    rise = isnothing(rise) ? vopt.rise : rise
+    lambda = isnothing(lambda) ? vopt.lambda : lambda
+    thickness = isnothing(thickness) ? vopt.thickness : thickness
+    if vopt.trib_depth !== nothing
+        trib_depth = vopt.trib_depth
+    end
+    if vopt.rib_depth !== nothing
+        rib_depth = vopt.rib_depth
+    end
+    if vopt.rib_apex_rise !== nothing
+        rib_apex_rise = vopt.rib_apex_rise
+    end
+    if vopt.finishing_load !== nothing
+        finishing_load = vopt.finishing_load
+    end
+    allowable_stress = isnothing(allowable_stress) ? vopt.allowable_stress : allowable_stress
+    deflection_limit = isnothing(deflection_limit) ? vopt.deflection_limit : deflection_limit
+    if vopt.check_asymmetric !== nothing
+        check_asymmetric = vopt.check_asymmetric
+    end
+
     if !isnothing(rise) && !isnothing(lambda)
         throw(ArgumentError("Provide either `rise` or `lambda`, not both"))
     elseif isnothing(rise) && isnothing(lambda)
@@ -393,6 +420,7 @@ function size_floor(::Vault, span::L, sdl::F, live::F;
     end
     
     # --- Elastic shortening check ---
+    # total_load_Pa = kN/m2 -> Pa = * 1000
     total_load_Pa = (sdl_kN + live_kN + sw + finish_kN) * 1000
     eq = solve_equilibrium_rise(span_m, rise_m, total_load_Pa, t_m, trib_m, E_MPa;
                                 deflection_limit=defl_lim)

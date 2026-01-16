@@ -1,6 +1,5 @@
 using Test
 using StructuralSizer
-using StructuralBase
 using Unitful: @u_str, ustrip, uconvert, unit
 
 """
@@ -8,13 +7,16 @@ Small regression tests for CIP slab sizing (ACI min thickness).
 
 Design philosophy:
 - Avoid exact numeric values (except code minima), focus on ordering/consistency.
-- Exercise kwargs passthrough in `size_floor` (support, fy, has_edge_beam, etc.).
+- Exercise the structured `FloorOptions(cip=CIPOptions(...))` API.
 """
 
 @testset "CIP slabs (ACI min thickness)" begin
     span_m = 6.0u"m"
     sdl = 1.0u"kN/m^2"
     live = 2.0u"kN/m^2"
+
+    # Helper: create a "rebar material" with a specific yield strength (for interpolation tests)
+    _rebar_with_fy(fy) = Metal(Rebar_60.E, Rebar_60.G, fy, Rebar_60.Fu, Rebar_60.ρ, Rebar_60.ν, Rebar_60.ecc)
 
     # -------------------------------------------------------------------------
     # Smoke tests (all CIP subtypes)
@@ -47,7 +49,8 @@ Design philosophy:
         r_fs = size_floor(FlatSlab(), short_span, sdl, live; material=NWC_4000)
         @test ustrip(u"inch", r_fs.thickness) ≥ 4.0
 
-        r_pt = size_floor(PTBanded(), short_span, sdl, live; material=NWC_4000, has_drop_panels=true)
+        r_pt = size_floor(PTBanded(), short_span, sdl, live; material=NWC_4000,
+                          options=FloorOptions(cip=CIPOptions(; has_drop_panels=true)))
         @test ustrip(u"inch", r_pt.thickness) ≥ 4.0
     end
 
@@ -56,12 +59,16 @@ Design philosophy:
     # -------------------------------------------------------------------------
     @testset "one-way support ordering" begin
         span = 8.0u"m"
-        fy = 60.0 * StructuralBase.Constants.ksi
 
-        h_cant = size_floor(OneWay(), span, sdl, live; material=NWC_4000, support=CANTILEVER, fy=fy).thickness
-        h_simple = size_floor(OneWay(), span, sdl, live; material=NWC_4000, support=SIMPLE, fy=fy).thickness
-        h_one = size_floor(OneWay(), span, sdl, live; material=NWC_4000, support=ONE_END_CONT, fy=fy).thickness
-        h_both = size_floor(OneWay(), span, sdl, live; material=NWC_4000, support=BOTH_ENDS_CONT, fy=fy).thickness
+        base = CIPOptions(; rebar_material=Rebar_60)
+        h_cant = size_floor(OneWay(), span, sdl, live; material=NWC_4000,
+                            options=FloorOptions(cip=CIPOptions(; base..., support=CANTILEVER))).thickness
+        h_simple = size_floor(OneWay(), span, sdl, live; material=NWC_4000,
+                              options=FloorOptions(cip=CIPOptions(; base..., support=SIMPLE))).thickness
+        h_one = size_floor(OneWay(), span, sdl, live; material=NWC_4000,
+                           options=FloorOptions(cip=CIPOptions(; base..., support=ONE_END_CONT))).thickness
+        h_both = size_floor(OneWay(), span, sdl, live; material=NWC_4000,
+                            options=FloorOptions(cip=CIPOptions(; base..., support=BOTH_ENDS_CONT))).thickness
 
         # Smaller divisors => larger thickness; cantilever should be thickest.
         @test ustrip(u"inch", h_cant) ≥ ustrip(u"inch", h_simple) ≥ ustrip(u"inch", h_one) ≥ ustrip(u"inch", h_both)
@@ -72,11 +79,14 @@ Design philosophy:
     # -------------------------------------------------------------------------
     @testset "two-way edge beam effects" begin
         span = 9.0u"m"
-        fy = 60.0 * StructuralBase.Constants.ksi
 
-        h_interior = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, support=BOTH_ENDS_CONT, fy=fy).thickness
-        h_ext_with = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, support=SIMPLE, fy=fy, has_edge_beam=true).thickness
-        h_ext_no = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, support=SIMPLE, fy=fy, has_edge_beam=false).thickness
+        base = CIPOptions(; rebar_material=Rebar_60)
+        h_interior = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                                options=FloorOptions(cip=CIPOptions(; base..., support=BOTH_ENDS_CONT))).thickness
+        h_ext_with = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                                options=FloorOptions(cip=CIPOptions(; base..., support=SIMPLE, has_edge_beam=true))).thickness
+        h_ext_no = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                              options=FloorOptions(cip=CIPOptions(; base..., support=SIMPLE, has_edge_beam=false))).thickness
 
         @test ustrip(u"inch", h_interior) ≤ ustrip(u"inch", h_ext_no)
         @test ustrip(u"inch", h_ext_with) ≤ ustrip(u"inch", h_ext_no)
@@ -88,16 +98,22 @@ Design philosophy:
     @testset "fy interpolation + clamping (two-way)" begin
         span = 10.0u"m"
 
-        h40 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=40.0 * StructuralBase.Constants.ksi).thickness
-        h50 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=50.0 * StructuralBase.Constants.ksi).thickness
-        h60 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=60.0 * StructuralBase.Constants.ksi).thickness
-        h80 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=80.0 * StructuralBase.Constants.ksi).thickness
+        h40 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                         options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(276.0u"MPa")))).thickness
+        h50 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                         options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(345.0u"MPa")))).thickness
+        h60 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                         options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(414.0u"MPa")))).thickness
+        h80 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                         options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(552.0u"MPa")))).thickness
 
         # In the ACI table used here, higher fy => smaller divisor => larger thickness.
         @test ustrip(u"inch", h40) < ustrip(u"inch", h50) < ustrip(u"inch", h60) < ustrip(u"inch", h80)
 
-        h30 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=30.0 * StructuralBase.Constants.ksi).thickness
-        h100 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000, fy=100.0 * StructuralBase.Constants.ksi).thickness
+        h30 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                         options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(207.0u"MPa")))).thickness
+        h100 = size_floor(TwoWay(), span, sdl, live; material=NWC_4000,
+                          options=FloorOptions(cip=CIPOptions(; rebar_material=_rebar_with_fy(689.0u"MPa")))).thickness
 
         @test isapprox(ustrip(u"inch", h30), ustrip(u"inch", h40); atol=1e-9, rtol=0)
         @test isapprox(ustrip(u"inch", h100), ustrip(u"inch", h80); atol=1e-9, rtol=0)
@@ -116,6 +132,21 @@ Design philosophy:
         h_m_in = ustrip(u"inch", uconvert(u"inch", r_m.thickness))
         h_ft_in = ustrip(u"inch", uconvert(u"inch", r_ft.thickness))
         @test isapprox(h_m_in, h_ft_in; rtol=1e-10, atol=1e-8)
+    end
+
+    # -------------------------------------------------------------------------
+    # FloorOptions surface API 
+    # -------------------------------------------------------------------------
+    @testset "FloorOptions (CIPOptions)" begin
+        span = 8.0u"m"
+
+        opts_simple = FloorOptions(cip=CIPOptions(; support=SIMPLE))
+        opts_both = FloorOptions(cip=CIPOptions(; support=BOTH_ENDS_CONT))
+
+        h_simple = size_floor(OneWay(), span, sdl, live; material=NWC_4000, options=opts_simple).thickness
+        h_both = size_floor(OneWay(), span, sdl, live; material=NWC_4000, options=opts_both).thickness
+
+        @test ustrip(u"inch", h_simple) ≥ ustrip(u"inch", h_both)
     end
 end
 

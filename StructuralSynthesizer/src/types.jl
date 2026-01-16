@@ -87,7 +87,7 @@ end
 SlabGroup(hash::UInt64) = SlabGroup(hash, Int[], nothing)
 
 """Per-edge analysis data (one per skeleton edge / ASAP element)."""
-struct Segment{T}
+mutable struct Segment{T}
     edge_idx::Int
     L::T
     Lb::T

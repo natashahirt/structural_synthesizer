@@ -50,7 +50,7 @@ tapered = ShapedSlab(tapered_slab_fn)
 result = size_floor(tapered, 8.0, 2.0, 3.0; material=NWC_4000, span_y=8.0)
 ```
 """
-function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete)
+function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, material::Concrete)
     # Thick at edges, thin at center
     h_edge = max(span_x, span_y) / 20.0
     h_center = h_edge * 0.6
@@ -68,7 +68,14 @@ function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete)
         return h_center + d * (h_edge - h_center)
     end
     
-    self_weight = volume_per_area * ustrip(mat.ρ) * 9.81 / 1000
+    # self_weight = volume * density * g
+    g = ustrip(u"m/s^2", Constants.GRAVITY)
+    density = ustrip(u"kg/m^3", material.ρ) 
+    # Force result to kPa/kN/m^2 if input units are standard, otherwise rely on caller
+    # Here we assume standard SI input scaling: [m] * [kg/m^3] * [m/s^2] = [Pa] = [N/m^2]
+    # To get kN/m^2: / 1000
+    self_weight_Pa = volume_per_area * density * g
+    self_weight = self_weight_Pa / 1000.0
     
     return ShapedSlabResult(volume_per_area, self_weight, thickness_fn, 
                             Dict(:h_edge => h_edge, :h_center => h_center))
@@ -83,7 +90,7 @@ coffered = ShapedSlab(coffered_slab_fn)
 result = size_floor(coffered, 10.0, 2.0, 3.0; material=NWC_4000, span_y=10.0)
 ```
 """
-function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete;
+function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, material::Concrete;
                           rib_spacing::Real=1.0, rib_width::Real=0.15)
     # Topping slab + ribs
     h_topping = 0.075  # 3" topping
@@ -94,7 +101,11 @@ function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, mat::Concrete;
     rib_vol = rib_ratio * 2 * h_rib  # ribs in both directions (double count at intersections)
     
     volume_per_area = h_topping + rib_vol * 0.9  # ~10% reduction for overlap
-    self_weight = volume_per_area * ustrip(mat.ρ) * 9.81 / 1000
+    
+    g = ustrip(u"m/s^2", Constants.GRAVITY)
+    density = ustrip(u"kg/m^3", material.ρ)
+    self_weight_Pa = volume_per_area * density * g
+    self_weight = self_weight_Pa / 1000.0
     
     return ShapedSlabResult(volume_per_area, self_weight, nothing,
                             Dict(:h_topping => h_topping, :h_rib => h_rib,

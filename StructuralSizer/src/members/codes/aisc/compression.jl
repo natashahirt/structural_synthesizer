@@ -1,39 +1,60 @@
 # AISC 360 Chapter E - Design of Members for Compression
 
-"""Elastic buckling stress (E3-4)."""
-function get_Fe(s::ISymmSection, mat::Metal, L; axis=:weak)
+"""Elastic flexural buckling stress (E3-4)."""
+function get_Fe_flexural(s::ISymmSection, mat::Metal, L; axis=:weak)
     E = mat.E
     r = axis == :weak ? s.ry : s.rx
     KL_r = L / r
     return π^2 * E / KL_r^2
 end
 
-"""Critical stress for flexural buckling (E3-2, E3-3)."""
-function get_Fcr_flexural(s::ISymmSection, mat::Metal, L; axis=:weak)
-    E, Fy = mat.E, mat.Fy
-    r = axis == :weak ? s.ry : s.rx
+"""Elastic torsional buckling stress (E4-4)."""
+function get_Fe_torsional(s::ISymmSection, mat::Metal, Lz)
+    E, G = mat.E, mat.G
+    Cw, J = s.Cw, s.J
+    Ix, Iy = s.Ix, s.Iy
     
-    KL_r_val = ustrip(L / r)
-    if KL_r_val <= 1e-6 || isnan(KL_r_val) || isinf(KL_r_val)
-        return Fy
-    end
-    
-    KL_r = L / r
-    Fe = π^2 * E / KL_r^2
-    limit = 4.71 * sqrt(E / Fy)
-    
-    if KL_r <= limit
-        Fe_val = ustrip(Fe)
-        Fcr = (Fe_val > 0 && !isinf(Fe_val)) ? (0.658^(Fy / Fe)) * Fy : Fy
-    else
-        Fcr = 0.877 * Fe
-    end
-    return Fcr
+    # E4-4
+    # Fe = (π^2 * E * Cw / Lz^2 + G * J) * (1 / (Ix + Iy))
+    term1 = π^2 * E * Cw / Lz^2
+    term2 = G * J
+    return (term1 + term2) / (Ix + Iy)
 end
 
-"""Nominal compressive strength (E3-1)."""
+"""Calculate Fcr from Fe and Q (E3-2, E3-3, E7)."""
+function calculate_Fcr(Fe, Fy, Q)
+    # E3-2 applies if Fy/Fe <= 2.25. E3-3 applies if Fy/Fe > 2.25.
+    # With Q: E7-2 applies if Q*Fy/Fe <= 2.25
+    
+    ratio = Q * Fy / Fe
+    
+    if ratio <= 2.25
+        # E7-2
+        val = 0.658^ratio
+        return Q * val * Fy
+    else
+        # E7-3
+        return 0.877 * Fe
+    end
+end
+
+"""Nominal compressive strength (E3/E4/E7)."""
 function get_Pn(s::ISymmSection, mat::Metal, L; axis=:weak)
-    Fcr = get_Fcr_flexural(s, mat, L; axis=axis)
+    # 1. Slenderness reduction Q
+    q_factors = get_compression_factors(s, mat)
+    Q = q_factors.Q
+    Fy = mat.Fy
+
+    # 2. Elastic Buckling Stress Fe
+    if axis == :torsional
+        Fe = get_Fe_torsional(s, mat, L) # L here is Lz
+    else
+        Fe = get_Fe_flexural(s, mat, L; axis=axis)
+    end
+    
+    # 3. Critical Stress Fcr
+    Fcr = calculate_Fcr(Fe, Fy, Q)
+    
     return Fcr * s.A
 end
 

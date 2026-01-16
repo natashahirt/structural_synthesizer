@@ -16,6 +16,9 @@ import Asap
 import LinearAlgebra: norm, normalize
 using Unitful
 
+# Register custom units from StructuralBase so custom units work in this module scope
+Unitful.register(StructuralBase.Constants)
+
 include("types.jl")
 include("./core/_core.jl")
 include("./external/_external.jl")
@@ -39,6 +42,10 @@ export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
 export initialize!
 export initialize_cells!, initialize_slabs!
 export initialize_segments!, initialize_members!, update_bracing!
+export build_slab_groups!
+
+# Member sizing (catalog-based)
+export build_member_groups!, member_group_demands, size_members_discrete!
 
 # Internal toolkit
 export AsapToolkit

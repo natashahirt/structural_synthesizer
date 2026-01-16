@@ -1,6 +1,6 @@
 module Constants
     using Unitful 
-
+    
     # 1. Define standard US units (structural engineering defaults)
     Unitful.@unit lbf "lbf" PoundForce 4.4482216152605u"N" false
     Unitful.@unit kip "kip" Kip 1000 * lbf false

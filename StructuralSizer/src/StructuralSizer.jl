@@ -31,6 +31,9 @@ export AbstractDemand, MemberDemand
 export AbstractObjective, MinWeight, MinVolume, MinCost, MinCarbon
 export objective_value, total_objective
 
+# Optimization
+export optimize_member_groups_discrete
+
 # Materials - Steel
 export A992_Steel, S355_Steel, Rebar_40, Rebar_60, Rebar_75, Rebar_80
 # Materials - Concrete
@@ -77,6 +80,10 @@ export ShapedSlab
 
 # Support conditions
 export SupportCondition, SIMPLE, ONE_END_CONT, BOTH_ENDS_CONT, CANTILEVER
+
+# Floor sizing options + guidance
+export FloorOptions, CIPOptions, VaultOptions
+export required_floor_options, floor_options_help
 
 # Type mapping utilities
 export floor_type, floor_symbol, infer_floor_type
