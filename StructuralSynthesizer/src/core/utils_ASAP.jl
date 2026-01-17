@@ -1,7 +1,7 @@
 """
     to_asap!(struc)
 Converts a BuildingStructure into an Asap.Model.
-Hard SI boundary: all loads/coords sent to ASAP are plain Float64 in base SI.
+All quantities are passed as Unitful and converted to base SI units internally by Asap.
 """
 function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
     skel = struc.skeleton
@@ -11,9 +11,10 @@ function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
     
     nodes = map(enumerate(skel.vertices)) do (v_idx, v)
         coords = Meshes.coords(v)
-        x = ustrip(uconvert(u"m", coords.x))
-        y = ustrip(uconvert(u"m", coords.y))
-        z = ustrip(uconvert(u"m", coords.z))
+        # Convert to meters (Asap.Node expects Unitful quantities)
+        x = uconvert(u"m", coords.x)
+        y = uconvert(u"m", coords.y)
+        z = uconvert(u"m", coords.z)
         
         # ground level fixed, all else moment connected
         is_support = v_idx in support_indices
@@ -69,13 +70,17 @@ function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, sp
         # ASAP expects a *normalized* position in (0,1), not an absolute distance.
         # Also, it rejects exactly 0.0 and 1.0, so clamp slightly inward.
         x01 = clamp(Float64(x), eps(Float64), 1.0 - eps(Float64))
-        push!(loads, Asap.PointLoad(el, x01, collect(F)))
+        # Convert Float64 forces (assumed SI N) to Unitful
+        F_unitful = [f * u"N" for f in collect(F)]
+        push!(loads, Asap.PointLoad(el, x01, F_unitful))
     end
     return loads
 end
 
 function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgeLineLoadSpec)
-    push!(loads, Asap.LineLoad(el, collect(spec.w)))
+    # Convert Float64 line load (assumed SI N/m) to Unitful
+    w_unitful = [w * u"N/m" for w in collect(spec.w)]
+    push!(loads, Asap.LineLoad(el, w_unitful))
     return loads
 end
 

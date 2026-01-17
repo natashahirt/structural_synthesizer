@@ -4,12 +4,11 @@ Pkg.instantiate()
 
 using Revise
 using Unitful
+using StructuralUnits     # Custom unit definitions (kip, ksi, psf)
 using StructuralBase      # Shared types & constants
 using StructuralSizer     # Member-level sizing (materials)
 using StructuralSynthesizer  # Geometry & BIM logic
 using Asap
-
-Unitful.register(StructuralBase.Constants)
 
 # Generate building geometry
 skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4);
@@ -35,7 +34,8 @@ for (i, slab) in enumerate(struc.slabs)
     println("slab ", i, "  type=", slab.floor_type, "  thickness=", StructuralSynthesizer.thickness(slab))
 end
 
-size_members_discrete!(struc);
+# Size members with optional deflection limit (L/360 is typical for floor beams)
+size_members_discrete!(struc; deflection_limit=1/360);
 
 for (gid, group) in struc.member_groups
     if !isnothing(group.section)
@@ -45,4 +45,4 @@ end
 
 # Visualize
 visualize(skel)
-visualize(skel, struc.asap_model, mode=:deflected, color_by=:displacement, show_original_geometry=false)
+visualize(skel, struc.asap_model, mode=:deflected, color_by=:displacement_local, show_original_geometry=false)

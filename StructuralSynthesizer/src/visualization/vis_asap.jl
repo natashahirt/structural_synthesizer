@@ -53,7 +53,11 @@ Karamba-style visualization for Asap models, using skeleton groups for supports.
 # Arguments
 - `deflection_scale::Union{Float64,Symbol}=:auto`: Scale factor for deflected shape, or `:auto` to auto-compute.
 - `mode::Symbol=:original`: `:original` or `:deflected`.
-- `color_by::Symbol=:none`: `:none`, `:displacement`, or `:stress`.
+- `color_by::Symbol=:none`: Coloring mode:
+  - `:none` - no coloring
+  - `:displacement_global` - total displacement magnitude (includes rigid body motion)
+  - `:displacement_local` - chord-relative deflection (member bending only, excludes rigid body motion)
+  - `:stress` - combined stress approximation
 - `show_nodes::Bool=true`: Whether to show nodes.
 - `show_supports::Bool=true`: Whether to show supports.
 - `show_releases::Bool=true`: Whether to show element releases (gaps).
@@ -66,7 +70,7 @@ Karamba-style visualization for Asap models, using skeleton groups for supports.
 function visualize(skel::BuildingSkeleton, model::Asap.Model;
     deflection_scale = :auto, # :auto or a Float64 scale factor
     mode = :original, # :original, :deflected
-    color_by = :none, # :none, :displacement, :stress
+    color_by = :none, # :none, :displacement_global, :displacement_local, :stress
     show_nodes = true,
     show_supports = true,
     show_releases = true,
@@ -112,8 +116,10 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         end
 
         # Calculate displacements/forces with a reasonable increment
-        avg_len = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0
-        increment = avg_len / resolution
+        # AsapToolkit accepts Unitful at API boundary, but visualization math uses Float64
+        avg_len_unitful = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0u"m"
+        avg_len = ustrip(u"m", avg_len_unitful)  # Float64 for internal visualization math
+        increment = avg_len_unitful / resolution  # Unitful for AsapToolkit API
         
         # AsapToolkit provides high-level helpers for displacements and forces
         edisps = AsapToolkit.displacements(model, increment)
@@ -145,8 +151,27 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
             pts = [GLMakie.Point3f(pos[1, j], pos[2, j], pos[3, j]) for j in 1:size(pos, 2)]
             push!(all_points, pts)
             
-            if color_by == :displacement
+            if color_by == :displacement_global
+                # Total displacement magnitude in global coordinates (includes rigid body motion)
                 dvals = [norm(edisp.uglobal[:, j]) for j in 1:size(edisp.uglobal, 2)]
+                append!(all_colors, dvals)
+            elseif color_by == :displacement_local
+                # Chord-relative deflection: displacement relative to a straight line between endpoints
+                # This shows actual member deformation (bending), excluding rigid body motion
+                n_pts = size(edisp.uglobal, 2)
+                u_start = edisp.uglobal[:, 1]      # Displacement at start
+                u_end = edisp.uglobal[:, end]      # Displacement at end
+                
+                dvals = Float64[]
+                for j in 1:n_pts
+                    # Linear interpolation factor (0 at start, 1 at end)
+                    t = (j - 1) / max(n_pts - 1, 1)
+                    # Chord displacement at this point
+                    u_chord = u_start .+ t .* (u_end .- u_start)
+                    # Relative displacement (deviation from chord)
+                    u_relative = edisp.uglobal[:, j] .- u_chord
+                    push!(dvals, norm(u_relative))
+                end
                 append!(all_colors, dvals)
             elseif color_by == :stress && !isnothing(eforces)
                 eforce = eforces[i]
@@ -192,7 +217,7 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
 
     # 2. Nodes
     if show_nodes
-        nodes_pos = [GLMakie.Point3f(n.position...) for n in model.nodes]
+        nodes_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in model.nodes]
         GLMakie.scatter!(ax, nodes_pos, color = :black, markersize = markersize / 2)
         push!(leg_elems, GLMakie.MarkerElement(marker = :circle, color = :black, markersize = 8))
         push!(leg_labels, "Nodes")
@@ -203,7 +228,7 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         support_indices = get(skel.groups_vertices, :support, Int[])
         if !isempty(support_indices)
             supports = model.nodes[support_indices]
-            supp_pos = [GLMakie.Point3f(n.position...) for n in supports]
+            supp_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in supports]
             GLMakie.scatter!(ax, supp_pos, color = :red, marker = :utriangle, markersize = markersize)
             push!(leg_elems, GLMakie.MarkerElement(marker = :utriangle, color = :red, markersize = 12))
             push!(leg_labels, "Supports")
@@ -232,7 +257,7 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         ]
         
         for node in model.nodes
-            p = GLMakie.Point3f(node.position...)
+            p = GLMakie.Point3f(ustrip.(u"m", node.position)...)
             for i in 1:3
                 # Translations (Green arrows)
                 node.dof[i] && (push!(t_pos, p); push!(t_dir, axes[i] * size_ref))

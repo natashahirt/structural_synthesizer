@@ -1,6 +1,7 @@
 using StructuralSynthesizer
 using StructuralSizer
 using StructuralBase
+using StructuralUnits  # For u"ksi" etc.
 using Asap
 using Unitful
 using Test
@@ -10,8 +11,6 @@ using Test
 # Reference: Prof. Dr. A. Varma, Chapter 2
 # https://www.egr.msu.edu/~harichan/classes/ce405/chap2.pdf
 # ==============================================================================
-
-Unitful.register(StructuralBase.Constants)
 
 @testset "AISC Chapter 2 Beam Examples" begin
 
@@ -140,9 +139,9 @@ Unitful.register(StructuralBase.Constants)
         model.nodes[id1].dof = [false, false, false, false, false, false]
         model.nodes[id2].dof = [true, true, false, true, true, true]
 
-        # 4. Loads (pre-factored)
-        w_u_Npm = ustrip(u"N/m", w_u * u"kip/ft")
-        push!(model.loads, Asap.LineLoad(model.elements[e1], [0.0, 0.0, -w_u_Npm]))
+        # 4. Loads (pre-factored) - LineLoad expects Unitful quantities
+        w_u_si = uconvert(u"N/m", w_u * u"kip/ft")
+        push!(model.loads, Asap.LineLoad(model.elements[e1], [0.0u"N/m", 0.0u"N/m", -w_u_si]))
         
         Asap.process!(model)
         Asap.solve!(model)
@@ -244,18 +243,18 @@ Unitful.register(StructuralBase.Constants)
         model.nodes[idA].dof = [false, false, false, true, true, true]   # Pin
         model.nodes[idD].dof = [true, false, false, true, true, true]    # Roller
 
-        # 4. Loads
-        w_u_Npm = ustrip(u"N/m", w_u * u"kip/ft")
-        P_u_N   = ustrip(u"N", P_u * u"kip")
+        # 4. Loads (Unitful quantities required)
+        w_u_si = uconvert(u"N/m", w_u * u"kip/ft")
+        P_u_si = uconvert(u"N", P_u * u"kip")
         
         # Distributed load on all elements
-        push!(model.loads, Asap.LineLoad(model.elements[e_AB], [0.0, 0.0, -w_u_Npm]))
-        push!(model.loads, Asap.LineLoad(model.elements[e_BC], [0.0, 0.0, -w_u_Npm]))
-        push!(model.loads, Asap.LineLoad(model.elements[e_CD], [0.0, 0.0, -w_u_Npm]))
+        push!(model.loads, Asap.LineLoad(model.elements[e_AB], [0.0u"N/m", 0.0u"N/m", -w_u_si]))
+        push!(model.loads, Asap.LineLoad(model.elements[e_BC], [0.0u"N/m", 0.0u"N/m", -w_u_si]))
+        push!(model.loads, Asap.LineLoad(model.elements[e_CD], [0.0u"N/m", 0.0u"N/m", -w_u_si]))
         
         # Point loads at B and C
-        push!(model.loads, Asap.NodeForce(model.nodes[idB], [0.0, 0.0, -P_u_N]))
-        push!(model.loads, Asap.NodeForce(model.nodes[idC], [0.0, 0.0, -P_u_N]))
+        push!(model.loads, Asap.NodeForce(model.nodes[idB], [0.0u"N", 0.0u"N", -P_u_si]))
+        push!(model.loads, Asap.NodeForce(model.nodes[idC], [0.0u"N", 0.0u"N", -P_u_si]))
         
         Asap.process!(model)
         Asap.solve!(model)
@@ -330,12 +329,12 @@ Unitful.register(StructuralBase.Constants)
         model.nodes[id1].dof = [false, false, false, false, false, false]
         model.nodes[id2].dof = [true, true, false, true, true, true]
 
-        # 4. Loads (pre-factored)
-        w_u_Npm = ustrip(u"N/m", 4.52 * u"kip/ft")
-        P_u_N   = ustrip(u"N", 16.0 * u"kip")
+        # 4. Loads (pre-factored, Unitful)
+        w_u_si = uconvert(u"N/m", 4.52 * u"kip/ft")
+        P_u_si = uconvert(u"N", 16.0 * u"kip")
         
-        push!(model.loads, Asap.LineLoad(model.elements[e1], [0.0, 0.0, -w_u_Npm]))
-        push!(model.loads, Asap.PointLoad(model.elements[e1], 0.5, [0.0, 0.0, -P_u_N]))
+        push!(model.loads, Asap.LineLoad(model.elements[e1], [0.0u"N/m", 0.0u"N/m", -w_u_si]))
+        push!(model.loads, Asap.PointLoad(model.elements[e1], 0.5, [0.0u"N", 0.0u"N", -P_u_si]))
         
         Asap.process!(model)
         Asap.solve!(model)

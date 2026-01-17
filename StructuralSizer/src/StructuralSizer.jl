@@ -3,12 +3,15 @@ module StructuralSizer
 using Logging
 using CSV
 using StructuralBase
+using StructuralUnits  # Shared unit definitions (kip, ksi, psf)
 using Unitful
 using QuadGK: quadgk
 using Roots: find_zero, Brent, Order0
 
-# Ensure StructuralBase custom units (e.g. `ksi`) are visible to `u"..."` here.
-Unitful.register(StructuralBase.Constants)
+# Register custom units at package load time (not precompile time)
+function __init__()
+    Unitful.register(StructuralUnits)
+end
 
 # Types (Metal, etc.)
 include("types.jl")

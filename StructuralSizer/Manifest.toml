@@ -2,7 +2,7 @@
 
 julia_version = "1.11.6"
 manifest_format = "2.0"
-project_hash = "467beb6e45b2924fc7329a96d6a0f1ff4e6466c0"
+project_hash = "5965130bb55404f14b4027fdc0d7855cc0b1170f"
 
 [[deps.Accessors]]
 deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
@@ -276,9 +276,9 @@ version = "1.14.3"
 
 [[deps.JuMP]]
 deps = ["LinearAlgebra", "MacroTools", "MathOptInterface", "MutableArithmetics", "OrderedCollections", "PrecompileTools", "Printf", "SparseArrays"]
-git-tree-sha1 = "b76f23c45d75e27e3e9cbd2ee68d8e39491052d0"
+git-tree-sha1 = "8e4088727b5a130c12b1fedbc316306b6bbf2b9d"
 uuid = "4076af6c-e467-56ae-b986-b466b2749572"
-version = "1.29.3"
+version = "1.29.4"
 
     [deps.JuMP.extensions]
     JuMPDimensionalDataExt = "DimensionalData"
@@ -533,6 +533,12 @@ version = "2.6.2"
 deps = ["Reexport", "Unitful"]
 path = "../StructuralBase"
 uuid = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
+version = "0.1.0"
+
+[[deps.StructuralUnits]]
+deps = ["Unitful"]
+path = "../StructuralUnits"
+uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"
 
 [[deps.SuiteSparse_jll]]

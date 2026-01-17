@@ -15,9 +15,7 @@ import Graphs
 import Asap
 import LinearAlgebra: norm, normalize
 using Unitful
-
-# Register custom units from StructuralBase so custom units work in this module scope
-Unitful.register(StructuralBase.Constants)
+using StructuralUnits  # Shared unit definitions (already registered)
 
 include("types.jl")
 include("./core/_core.jl")
@@ -31,7 +29,7 @@ export gen_medium_office
 
 # Core types
 export BuildingSkeleton, BuildingStructure, Story
-export Cell, Slab, SlabGroup, total_dead_load
+export Cell, Slab, SlabGroup, total_dead_load, thickness
 export Segment, Member, MemberGroup
 
 # Functions

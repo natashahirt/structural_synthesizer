@@ -1,6 +1,8 @@
 # ACI 318-19 Minimum Slab Thickness
 # Tables 7.3.1.1 (one-way) and 8.3.1.1 (two-way)
 
+using StructuralUnits: ksi  # Import ksi directly for precompile-safe use
+
 # =============================================================================
 # Table 7.3.1.1 - One-way slabs
 # =============================================================================
@@ -13,7 +15,7 @@ const ACI_ONE_WAY_DIVISORS = Dict(
 )
 
 """Yield strength modification factor per ACI 7.3.1.1.1."""
-fy_factor_one_way(fy) = 0.4 + ustrip(u"ksi", fy) / 100.0
+fy_factor_one_way(fy) = 0.4 + ustrip(ksi, fy) / 100.0
 
 """ACI 318-19 Table 7.3.1.1: One-way slab minimum thickness."""
 function min_thickness(::OneWay, span, material::Concrete;
@@ -53,7 +55,7 @@ end
 
 """Get divisor from two-way table with fy interpolation."""
 function get_two_way_divisor(table::Dict, fy, panel_type::Symbol)
-    fy_ksi = ustrip(u"ksi", fy)
+    fy_ksi = ustrip(ksi, fy)
     fy_clamped = clamp(fy_ksi, 40.0, 80.0)
     
     fy_clamped in keys(table) && return Float64(table[Int(fy_clamped)][panel_type])
@@ -141,7 +143,10 @@ function size_floor(
         min_thickness(st, span, material; support=cip.support, fy=fy)
     elseif st isa PTBanded
         min_thickness(st, span, material; support=cip.support, has_drop_panels=cip.has_drop_panels)
+    elseif st isa Waffle
+        min_thickness(st, span, material; support=cip.support, fy=fy)
     else
+        # TwoWay, FlatPlate, FlatSlab
         min_thickness(st, span, material; support=cip.support, fy=fy, has_edge_beam=cip.has_edge_beam)
     end
     

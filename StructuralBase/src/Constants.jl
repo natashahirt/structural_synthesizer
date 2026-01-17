@@ -1,45 +1,34 @@
 module Constants
-    using Unitful 
-    
-    # 1. Define standard US units (structural engineering defaults)
-    Unitful.@unit lbf "lbf" PoundForce 4.4482216152605u"N" false
-    Unitful.@unit kip "kip" Kip 1000 * lbf false
-    Unitful.@unit psf "psf" PoundPerSquareFoot 47.88025898u"N/m^2" false
-    Unitful.@unit ksi "ksi" KipPerSquareInch 6.894757e6u"Pa" false  # 1 ksi = 6.895 MPa
+    using Unitful
 
-    # Make these units available to Unitful's `u"..."` macro everywhere.
-    # Without this, `u"ksi"` will throw "Symbol ksi could not be found...".
-    Unitful.register(@__MODULE__)
+    # Physical Constants
+    const GRAVITY = 9.80665u"m/s^2"
 
-    # 2. Physical Constants
-    const GRAVITY = 9.80665u"m/s^2" # acceleration due to gravity
-
-    # 3. Embodied Carbon Coefficients (kgCO2e/kg or kgCO2e/m³)
+    # Embodied Carbon Coefficients (kgCO2e/kg)
     const ECC_STEEL = 1.22
-    const ECC_CONCRETE = 0.152 # from CLF
+    const ECC_CONCRETE = 0.152
     const ECC_REBAR = 0.854
 
-    # 4. Solver/Optimization Constants
+    # Solver/Optimization Constants
     const BIG_M = 1e9
 
-    # 5. Load Factors (ASCE 7 Strength)
+    # Load Factors (ASCE 7 Strength)
     const DL_FACTOR = 1.2
     const LL_FACTOR = 1.6
 
-    # 6. Standard Building Loads (needs to be kN/m² for ASAP compatibility)
-    # Live loads (converted to kN/m^2)
-    const LL_GRADE = uconvert(u"kN/m^2", 100.0 * psf)
-    const LL_FLOOR = uconvert(u"kN/m^2", 80.0 * psf) # above grade
-    const LL_ROOF  = uconvert(u"kN/m^2", 20.0 * psf) # roof live
+    # Standard Building Loads in kN/m² (converted from psf at compile time)
+    # Conversion: 1 psf = 0.04788025898 kN/m²
+    const _PSF_TO_KNM2 = 0.04788025898
+    const LL_GRADE  = (100.0 * _PSF_TO_KNM2)u"kN/m^2"  # 100 psf
+    const LL_FLOOR  = (80.0  * _PSF_TO_KNM2)u"kN/m^2"  #  80 psf
+    const LL_ROOF   = (20.0  * _PSF_TO_KNM2)u"kN/m^2"  #  20 psf
+    const SDL_FLOOR = (15.0  * _PSF_TO_KNM2)u"kN/m^2"  #  15 psf
+    const SDL_ROOF  = (15.0  * _PSF_TO_KNM2)u"kN/m^2"  #  15 psf
+    const SDL_WALL  = (10.0  * _PSF_TO_KNM2)u"kN/m^2"  #  10 psf
 
-    # Superimposed dead loads (converted to kN/m^2)
-    const SDL_FLOOR = uconvert(u"kN/m^2", 15.0 * psf)
-    const SDL_ROOF  = uconvert(u"kN/m^2", 15.0 * psf)
-    const SDL_WALL  = uconvert(u"kN/m^2", 10.0 * psf) # per wall area
-
-    # 7. Metric Reinforcement (Standard units for the package)
+    # Standard Units
     const STANDARD_LENGTH = u"m"
-    const STANDARD_AREA   = u"m^2"
-    const STANDARD_FORCE  = u"kN"
+    const STANDARD_AREA = u"m^2"
+    const STANDARD_FORCE = u"kN"
     const STANDARD_PRESSURE = u"kN/m^2"
 end

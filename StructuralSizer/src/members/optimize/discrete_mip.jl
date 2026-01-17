@@ -51,6 +51,7 @@ end
         ϕ_v=1.0,
         mip_gap=1e-4,
         output_flag::Integer=0,
+        deflection_limit::Union{Nothing, Real}=nothing,
     )
 
 Discrete, simultaneous section assignment for *member groups*.
@@ -61,6 +62,11 @@ Strength checks (AISC 360-16):
   - Checks **Compression** interaction (`Pu_c`, `Mux`, `Muy`) using `ϕPnc` (Flexural/Torsional Buckling).
   - Checks **Tension** interaction (`Pu_t`, `Mux`, `Muy`) using `ϕPnt` (Yielding/Rupture).
   - Flexure checks include LTB (`Cb`) and FLB.
+
+# Deflection Limit (Optional)
+If `deflection_limit` is set (e.g., `1/360`), sections are filtered to ensure:
+  `δ / L ≤ deflection_limit`
+where δ is scaled from the analysis deflection using moment of inertia ratios.
 
 # Preferred Sections
 If `prefer_penalty > 1.0`, non-preferred (non-bolded) sections are penalized in the objective.
@@ -88,6 +94,7 @@ function optimize_member_groups_discrete(
     ϕ_v=1.0,
     mip_gap=1e-4,
     output_flag::Integer=0,
+    deflection_limit::Union{Nothing, Real}=nothing,
 )
     n_groups = length(demands)
     n_groups == length(lengths) == length(Lbs) == length(Cbs) == length(Kxs) == length(Kys) ||
@@ -100,6 +107,8 @@ function optimize_member_groups_discrete(
     Muy  = Vector{Float64}(undef, n_groups)
     Vus  = Vector{Float64}(undef, n_groups)
     Vuw  = Vector{Float64}(undef, n_groups)
+    δ_max_g = Vector{Float64}(undef, n_groups)  # Max local deflection from analysis
+    I_ref_g = Vector{Float64}(undef, n_groups)  # Reference I for deflection scaling
     
     Ltot = Vector{Float64}(undef, n_groups)
     Lb_g = Vector{typeof(1.0u"m")}(undef, n_groups)
@@ -119,6 +128,10 @@ function optimize_member_groups_discrete(
         Vus[i]  = d.Vu_strong isa Unitful.Quantity ? ustrip(uconvert(u"N", d.Vu_strong)) : Float64(d.Vu_strong)
         Vuw[i]  = d.Vu_weak   isa Unitful.Quantity ? ustrip(uconvert(u"N", d.Vu_weak))   : Float64(d.Vu_weak)
         
+        # Deflection data (already in SI: meters, m^4)
+        δ_max_g[i] = d.δ_max isa Unitful.Quantity ? ustrip(uconvert(u"m", d.δ_max)) : Float64(d.δ_max)
+        I_ref_g[i] = d.I_ref isa Unitful.Quantity ? ustrip(uconvert(u"m^4", d.I_ref)) : Float64(d.I_ref)
+        
         Ltot[i] = lengths[i] isa Unitful.Quantity ? ustrip(uconvert(u"m", lengths[i])) : Float64(lengths[i])
         Lb_g[i] = Lbs[i] isa Unitful.Quantity ? uconvert(u"m", Lbs[i]) : (Float64(Lbs[i]) * u"m")
         Cb_g[i] = Float64(Cbs[i])
@@ -130,6 +143,7 @@ function optimize_member_groups_discrete(
     n_sections = length(catalogue)
     A  = Vector{Float64}(undef, n_sections)
     d  = Vector{Float64}(undef, n_sections)
+    Ix = Vector{Float64}(undef, n_sections)    # Strong axis moment of inertia (for deflection scaling)
     ϕVn_s = Vector{Float64}(undef, n_sections) # Strong axis shear
     ϕVn_w = Vector{Float64}(undef, n_sections) # Weak axis shear
     ϕMny = Vector{Float64}(undef, n_sections)  # Weak axis flexure (FLB/Yielding)
@@ -144,6 +158,7 @@ function optimize_member_groups_discrete(
         s = catalogue[j]
         A[j] = ustrip(uconvert(u"m^2", area(s)))
         d[j] = ustrip(uconvert(u"m", depth(s)))
+        Ix[j] = ustrip(uconvert(u"m^4", s.Ix))  # Strong axis I for deflection scaling
         
         # Shear Capacities
         ϕVn_s[j] = ustrip(uconvert(u"N", get_ϕVn(s, material; axis=:strong, ϕ=ϕ_v)))
@@ -206,6 +221,14 @@ function optimize_member_groups_discrete(
             # While tension stabilizes LTB, AISC does not require a modified Cb, so this is safe/standard.
             ur_t = check_PMxMy_interaction(Pu_t[i], Mux[i], Muy[i], ϕPnt[j], ϕMnx, ϕMny[j])
             ur_t <= 1.0 || continue
+
+            # --- Check 3: Deflection Limit (Optional) ---
+            # Scale deflection by moment of inertia ratio: δ_new = δ_ref * I_ref / I_new
+            if !isnothing(deflection_limit) && I_ref_g[i] > 0 && δ_max_g[i] > 0
+                δ_scaled = δ_max_g[i] * I_ref_g[i] / Ix[j]
+                δ_ratio = δ_scaled / Ltot[i]
+                δ_ratio <= deflection_limit || continue
+            end
 
             push!(idxs, j)
         end

@@ -3,6 +3,7 @@
 
 using Test
 using StructuralSizer
+using StructuralUnits  # For u"ksi", u"kip" etc. in tests
 
 @testset "StructuralSizer Tests" begin
     include("cip/test_cip.jl")

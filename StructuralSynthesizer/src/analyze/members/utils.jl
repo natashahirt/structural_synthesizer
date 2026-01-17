@@ -137,6 +137,7 @@ Conventions:
 - gravity bending (strong axis) demand uses `My`
 - weak-axis bending demand uses `Mz`
 - shear demand uses `Vy`/`Vz` (mapped to weak/strong)
+- deflection uses max local Z displacement from `ElementDisplacements.ulocal`
 
 Returns `(group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs)`.
 """
@@ -182,6 +183,10 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         Ky_gov = 0.0
         
         has_any_segment = false
+
+        # Track max deflection and reference I for deflection scaling
+        δ_max = 0.0
+        I_ref = 0.0
 
         for m_idx in mg.member_indices
             m = struc.members[m_idx]
@@ -230,6 +235,17 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
                 # Weak Axis: Mz (moment), Vy (shear)
                 Muy = max(Muy, maximum(abs.(f.Mz)))
                 Vu_weak = max(Vu_weak, maximum(abs.(f.Vy)))
+
+                # Local deflection for serviceability check
+                # ulocal[3,:] is the local Z deflection (transverse to beam axis)
+                edisp = AsapToolkit.ElementDisplacements(el, struc.asap_model; resolution=resolution)
+                δ_local = maximum(abs.(edisp.ulocal[3, :]))  # Max local Z deflection
+                δ_max = max(δ_max, δ_local)
+                
+                # Get reference moment of inertia from current section (for deflection scaling)
+                # Deflection scales as 1/I, so: δ_new = δ_current * I_current / I_new
+                I_current = ustrip(u"m^4", el.section.Ix)  # Strong axis I
+                I_ref = max(I_ref, I_current)  # Use largest I as reference (conservative)
             end
         end
 
@@ -241,7 +257,8 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         d = StructuralSizer.MemberDemand(g_idx; 
             Pu_c=Pu_comp, Pu_t=Pu_tens, 
             Mux=Mux, Muy=Muy, 
-            Vu_strong=Vu_strong, Vu_weak=Vu_weak)
+            Vu_strong=Vu_strong, Vu_weak=Vu_weak,
+            δ_max=δ_max, I_ref=I_ref)
             
         push!(demands, d)
         push!(L_totals, L_total)
@@ -265,10 +282,16 @@ end
         optimizer::Symbol=:auto,
         resolution::Int=200,
         reanalyze::Bool=true,
+        deflection_limit::Union{Nothing, Real}=nothing,
     )
 
 Discrete, simultaneous catalog-based sizing for physical members using a MIP.
 Respects `Member.group_id` by solving at the group level.
+
+# Arguments
+- `deflection_limit::Union{Nothing, Real}=nothing`: Optional deflection limit as a ratio.
+  E.g., `1/360` means max local deflection ≤ L/360 (typical floor beam limit).
+  If `nothing`, no deflection check is performed (strength-only).
 
 Side effects:
 - populates/overwrites `struc.member_groups[gid].section` and `.material`
@@ -284,7 +307,27 @@ function size_members_discrete!(
     optimizer::Symbol=:auto,
     resolution::Int=200,
     reanalyze::Bool=true,
-)
+    gravity_factor::Quantity=9.81u"m/s^2",  # gravity acceleration
+    deflection_limit::Union{Nothing, Real}=nothing,  # e.g., 1/360
+    skel = struc.skeleton,
+    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[])))
+    
+    # Add gravity loads to all elements in the member group
+    # GravityLoad reads from element.section at calculation time, so it will automatically
+    # update when sections change during optimization
+    existing_gravity_elements = Set()
+    for load in struc.asap_model.loads
+        if isa(load, Asap.GravityLoad)
+            push!(existing_gravity_elements, load.element)
+        end
+    end
+    
+    for edge_idx in edge_ids_in_group
+        el = struc.asap_model.elements[edge_idx]
+        el in existing_gravity_elements && continue  # Skip if gravity load already exists
+        push!(struc.asap_model.loads, Asap.GravityLoad(el, gravity_factor))
+    end
+    
     group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
         member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
 
@@ -295,10 +338,8 @@ function size_members_discrete!(
         max_depth=max_depth,
         n_max_sections=n_max_sections,
         optimizer=optimizer,
+        deflection_limit=deflection_limit,
     )
-
-    skel = struc.skeleton
-    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[]))
 
     # Apply results to member groups + ASAP elements
     for (g_idx, gid) in enumerate(group_ids)
@@ -316,7 +357,7 @@ function size_members_discrete!(
         # Build ASAP section once per group
         chosen.name === nothing && throw(ArgumentError("Chosen section has no name; cannot convert to ASAP section via `toASAPframe(name, ...)`."))
         sec_name = chosen.name
-        asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, unit=u"m")
+        asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
 
         for m_idx in mg.member_indices
             m = struc.members[m_idx]
@@ -333,6 +374,7 @@ function size_members_discrete!(
         Asap.solve!(struc.asap_model)
     end
 
-    @info "Sized $(length(group_ids)) member groups using discrete MIP" optimizer=optimizer n_max_sections=n_max_sections
+    defl_str = isnothing(deflection_limit) ? "none" : "L/$(Int(round(1/deflection_limit)))"
+    @info "Sized $(length(group_ids)) member groups using discrete MIP" optimizer=optimizer n_max_sections=n_max_sections deflection_limit=defl_str
     return struc
 end

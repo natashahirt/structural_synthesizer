@@ -1,6 +1,7 @@
 using StructuralSynthesizer
 using StructuralSizer
 using StructuralBase
+using StructuralUnits  # For u"ksi" etc.
 using Asap
 using Unitful
 using Test
@@ -15,8 +16,6 @@ using Test
 #
 # Expected selection: W16x26 (lightest section that passes)
 # ==============================================================================
-
-Unitful.register(StructuralBase.Constants)
 
 @testset "Hand Calculation Beam Validation" begin
 
@@ -71,9 +70,9 @@ Unitful.register(StructuralBase.Constants)
         
         # 4. Apply loads (LRFD factored: 1.2D + 1.6L = 2.8 klf)
         w_factored_klf = 2.8
-        w_factored_Npm = ustrip(u"N/m", w_factored_klf * u"kip/ft")
+        w_factored_si = uconvert(u"N/m", w_factored_klf * u"kip/ft")
         
-        push!(model.loads, Asap.LineLoad(model.elements[1], [0.0, 0.0, -w_factored_Npm]))
+        push!(model.loads, Asap.LineLoad(model.elements[1], [0.0u"N/m", 0.0u"N/m", -w_factored_si]))
         
         Asap.process!(model)
         Asap.solve!(model)

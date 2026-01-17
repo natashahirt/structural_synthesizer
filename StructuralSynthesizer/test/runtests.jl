@@ -31,16 +31,16 @@ using Meshes
         skel = BuildingSkeleton{typeof(1.0u"m")}()
 
         # Face 1: 6m x 8m  -> short span = 6m
-        f1 = Polygon(Point(0.0u"m", 0.0u"m", 0.0u"m"),
-                     Point(6.0u"m", 0.0u"m", 0.0u"m"),
-                     Point(6.0u"m", 8.0u"m", 0.0u"m"),
-                     Point(0.0u"m", 8.0u"m", 0.0u"m"))
+        f1 = Quadrangle(Point(0.0u"m", 0.0u"m", 0.0u"m"),
+                        Point(6.0u"m", 0.0u"m", 0.0u"m"),
+                        Point(6.0u"m", 8.0u"m", 0.0u"m"),
+                        Point(0.0u"m", 8.0u"m", 0.0u"m"))
 
         # Face 2: 9m x 12m -> short span = 9m
-        f2 = Polygon(Point(0.0u"m", 0.0u"m", 0.0u"m"),
-                     Point(9.0u"m", 0.0u"m", 0.0u"m"),
-                     Point(9.0u"m", 12.0u"m", 0.0u"m"),
-                     Point(0.0u"m", 12.0u"m", 0.0u"m"))
+        f2 = Quadrangle(Point(0.0u"m", 0.0u"m", 0.0u"m"),
+                        Point(9.0u"m", 0.0u"m", 0.0u"m"),
+                        Point(9.0u"m", 12.0u"m", 0.0u"m"),
+                        Point(0.0u"m", 12.0u"m", 0.0u"m"))
 
         push!(skel.faces, f1)
         push!(skel.faces, f2)

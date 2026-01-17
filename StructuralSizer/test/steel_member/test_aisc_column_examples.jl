@@ -2,6 +2,7 @@ using StructuralSynthesizer
 using StructuralSizer
 using StructuralSizer: get_Fe_flexural, get_Fe_torsional, get_compression_factors
 using StructuralBase
+using StructuralUnits  # For u"ksi" etc.
 using Asap
 using Unitful
 using Test
@@ -17,8 +18,6 @@ using Test
 #   Fcr = 0.877 × Fe              when QFy/Fe > 2.25 (E7-3)
 #   ϕPn = 0.9 × Fcr × Ag          (E3-1)
 # ==============================================================================
-
-Unitful.register(StructuralBase.Constants)
 
 @testset "AISC Column Design" begin
 
@@ -339,10 +338,9 @@ Unitful.register(StructuralBase.Constants)
 
         # 4. Apply axial load at top (compression = -Z direction... wait, column is along Z)
         # For a vertical column along Z, axial load is in Z direction
-        Pu_kip = 400.0
-        Pu_N = ustrip(u"N", Pu_kip * u"kip")
+        Pu = 400.0u"kip"
         
-        push!(model.loads, Asap.NodeForce(model.nodes[id_top], [0.0, 0.0, -Pu_N]))
+        push!(model.loads, Asap.NodeForce(model.nodes[id_top], [0.0u"N", 0.0u"N", -Pu]))
         
         Asap.process!(model)
         Asap.solve!(model)
@@ -364,10 +362,9 @@ Unitful.register(StructuralBase.Constants)
         # Check capacity (K=1.0 assumed, weak axis governs)
         KL = L_ft * u"ft"
         ϕPn = get_ϕPn(selected, A992_Steel, KL; axis=:weak)
-        ϕPn_kip = ustrip(u"kip", ϕPn)
         
         # Must satisfy demand
-        @test ϕPn_kip >= Pu_kip
+        @test ϕPn >= Pu
         
         # Should select a reasonable W14 column section
         # W14x columns are typical for this load level
@@ -413,11 +410,11 @@ Unitful.register(StructuralBase.Constants)
 
         # 4. Apply loads
         # Axial: 300 kips compression
-        Pu_N = ustrip(u"N", 300.0 * u"kip")
+        Pu = 300.0u"kip"
         # Lateral: 20 kips (causes moment at base = 20 × 14 = 280 k-ft)
-        H_N = ustrip(u"N", 20.0 * u"kip")
+        H = 20.0u"kip"
         
-        push!(model.loads, Asap.NodeForce(model.nodes[id_top], [H_N, 0.0, -Pu_N]))
+        push!(model.loads, Asap.NodeForce(model.nodes[id_top], [H, 0.0u"N", -Pu]))
         
         Asap.process!(model)
         Asap.solve!(model)
