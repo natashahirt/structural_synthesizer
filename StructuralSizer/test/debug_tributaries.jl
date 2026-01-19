@@ -20,6 +20,27 @@ function make_vertices(coords::Vector{NTuple{2,Float64}})
     return [Meshes.Point(c[1] * u"m", c[2] * u"m") for c in coords]
 end
 
+"""Check if polygon is convex (for display purposes)."""
+function is_convex(verts)
+    pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in verts]
+    n = length(pts)
+    n < 3 && return true
+    
+    sign = 0
+    for i in 1:n
+        p1 = pts[mod1(i - 1, n)]
+        p2 = pts[i]
+        p3 = pts[mod1(i + 1, n)]
+        cross = (p2[1] - p1[1]) * (p3[2] - p2[2]) - (p2[2] - p1[2]) * (p3[1] - p2[1])
+        if abs(cross) > 1e-9
+            s = cross > 0 ? 1 : -1
+            sign == 0 && (sign = s)
+            sign != s && return false
+        end
+    end
+    return true
+end
+
 # --- Regular Shapes ---
 
 rectangle() = make_vertices([
@@ -194,9 +215,17 @@ function visualize_tributary_debug()
         # Compute tributaries
         results = get_tributary_polygons_isotropic(verts)
         
-        # Check if fractions sum to 1
+        # Check convexity and if fractions sum to 1
+        convex = is_convex(verts)
         total_frac = sum(r.fraction for r in results)
-        check = abs(total_frac - 1.0) < 0.01 ? "✓" : "✗ ($(round(total_frac, digits=2)))"
+        
+        if !convex
+            check = "[NC] ✗"  # Non-convex, expected to fail
+        elseif abs(total_frac - 1.0) < 0.01
+            check = "✓"
+        else
+            check = "✗ ($(round(total_frac, digits=2)))"
+        end
         
         title = "$(name) $(check)"
         plot_tributaries!(ax, verts, results; title=title)
@@ -237,13 +266,21 @@ function validate_shapes()
     
     for (name, verts) in shapes
         results = get_tributary_polygons_isotropic(verts)
+        convex = is_convex(verts)
         total_frac = sum(r.fraction for r in results)
         total_area = sum(r.area for r in results)
         n_edges = length(verts)
         
-        status = abs(total_frac - 1.0) < 0.01 ? "✓ PASS" : "✗ FAIL"
+        if !convex
+            status = "⚠ NON-CONVEX (expected fail)"
+        elseif abs(total_frac - 1.0) < 0.01
+            status = "✓ PASS"
+        else
+            status = "✗ FAIL"
+        end
         
-        println("\n$(name) ($(n_edges) edges)")
+        convex_str = convex ? "convex" : "NON-CONVEX"
+        println("\n$(name) ($(n_edges) edges, $(convex_str))")
         println("  Total fraction: $(round(total_frac * 100, digits=1))% — $(status)")
         println("  Total area: $(round(total_area, digits=2)) m²")
         println("  Per edge:")

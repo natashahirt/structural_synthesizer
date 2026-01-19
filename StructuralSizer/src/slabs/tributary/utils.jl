@@ -5,6 +5,9 @@
 import Meshes: Point, coords
 using Unitful: ustrip, @u_str
 
+# Geometry tolerance for vertex/edge comparisons
+const GEOM_TOL = 1e-9
+
 """Result of tributary area computation for one edge."""
 struct TributaryResult
     edge_idx::Int
@@ -19,6 +22,37 @@ function _to_2d(p::Point)
     x = Float64(ustrip(u"m", c.x))
     y = Float64(ustrip(u"m", c.y))
     return (x, y)
+end
+
+"""
+    _is_convex(pts) -> Bool
+
+Check if polygon vertices (in order) form a convex shape.
+Returns true if all cross products have the same sign (no reflex vertices).
+"""
+function _is_convex(pts::Vector{NTuple{2,Float64}})
+    n = length(pts)
+    n < 3 && return true
+    
+    sign = 0
+    for i in 1:n
+        p1 = pts[mod1(i - 1, n)]
+        p2 = pts[i]
+        p3 = pts[mod1(i + 1, n)]
+        
+        # Cross product of edges meeting at p2
+        cross = (p2[1] - p1[1]) * (p3[2] - p2[2]) - (p2[2] - p1[2]) * (p3[1] - p2[1])
+        
+        if abs(cross) > GEOM_TOL
+            s = cross > 0 ? 1 : -1
+            if sign == 0
+                sign = s
+            elseif sign != s
+                return false  # Reflex vertex found → non-convex
+            end
+        end
+    end
+    return true
 end
 
 """Compute bisector directions and speed factors for active vertices."""
@@ -102,21 +136,20 @@ end
 
 """Find time t where two rays intersect (returns Inf if parallel/diverging)."""
 function _ray_ray_intersect_time(p1, d1, p2, d2)
-    # p1 + t*d1 = p2 + t*d2
-    # (d1 - d2) * t = p2 - p1
+    # p1 + t*d1 = p2 + t*d2  →  t*(d1 - d2) = p2 - p1
     dx = d1[1] - d2[1]
     dy = d1[2] - d2[2]
     px = p2[1] - p1[1]
     py = p2[2] - p1[2]
     
-    # Solve for t using both equations, check consistency
-    denom = dx * dx + dy * dy
-    if denom < 1e-20
-        return Inf  # Parallel rays
+    # Use the component with larger magnitude for numerical stability
+    if abs(dx) >= abs(dy)
+        abs(dx) < GEOM_TOL && return Inf  # Parallel rays
+        return px / dx
+    else
+        abs(dy) < GEOM_TOL && return Inf
+        return py / dy
     end
-    
-    t = (px * dx + py * dy) / denom
-    return t
 end
 
 """Compute centroid of active polygon."""

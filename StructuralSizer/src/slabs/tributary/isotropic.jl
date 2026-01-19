@@ -18,6 +18,11 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point})
     pts = [_to_2d(v) for v in vertices]
     original_pts = copy(pts)
     
+    # Warn if non-convex (algorithm only handles convex polygons correctly)
+    if !_is_convex(pts)
+        @warn "Non-convex polygon detected — tributary areas will be incorrect (split events not implemented)"
+    end
+    
     # Track edges at each wavefront level
     # edge_levels[level] = vector of edges, where edge[i] = (start_pt, end_pt)
     edge_levels = Vector{Vector{NTuple{2, NTuple{2,Float64}}}}()
@@ -224,14 +229,18 @@ function _reorganize_edge_levels(edge_levels, n_edges::Int)
     return sorted_by_edge
 end
 
+# Tolerances for polygon construction
+const DEDUP_TOL = 1e-6    # vertex deduplication (numerical noise)
+const SMOOTH_TOL = 1e-4   # smoothing/collinearity (0.1mm)
+
 """Convert edge history to closed polygon vertices."""
 function _convert_edges_to_polygons(sorted_by_edge)
     polygons = Vector{Vector{NTuple{2,Float64}}}()
     
     for edge_history in sorted_by_edge
         # Filter out zero/placeholder edges
-        valid_edges = filter(e -> _dist(e[1], e[2]) > 1e-6 || 
-                                   (_dist(e[1], (0.0,0.0)) > 1e-6), edge_history)
+        valid_edges = filter(e -> _dist(e[1], e[2]) > DEDUP_TOL || 
+                                   (_dist(e[1], (0.0,0.0)) > DEDUP_TOL), edge_history)
         
         if isempty(valid_edges)
             push!(polygons, NTuple{2,Float64}[])
@@ -243,7 +252,7 @@ function _convert_edges_to_polygons(sorted_by_edge)
         # Forward: collect start points (node 1) of each level
         for edge in valid_edges
             pt = edge[1]
-            if isempty(nodes) || _dist(pt, nodes[end]) > 1e-6
+            if isempty(nodes) || _dist(pt, nodes[end]) > DEDUP_TOL
                 push!(nodes, pt)
             end
         end
@@ -251,7 +260,7 @@ function _convert_edges_to_polygons(sorted_by_edge)
         # Backward: collect end points (node 2) in reverse
         for edge in reverse(valid_edges)
             pt = edge[2]
-            if isempty(nodes) || _dist(pt, nodes[end]) > 1e-6
+            if isempty(nodes) || _dist(pt, nodes[end]) > DEDUP_TOL
                 push!(nodes, pt)
             end
         end
@@ -265,7 +274,7 @@ function _convert_edges_to_polygons(sorted_by_edge)
 end
 
 """Remove collinear and duplicate points."""
-function _smooth_nodes(nodes::Vector{NTuple{2,Float64}}; tol::Float64 = 0.01)
+function _smooth_nodes(nodes::Vector{NTuple{2,Float64}}; tol::Float64 = SMOOTH_TOL)
     length(nodes) <= 2 && return nodes
     
     result = [nodes[1]]
@@ -293,7 +302,7 @@ end
 _dist(p1, p2) = hypot(p1[1] - p2[1], p1[2] - p2[2])
 
 """Check if three points are collinear within tolerance."""
-function _is_collinear(p1, p2, p3; tol::Float64 = 0.01)
+function _is_collinear(p1, p2, p3; tol::Float64 = SMOOTH_TOL)
     cross = (p2[1] - p1[1]) * (p3[2] - p1[2]) - (p2[2] - p1[2]) * (p3[1] - p1[1])
     len = _dist(p1, p3)
     len < tol && return true
