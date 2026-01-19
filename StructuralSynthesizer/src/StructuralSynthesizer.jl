@@ -30,16 +30,21 @@ export gen_medium_office
 # Core types
 export BuildingSkeleton, BuildingStructure, Story
 export Cell, Slab, SlabGroup, total_dead_load, thickness
+export CellGroup, TributaryPolygon
 export Segment, Member, MemberGroup
 
 # Functions
 export visualize
 export visualize_slabs, print_slab_summary
+export visualize_cell_groups, visualize_cell_tributary, visualize_cell_tributaries
 export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
 export initialize!
 export initialize_cells!, initialize_slabs!
 export initialize_segments!, initialize_members!, update_bracing!
-export build_slab_groups!
+export build_slab_groups!, build_cell_groups!, compute_cell_tributaries!
+
+# Geometry extraction (for tributary area computation)
+export extract_cell_geometry, extract_slab_geometry, extract_slabgroup_geometry
 
 # Member sizing (catalog-based)
 export build_member_groups!, member_group_demands, size_members_discrete!

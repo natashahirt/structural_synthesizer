@@ -10,20 +10,50 @@ end
 
 Story{T}(elev::T) where T = Story{T}(elev, Int[], Int[], Int[])
 
+# =============================================================================
+# Tributary Area Types
+# =============================================================================
+
+"""Tributary polygon for one edge of a cell (2D, meters)."""
+struct TributaryPolygon
+    edge_idx::Int
+    vertices::Vector{NTuple{2, Float64}}
+    area::Float64
+    fraction::Float64  # of total cell area
+end
+
+"""Grouping of geometrically identical cells with same directionality."""
+struct CellGroup
+    hash::UInt64
+    cell_indices::Vector{Int}
+end
+
+CellGroup(hash::UInt64) = CellGroup(hash, Int[])
+
+# =============================================================================
+# Cell
+# =============================================================================
+
 """Per-face analysis data (one bay)."""
 mutable struct Cell{T, A, P}
     face_idx::Int
     area::A
     span_x::T
     span_y::T
-    sdl::P         # superimposed dead load (service)
-    live_load::P   # service
-    self_weight::P # service (computed after slab sizing)
+    sdl::P
+    live_load::P
+    self_weight::P
+    # Structural direction (from parent slab)
+    span_axis::Union{NTuple{3, Float64}, Nothing}
+    floor_type::Symbol
+    # Tributary results (one polygon per edge)
+    tributary::Union{Vector{TributaryPolygon}, Nothing}
 end
 
 function Cell(face_idx::Int, area::A, span_x::T, span_y::T, 
               sdl::P, live_load::P) where {T, A, P}
-    Cell{T, A, P}(face_idx, area, span_x, span_y, sdl, live_load, zero(P))
+    Cell{T, A, P}(face_idx, area, span_x, span_y, sdl, live_load, zero(P),
+                  nothing, :unknown, nothing)
 end
 
 """Total factored dead load (SDL + self-weight)."""
@@ -158,6 +188,7 @@ mutable struct BuildingStructure{T, A, P} <: AbstractBuildingStructure
     skeleton::BuildingSkeleton{T}
     # Slabs
     cells::Vector{Cell{T, A, P}}
+    cell_groups::Dict{UInt64, CellGroup}
     slabs::Vector{Slab{T, <:AbstractFloorResult}}
     slab_groups::Dict{UInt64, SlabGroup}
     # Framing
@@ -173,7 +204,8 @@ function BuildingStructure(skel::BuildingSkeleton{T}) where T
     P = typeof(1.0u"kN/m^2")
     BuildingStructure{T, A, P}(
         skel,
-        Cell{T, A, P}[], Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
+        Cell{T, A, P}[], Dict{UInt64, CellGroup}(),
+        Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
     )
@@ -182,7 +214,8 @@ end
 function BuildingStructure{T, A, P}(skel::BuildingSkeleton{T}) where {T, A, P}
     BuildingStructure{T, A, P}(
         skel,
-        Cell{T, A, P}[], Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
+        Cell{T, A, P}[], Dict{UInt64, CellGroup}(),
+        Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
     )

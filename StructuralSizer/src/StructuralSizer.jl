@@ -127,19 +127,27 @@ export solve_equilibrium_rise
 export parabolic_arc_length, vault_volume_per_area
 
 # =============================================================================
-# Tributary Load Distribution
+# SlabGroup Geometry Extraction
 # =============================================================================
 
-# Types
-export CellGeometry, TributaryResult, EdgeLoadResult, CellGroup
-export WeightStrategy, WEIGHT_UNIFORM, WEIGHT_SECTION_EI, WEIGHT_INV_LENGTH, WEIGHT_USER_DEFINED
+# Point types
+export Point2D, Point3D
 
-# Core functions
-export grassfire_tributary, compute_edge_weights, weight_ratios
-export distribute_cell_loads, distribute_cell_loads_grouped
-export discretize_tributary_loads, merge_edge_loads
+# Geometry types
+export CellGeometry, SlabGeometry, SlabGroupGeometry
 
-# Geometry helpers
-export polygon_area, polygon_centroid, is_convex, interior_angles
+# Extraction functions
+export extract_cell_geometry, extract_slab_geometry, extract_slabgroup_geometry
+
+# Accessors
+export get_vertices, get_all_vertices, get_cell_polygons
+export total_area, cell_count, slab_count
+
+# =============================================================================
+# Tributary Area (Straight Skeleton)
+# =============================================================================
+
+export TributaryResult
+export get_tributary_polygons_isotropic
 
 end # module

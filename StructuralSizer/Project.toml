@@ -7,8 +7,10 @@ version = "0.1.0"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Gurobi = "2e9cd046-0924-5485-92f1-d5272153d98b"
 HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+Meshes = "eacbb407-ea5a-433e-ab97-5258b1ca43fa"
 QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
 Roots = "f2b01f46-fcfa-551c-844a-d8ac1e96c665"
 StructuralBase = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
@@ -23,17 +25,20 @@ StructuralUnits = {path = "../StructuralUnits"}
 
 [extras]
 Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 StructuralSynthesizer = "fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Asap", "StructuralSynthesizer", "Test"]
+test = ["Asap", "DelimitedFiles", "StructuralSynthesizer", "Test"]
 
 [compat]
 CSV = "0.10"
 Gurobi = "1.9.1"
 HiGHS = "1.20.1"
+JSON3 = "1"
 JuMP = "1.29.3"
+Meshes = "0.50 - 0.60"
 QuadGK = "2"
 Roots = "2"
 Unitful = "1.27.0"

@@ -11,7 +11,7 @@ using StructuralSynthesizer  # Geometry & BIM logic
 using Asap
 
 # Generate building geometry
-skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4);
+skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4, irregular=:shift_x, offset=1.0u"m");
 struc = BuildingStructure(skel);
 
 # Fully initialize the structure
@@ -46,3 +46,6 @@ end
 # Visualize
 visualize(skel)
 visualize(skel, struc.asap_model, mode=:deflected, color_by=:displacement_local, show_original_geometry=false)
+visualize_cell_tributaries(struc)
+
+struc.cells[2].tributary

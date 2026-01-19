@@ -2,7 +2,7 @@
 
 julia_version = "1.11.6"
 manifest_format = "2.0"
-project_hash = "02dc58a4a424b9bbcf6661e2c1b8a7bb933a2aaa"
+project_hash = "fddbba0f707cde9d7de3dbf92a7a6f210553cbb9"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1820,7 +1820,7 @@ uuid = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
 version = "0.1.0"
 
 [[deps.StructuralSizer]]
-deps = ["CSV", "Gurobi", "HiGHS", "JuMP", "Logging", "QuadGK", "Roots", "StructuralBase", "StructuralUnits", "Unitful"]
+deps = ["CSV", "Gurobi", "HiGHS", "JSON3", "JuMP", "Logging", "Meshes", "QuadGK", "Roots", "StructuralBase", "StructuralUnits", "Unitful"]
 path = "StructuralSizer"
 uuid = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
 version = "0.1.0"

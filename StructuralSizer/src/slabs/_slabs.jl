@@ -7,5 +7,5 @@ include("options.jl")
 # Sizing codes
 include("codes/_codes.jl")
 
-# Load distribution (stub)
+# Tributary area computation (straight skeleton)
 include("tributary/_tributary.jl")

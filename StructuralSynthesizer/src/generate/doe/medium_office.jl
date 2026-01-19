@@ -1,9 +1,24 @@
-function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::Unitful.Length, x_bays::Int64, y_bays::Int64, n_stories::Int64)::BuildingSkeleton
-    # expect linear values
+"""
+    gen_medium_office(x, y, floor_height, x_bays, y_bays, n_stories; irregular=:none, offset=0.0u"m")
+
+Generate a medium office building skeleton.
+
+# Arguments
+- `irregular::Symbol`: Column shift pattern for irregular bays
+  - `:none` - Regular rectangular grid (default)
+  - `:shift_x` - Shift interior columns in x by ±offset (alternating rows)
+  - `:shift_y` - Shift interior columns in y by ±offset (alternating columns)
+  - `:zigzag` - Alternating shift in both directions
+- `offset::Unitful.Length`: Amount to shift interior columns (default 0.0m)
+"""
+function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::Unitful.Length, 
+                           x_bays::Int64, y_bays::Int64, n_stories::Int64;
+                           irregular::Symbol=:none, offset::Unitful.Length=0.0u"m")::BuildingSkeleton
     # convert everything to meters internally
     x = uconvert(u"m", x)
     y = uconvert(u"m", y)
     floor_height = uconvert(u"m", floor_height)
+    offset = uconvert(u"m", offset)
 
     T = typeof(x)
     skel = BuildingSkeleton{T}()
@@ -18,8 +33,36 @@ function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::U
         push!(skel.stories_z, round(ustrip(k*floor_height), digits=2) * unit(floor_height))
     end
 
-    # helper function (k is now 0-indexed offset for stories_z vector)
-    get_pt(i, j, k) = Meshes.Point(i*x_span, j*y_span, skel.stories_z[k+1])
+    # helper function with optional column shift for irregular grids
+    function get_pt(i, j, k)
+        base_x = i * x_span
+        base_y = j * y_span
+        
+        # Only shift interior columns (not edges)
+        is_interior_x = 0 < i < x_bays
+        is_interior_y = 0 < j < y_bays
+        
+        dx = zero(x)
+        dy = zero(y)
+        
+        if irregular == :shift_x && is_interior_x
+            # Alternate direction based on row
+            dx = iseven(j) ? offset : -offset
+        elseif irregular == :shift_y && is_interior_y
+            # Alternate direction based on column
+            dy = iseven(i) ? offset : -offset
+        elseif irregular == :zigzag && (is_interior_x || is_interior_y)
+            # Checkerboard-style shift
+            if is_interior_x
+                dx = iseven(i + j) ? offset : -offset
+            end
+            if is_interior_y
+                dy = iseven(i + j) ? offset : -offset
+            end
+        end
+        
+        return Meshes.Point(base_x + dx, base_y + dy, skel.stories_z[k+1])
+    end
 
     # get elements
     for k in 0:n_stories

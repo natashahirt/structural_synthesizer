@@ -152,6 +152,28 @@ function extract_cell_geometry(struc::BuildingStructure, cell_idx::Int)
 end
 
 """
+    extract_slab_geometry(struc, slab_idx) -> SlabGeometry
+
+Extract geometry for all cells in a slab.
+"""
+function extract_slab_geometry(struc::BuildingStructure, slab_idx::Int)
+    slab = struc.slabs[slab_idx]
+    cells = [extract_cell_geometry(struc, ci) for ci in slab.cell_indices]
+    return StructuralSizer.SlabGeometry(slab_idx, cells)
+end
+
+"""
+    extract_slabgroup_geometry(struc, group_id) -> SlabGroupGeometry
+
+Extract geometry for all slabs in a slab group.
+"""
+function extract_slabgroup_geometry(struc::BuildingStructure, group_id::UInt64)
+    group = struc.slab_groups[group_id]
+    slabs = [extract_slab_geometry(struc, si) for si in group.slab_indices]
+    return StructuralSizer.SlabGroupGeometry(group_id, slabs)
+end
+
+"""
     cell_total_factored_force(struc, cell_idx) -> (Fx, Fy, Fz) [N]
 
 Compute factored force for a single cell.
@@ -163,61 +185,8 @@ function cell_total_factored_force(struc::BuildingStructure, cell_idx::Int)
     return (0.0, 0.0, -p * a)
 end
 
-"""Internal helper: gravity point loads as `EdgePointLoadSpec`."""
+"""Internal helper: gravity point loads as `EdgePointLoadSpec` (uniform distribution)."""
 function slab_edge_point_loads(
-    struc::BuildingStructure,
-    slab::Slab;
-    use_tributary::Bool = true,
-    weight_strategy::StructuralSizer.WeightStrategy = StructuralSizer.WEIGHT_UNIFORM,
-    n_points::Int = 5,
-    # Legacy options (ignored when use_tributary=true)
-    xs::AbstractVector{<:Real} = [0.5],
-    total_force::Union{Nothing, NTuple{3, Float64}} = nothing,
-)::Vector{EdgePointLoadSpec}
-    
-    if use_tributary
-        return _slab_edge_point_loads_tributary(struc, slab; 
-            weight_strategy=weight_strategy, n_points=n_points)
-    else
-        return _slab_edge_point_loads_uniform(struc, slab; xs=xs, total_force=total_force)
-    end
-end
-
-"""Tributary-based point load distribution (per-cell with edge merging)."""
-function _slab_edge_point_loads_tributary(
-    struc::BuildingStructure,
-    slab::Slab;
-    weight_strategy::StructuralSizer.WeightStrategy = StructuralSizer.WEIGHT_UNIFORM,
-    n_points::Int = 5,
-)::Vector{EdgePointLoadSpec}
-    # Compute loads for each cell
-    all_edge_loads = Vector{StructuralSizer.EdgeLoadResult}[]
-    
-    for cell_idx in slab.cell_indices
-        geom = extract_cell_geometry(struc, cell_idx)
-        force = cell_total_factored_force(struc, cell_idx)
-        
-        # Compute tributary loads for this cell
-        cell_loads = StructuralSizer.distribute_cell_loads(
-            geom, force;
-            strategy=weight_strategy,
-            n_points=n_points
-        )
-        push!(all_edge_loads, cell_loads)
-    end
-    
-    # Merge loads from multiple cells (internal edges get contributions from both sides)
-    merged = StructuralSizer.merge_edge_loads(all_edge_loads)
-    
-    # Convert to EdgePointLoadSpec
-    return [
-        EdgePointLoadSpec(load.edge_idx, load.xs, load.forces)
-        for load in merged
-    ]
-end
-
-"""Legacy uniform distribution (for backward compatibility)."""
-function _slab_edge_point_loads_uniform(
     struc::BuildingStructure,
     slab::Slab;
     xs::AbstractVector{<:Real} = [0.5],
@@ -235,10 +204,7 @@ function _slab_edge_point_loads_uniform(
     scale = 1.0 / n_edges
     f_per_edge = (Fx * scale, Fy * scale, Fz * scale)
 
-    return [
-        EdgePointLoadSpec(Int(e), xs_vec, fill(f_per_edge, n_pts))
-        for e in edge_ids
-    ]
+    return [EdgePointLoadSpec(Int(e), xs_vec, fill(f_per_edge, n_pts)) for e in edge_ids]
 end
 
 """Internal helper: structural effects as `EdgeLineLoadSpec` (e.g. vault thrust)."""
@@ -258,27 +224,20 @@ function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{Edge
 end
 
 """
-    slab_edge_load_specs(struc, slab; use_tributary=true, weight_strategy=WEIGHT_UNIFORM, n_points=5)
+    slab_edge_load_specs(struc, slab; xs=[0.5])
 
 Unified slab load API: returns a single list of edge load specs (point + line).
 
 # Keyword Arguments
-- `use_tributary::Bool`: If true, use grassfire/tributary area distribution (default)
-- `weight_strategy::WeightStrategy`: Edge weight strategy for tributary calculation
-- `n_points::Int`: Number of point loads per edge
+- `xs::AbstractVector{<:Real}`: Load positions along each edge (0–1), default midpoint
 """
 function slab_edge_load_specs(
     struc::BuildingStructure,
     slab::Slab;
-    use_tributary::Bool = true,
-    weight_strategy::StructuralSizer.WeightStrategy = StructuralSizer.WEIGHT_UNIFORM,
-    n_points::Int = 5,
+    xs::AbstractVector{<:Real} = [0.5],
 )::Vector{AbstractEdgeLoadSpec}
     specs = AbstractEdgeLoadSpec[]
-    append!(specs, slab_edge_point_loads(struc, slab; 
-        use_tributary=use_tributary, 
-        weight_strategy=weight_strategy, 
-        n_points=n_points))
+    append!(specs, slab_edge_point_loads(struc, slab; xs=xs))
     append!(specs, slab_edge_line_loads(struc, slab))
     return specs
 end

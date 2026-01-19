@@ -190,7 +190,7 @@ function _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
         for s in specs
             length(s.cell_indices) == 1 || throw(ArgumentError("Vault slabs must be a single rectangular face; got a slab with $(length(s.cell_indices)) cells in group $gid."))
             cell = struc.cells[only(s.cell_indices)]
-            _assert_rectangular_vault_face!(struc, cell.face_idx)
+            _assert_rectangular_slab_face(struc, cell.face_idx)
         end
     end
 
@@ -214,8 +214,12 @@ function _apply_slab_results!(struc, slab_specs, group_results, group_sw)
         result = group_results[gid]
         sw_service = group_sw[gid]
 
+        # Propagate structural data to cells
         for c_idx in spec.cell_indices
-            struc.cells[c_idx].self_weight = sw_service
+            cell = struc.cells[c_idx]
+            cell.self_weight = sw_service
+            cell.span_axis = spec.span_axis
+            cell.floor_type = spec.floor_type
         end
 
         slab = Slab(spec.cell_indices, result; floor_type=spec.floor_type, span_axis=spec.span_axis, group_id=gid)
@@ -246,10 +250,107 @@ function build_slab_groups!(struc::BuildingStructure)
         sg = get!(struc.slab_groups, gid) do
             SlabGroup(gid)
         end
+
         push!(sg.slab_indices, s_idx)
     end
 
     return struc.slab_groups
+end
+
+# =============================================================================
+# Cell Grouping (for tributary area optimization)
+# =============================================================================
+
+"""
+    build_cell_groups!(struc::BuildingStructure)
+
+Group cells by (geometry_hash, span_axis, floor_type) for tributary computation.
+Cells in the same group share identical tributary polygons (computed once).
+"""
+function build_cell_groups!(struc::BuildingStructure)
+    empty!(struc.cell_groups)
+
+    for (c_idx, cell) in enumerate(struc.cells)
+        key = _cell_group_hash(struc, cell)
+
+        cg = get!(struc.cell_groups, key) do
+            CellGroup(key)
+        end
+        push!(cg.cell_indices, c_idx)
+    end
+
+    return struc.cell_groups
+end
+
+"""Hash cell by geometry signature + direction."""
+function _cell_group_hash(struc::BuildingStructure, cell::Cell)
+    # Geometry: normalized vertex offsets (translation-invariant)
+    geom_sig = _cell_geometry_signature(struc, cell)
+    # Direction + floor type
+    return UInt64(hash((geom_sig, cell.span_axis)))
+end
+
+"""Compute translation-invariant geometry signature for a cell."""
+function _cell_geometry_signature(struc::BuildingStructure, cell::Cell)
+    poly = struc.skeleton.faces[cell.face_idx]
+    pts = Meshes.vertices(poly)
+    
+    # Get 2D coords, strip units
+    coords = [(Float64(ustrip(u"m", Meshes.coords(p).x)),
+               Float64(ustrip(u"m", Meshes.coords(p).y))) for p in pts]
+    
+    # Translate to origin (first vertex)
+    x0, y0 = first(coords)
+    normalized = [(x - x0, y - y0) for (x, y) in coords]
+    
+    # Round to avoid floating-point noise in hash
+    return Tuple(round.(v, digits=6) for v in normalized)
+end
+
+# =============================================================================
+# Tributary Area Computation
+# =============================================================================
+
+"""
+    compute_cell_tributaries!(struc::BuildingStructure)
+
+Compute tributary polygons for all cells, using CellGroups to avoid redundant work.
+Results are stored in `cell.tributary`.
+"""
+function compute_cell_tributaries!(struc::BuildingStructure)
+    # Ensure cell groups exist
+    isempty(struc.cell_groups) && build_cell_groups!(struc)
+
+    for cg in values(struc.cell_groups)
+        # Compute once for canonical cell
+        canonical_idx = first(cg.cell_indices)
+        canonical_cell = struc.cells[canonical_idx]
+        
+        trib = _compute_cell_tributary(struc, canonical_cell)
+        
+        # Apply to all cells in group
+        for c_idx in cg.cell_indices
+            struc.cells[c_idx].tributary = trib
+        end
+    end
+end
+
+"""
+Compute tributary polygons for a single cell using straight skeleton algorithm.
+Returns Vector{TributaryPolygon}, one per edge.
+"""
+function _compute_cell_tributary(struc::BuildingStructure, cell::Cell)::Vector{TributaryPolygon}
+    skel = struc.skeleton
+    edge_ids = skel.face_edge_indices[cell.face_idx]
+    vert_indices = skel.face_vertex_indices[cell.face_idx]
+    vertices = [skel.vertices[i] for i in vert_indices]
+    
+    # Use straight skeleton algorithm
+    results = StructuralSizer.get_tributary_polygons_isotropic(vertices)
+    
+    # Convert TributaryResult → TributaryPolygon with correct edge indices
+    return [TributaryPolygon(edge_ids[r.edge_idx], r.vertices, r.area, r.fraction) 
+            for r in results]
 end
 
 function _resolve_slab_group_id(slab_group_ids, idx::Int; tag::Symbol)
@@ -302,7 +403,7 @@ Identifies support edges and applies outward horizontal LineLoads to ASAP member
 """
 function StructuralSizer.apply_effects!(::Vault, struc::BuildingStructure, slab::Slab)
     # Keep this method for compatibility, but delegate to the unified edge-load interface.
-    _assert_rectangular_vault_face!(struc, struc.cells[first(slab.cell_indices)].face_idx)
+    _assert_rectangular_slab_face(struc, struc.cells[first(slab.cell_indices)].face_idx)
 
     for ll in slab_edge_line_loads(struc, slab)
         el = struc.asap_model.elements[ll.edge_idx]
@@ -311,7 +412,7 @@ function StructuralSizer.apply_effects!(::Vault, struc::BuildingStructure, slab:
 end
 
 # --- Vault geometry guard ---
-function _assert_rectangular_vault_face!(struc::BuildingStructure, face_idx::Int; tol=1e-8)
+function _assert_rectangular_slab_face(struc::BuildingStructure, face_idx::Int; tol=1e-8)
     skel = struc.skeleton
     poly = skel.faces[face_idx]
     pts = Meshes.vertices(poly)
