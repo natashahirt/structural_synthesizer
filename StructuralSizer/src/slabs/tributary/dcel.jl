@@ -75,13 +75,6 @@ function get_or_create_vertex!(reg::VertexRegistry, p::NTuple{2,Float64})
     return idx
 end
 
-"""Check if vertex exists at position."""
-has_vertex(reg::VertexRegistry, p::NTuple{2,Float64}) = haskey(reg.map, _vertex_key(p, reg.tol))
-
-"""Get vertex index if exists, else 0."""
-function get_vertex(reg::VertexRegistry, p::NTuple{2,Float64})
-    return get(reg.map, _vertex_key(p, reg.tol), 0)
-end
 
 # =============================================================================
 # Halfedge Construction
@@ -217,14 +210,6 @@ end
 # =============================================================================
 # Face Construction and Extraction
 # =============================================================================
-
-"""
-Create face with given ID and assign one boundary halfedge.
-"""
-function create_face!(dcel::DCEL, id::Int, boundary_edge::Int)
-    push!(dcel.F, DCELFace(id, boundary_edge))
-    return length(dcel.F)
-end
 
 """
 Walk a face cycle starting from halfedge h, respecting face boundaries.
@@ -494,29 +479,6 @@ function insert_artificial_bisectors!(dcel::DCEL, reg::VertexRegistry; eps_scale
     end
     
     return inserted
-end
-
-"""
-Check if a vertex has unmatched faces (diagnostic function).
-Returns list of faces that have incoming but no matching outgoing edge.
-"""
-function diagnose_vertex(dcel::DCEL, v::Int)
-    unmatched = Int[]
-    
-    out_edges = outgoing_halfedges(dcel, v)
-    in_edges = incoming_halfedges(dcel, v)
-    
-    out_faces = Set(dcel.E[h].face for h in out_edges if dcel.E[h].face != 0)
-    in_faces = Set(dcel.E[h].face for h in in_edges if dcel.E[h].face != 0)
-    
-    # Faces that arrive but have no departure
-    for f in in_faces
-        if !(f in out_faces)
-            push!(unmatched, f)
-        end
-    end
-    
-    return unmatched
 end
 
 # =============================================================================

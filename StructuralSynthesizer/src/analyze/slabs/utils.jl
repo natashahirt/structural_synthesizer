@@ -346,7 +346,7 @@ function _compute_cell_tributary(struc::BuildingStructure, cell::Cell)::Vector{T
     vertices = [skel.vertices[i] for i in vert_indices]
     
     # Use straight skeleton algorithm (DCEL-based)
-    results = StructuralSizer.get_tributary_polygons_isotropic_dcel(vertices)
+    results = StructuralSizer.get_tributary_polygons_isotropic(vertices)
     
     # Convert TributaryResult → TributaryPolygon with correct edge indices
     return [TributaryPolygon(edge_ids[r.edge_idx], r.vertices, r.area, r.fraction) 

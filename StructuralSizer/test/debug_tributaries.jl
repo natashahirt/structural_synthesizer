@@ -116,6 +116,48 @@ wide_triangle() = make_vertices([
     (0.0, 0.0), (3.0, 0.0), (1.5, 5.0)
 ])
 
+# --- Adversarial / Edge Case Shapes ---
+
+"""Very thin rectangle (tests numerical stability)."""
+very_thin_rect() = make_vertices([
+    (0.0, 0.0), (10.0, 0.0), (10.0, 0.1), (0.0, 0.1)
+])
+
+"""Rectangle with one very short edge."""
+rect_one_short_edge() = make_vertices([
+    (0.0, 0.0), (10.0, 0.0), (10.0, 0.01), (0.0, 4.0)
+])
+
+"""Shape with very acute angle."""
+acute_angle_shape() = make_vertices([
+    (0.0, 0.0), (5.0, 0.0), (4.99, 0.1), (0.0, 3.0)
+])
+
+"""Shape with very obtuse angle (near 180°)."""
+obtuse_angle_shape() = make_vertices([
+    (0.0, 0.0), (1.0, 0.0), (2.0, 0.01), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)
+])
+
+"""Highly irregular shape with varying edge lengths."""
+irregular_varying_edges() = make_vertices([
+    (0.0, 0.0), (0.5, 0.0), (8.0, 0.0), (9.0, 1.0), (8.5, 4.0), (0.5, 4.0), (0.0, 3.0)
+])
+
+"""Almost-square with slight asymmetry."""
+almost_square() = make_vertices([
+    (0.0, 0.0), (4.001, 0.0), (4.0, 4.0), (0.0, 4.0)
+])
+
+"""Rectangle with extreme aspect ratio."""
+extreme_aspect_rect() = make_vertices([
+    (0.0, 0.0), (20.0, 0.0), (20.0, 1.0), (0.0, 1.0)
+])
+
+"""Shape with collinear vertices (should be simplified)."""
+with_collinear() = make_vertices([
+    (0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (4.0, 3.0), (2.0, 3.0), (0.0, 3.0)
+])
+
 # =============================================================================
 # Visualization
 # =============================================================================
@@ -182,12 +224,11 @@ function visualize_tributary_debug()
     # Define all test shapes: (name, vertices, weights)
     # weights = nothing means isotropic (all weights = 1.0)
     shapes = [
+        # Basic shapes (isotropic)
         ("Square", square(), nothing),
         ("Rectangle", rectangle(), nothing),
-        ("Rectangle (w=[1,2,1,2])", rectangle(), [1.0, 2.0, 1.0, 2.0]),
         ("Long Rectangle", long_thin_rect(), nothing),
         ("Parallelogram", parallelogram(), nothing),
-        ("Parallelogram (w=[2,1,2,1])", parallelogram(), [1.0, 1.0, 2.0, 1.0]),
         ("Trapezoid", trapezoid(), nothing),
         ("Trapezoid (wide top)", trapezoid_wide_top(), nothing),
         ("Triangle (narrow)", narrow_triangle(), nothing),
@@ -195,6 +236,42 @@ function visualize_tributary_debug()
         ("Pentagon", pentagon(), nothing),
         ("Hexagon", hexagon(), nothing),
         ("Octagon", octagon(), nothing),
+        
+        # Weighted cases - symmetric patterns
+        ("Rectangle (w=[1,2,1,2])", rectangle(), [1.0, 2.0, 1.0, 2.0]),
+        ("Rectangle (w=[2,1,2,1])", rectangle(), [2.0, 1.0, 2.0, 1.0]),
+        ("Square (w=[1,3,1,3])", square(), [1.0, 3.0, 1.0, 3.0]),
+        ("Parallelogram (w=[1,1,2,1])", parallelogram(), [1.0, 1.0, 2.0, 1.0]),
+        ("Octagon (w=[1,1,2,1,2,1,1,1])", octagon(), [1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0]),
+        
+        # Weighted cases - extreme ratios
+        ("Rectangle (w=[1,10,1,10])", rectangle(), [1.0, 10.0, 1.0, 10.0]),
+        ("Square (w=[0.5,2,0.5,2])", square(), [0.5, 2.0, 0.5, 2.0]),
+        ("Rectangle (w=[1,0.1,1,0.1])", rectangle(), [1.0, 0.1, 1.0, 0.1]),
+        
+        # Weighted cases - asymmetric
+        ("Rectangle (w=[1,1,1,5])", rectangle(), [1.0, 1.0, 1.0, 5.0]),
+        ("Square (w=[1,1,5,1])", square(), [1.0, 1.0, 5.0, 1.0]),
+        ("Parallelogram (w=[1,2,3,4])", parallelogram(), [1.0, 2.0, 3.0, 4.0]),
+        
+        # Adversarial cases - thin/narrow shapes
+        # ("Very Thin Rect", very_thin_rect(), nothing),
+        # ("Very Thin (w=[1,10,1,10])", very_thin_rect(), [1.0, 10.0, 1.0, 10.0]),
+        # ("Extreme Aspect", extreme_aspect_rect(), nothing),
+        ("One Short Edge", rect_one_short_edge(), nothing),
+        ("One Short (w=[1,1,1,10])", rect_one_short_edge(), [1.0, 1.0, 1.0, 10.0]),
+        
+        # Adversarial cases - angles
+        ("Acute Angle", acute_angle_shape(), nothing),
+        ("Obtuse Angle", obtuse_angle_shape(), nothing),
+        ("Almost Square", almost_square(), nothing),
+        
+        # Adversarial cases - irregular
+        ("Irregular Varying", irregular_varying_edges(), nothing),
+        ("Irregular Varying (w=[1,1,2,1,2,1,1])", irregular_varying_edges(), [1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0]),
+        ("With Collinear", with_collinear(), nothing),
+        
+        # Complex shapes
         ("Irregular Quad", irregular_quad(), nothing),
         ("Irregular Pentagon", irregular_pentagon(), nothing),
         ("Irregular Hexagon", irregular_hexagon(), nothing),
@@ -204,7 +281,7 @@ function visualize_tributary_debug()
     ]
     
     n_shapes = length(shapes)
-    n_cols = 4
+    n_cols = 6
     n_rows = ceil(Int, n_shapes / n_cols)
     
     fig = Figure(size = (400 * n_cols, 380 * n_rows), fontsize=12)
@@ -220,7 +297,7 @@ function visualize_tributary_debug()
         )
         
         # Compute tributaries (with optional weights)
-        results = get_tributary_polygons_isotropic_dcel(verts; weights=weights)
+        results = get_tributary_polygons_isotropic(verts; weights=weights)
         
         # Check convexity and if fractions sum to 1
         convex = is_convex(verts)
@@ -270,7 +347,7 @@ function validate_shapes()
     println("=" ^ 60)
     
     for (name, verts) in shapes
-        results = get_tributary_polygons_isotropic_dcel(verts)
+        results = get_tributary_polygons_isotropic(verts)
         convex = is_convex(verts)
         total_frac = sum(r.fraction for r in results)
         total_area = sum(r.area for r in results)
@@ -306,14 +383,14 @@ validate_shapes()
 println("\n" * "=" ^ 60)
 println("Octagon Tributary Polygons — DCEL Algorithm")
 println("=" ^ 60)
-oct_results_dcel = get_tributary_polygons_isotropic_dcel(octagon())
-for r in oct_results_dcel
+oct_results = get_tributary_polygons_isotropic(octagon())
+for r in oct_results
     println("\nEdge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m²")
     for (j, v) in enumerate(r.vertices)
         println("  [$j] ($(round(v[1], digits=4)), $(round(v[2], digits=4)))")
     end
 end
-println("\nTotal fraction: $(round(sum(r.fraction for r in oct_results_dcel) * 100, digits=1))%")
+println("\nTotal fraction: $(round(sum(r.fraction for r in oct_results) * 100, digits=1))%")
 
 # Debug: test weighted edges on a rectangle
 println("\n" * "=" ^ 60)
@@ -321,7 +398,7 @@ println("Weighted Rectangle Test")
 println("=" ^ 60)
 rect = rectangle()
 println("\nIsotropic (all weights = 1.0):")
-rect_iso = get_tributary_polygons_isotropic_dcel(rect)
+rect_iso = get_tributary_polygons_isotropic(rect)
 for r in rect_iso
     println("  Edge $(r.edge_idx): area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
 end
@@ -329,7 +406,7 @@ end
 println("\nWeighted [1.0, 2.0, 1.0, 2.0] (short edges move 2x faster): (Parallelogram)")
 par = parallelogram()
 println("Parallelogram vertices: $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in par])")
-par_weighted = get_tributary_polygons_isotropic_dcel(par; weights=[1.0, 1.0, 1.0, 2.0])
+par_weighted = get_tributary_polygons_isotropic(par; weights=[1.0, 1.0, 1.0, 2.0])
 println("\nResults:")
 for r in par_weighted
     println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
@@ -338,6 +415,57 @@ for r in par_weighted
     end
 end
 println("\nExpected: edges 2,4 (short, weight=2) should have SMALLER areas")
+
+# Debug: test irregular varying edges
+println("\n" * "=" ^ 60)
+println("Irregular Varying Edges Test")
+println("=" ^ 60)
+irreg_var = irregular_varying_edges()
+println("\nIrregular Varying vertices: $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in irreg_var])")
+println("\nIsotropic (all weights = 1.0):")
+irreg_var_iso = get_tributary_polygons_isotropic(irreg_var)
+for r in irreg_var_iso
+    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(r.vertices) && length(r.vertices) <= 10
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    end
+end
+total_frac_iso = sum(r.fraction for r in irreg_var_iso)
+println("\nTotal fraction: $(round(total_frac_iso * 100, digits=1))%")
+
+println("\nWeighted [1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0] (edges 3,5 move 2x faster):")
+irreg_var_weighted = get_tributary_polygons_isotropic(irreg_var; weights=[1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0])
+println("\nResults:")
+for r in irreg_var_weighted
+    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(r.vertices) && length(r.vertices) <= 10
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    end
+end
+total_frac_weighted = sum(r.fraction for r in irreg_var_weighted)
+println("\nTotal fraction: $(round(total_frac_weighted * 100, digits=1))%")
+println("\nExpected: edges 3,5 (weight=2) should have SMALLER areas")
+
+# Debug: test with collinear vertices
+println("\n" * "=" ^ 60)
+println("With Collinear Vertices Test")
+println("=" ^ 60)
+collinear_shape = with_collinear()
+println("\nWith Collinear vertices (6 vertices, should simplify to 4): $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in collinear_shape])")
+println("Note: Vertices (0,0), (2,0), (4,0) are collinear on bottom edge")
+println("      Vertices (4,3), (2,3), (0,3) are collinear on top edge")
+println("      Should simplify to rectangle: (0,0), (4,0), (4,3), (0,3)")
+collinear_results = get_tributary_polygons_isotropic(collinear_shape)
+println("\nResults:")
+for r in collinear_results
+    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(r.vertices) && length(r.vertices) <= 10
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    end
+end
+total_frac_collinear = sum(r.fraction for r in collinear_results)
+println("\nTotal fraction: $(round(total_frac_collinear * 100, digits=1))%")
+println("Expected: Should match a 4x3 rectangle (area=12.0 m²)")
 
 println("\nGenerating full debug visualization...")
 fig = visualize_tributary_debug()

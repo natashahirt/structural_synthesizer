@@ -2,4 +2,4 @@
 
 include("utils.jl")
 include("dcel.jl")
-include("isotropic_dcel.jl")
+include("isotropic.jl")
