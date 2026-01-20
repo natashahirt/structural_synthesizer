@@ -265,7 +265,8 @@ function walk_face_cycle(dcel::DCEL, start_h::Int; max_steps::Int=10000)
         h = h_next
     end
     
-    return vertices
+    # Remove consecutive duplicates (from micro-spokes)
+    return _dedup_consecutive(vertices)
 end
 
 """
@@ -280,6 +281,28 @@ function find_face_halfedges(dcel::DCEL)
         end
     end
     return face_edges
+end
+
+"""
+Remove consecutive duplicate vertices (from micro-spokes or multiple halfedges
+at same coordinate). Also removes closing duplicate if last ≈ first.
+
+Note: atol must be larger than micro-spoke eps (which is ~1e-8 * bbox_diag).
+Using 1e-6 to safely catch micro-spoke artifacts without merging real vertices.
+"""
+function _dedup_consecutive(verts::Vector{NTuple{2,Float64}}; atol=1e-6)
+    isempty(verts) && return verts
+    out = NTuple{2,Float64}[verts[1]]
+    for i in 2:length(verts)
+        if hypot(verts[i][1] - out[end][1], verts[i][2] - out[end][2]) > atol
+            push!(out, verts[i])
+        end
+    end
+    # Drop if last equals first (cycle closure duplicate)
+    if length(out) >= 2 && hypot(out[end][1] - out[1][1], out[end][2] - out[1][2]) <= atol
+        pop!(out)
+    end
+    return out
 end
 
 """
@@ -377,7 +400,8 @@ function extract_face_polygon_by_edges(dcel::DCEL, face_id::Int)
         end
     end
     
-    return best_vertices
+    # Remove consecutive duplicates
+    return _dedup_consecutive(best_vertices)
 end
 
 # =============================================================================

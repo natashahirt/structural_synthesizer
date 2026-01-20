@@ -137,6 +137,20 @@ function get_tributary_polygons_isotropic_dcel(vertices::Vector{<:Point})
         
         # Handle case where ALL edges collapse (final convergence)
         if length(collapse_set) == n_active
+            # All edges collapse simultaneously — compute meeting point as average
+            cps = [pt for (_, pt) in collapses]
+            meet = (sum(p[1] for p in cps) / length(cps), 
+                    sum(p[2] for p in cps) / length(cps))
+            
+            # Record arcs from each vertex to meeting point (the missing center connection)
+            for i in 1:n_active
+                p_old = current_pts[i]
+                if _dist_dcel(p_old, meet) > 1e-10
+                    face_left = edge_map[mod1(i - 1, n_active)]
+                    face_right = edge_map[i]
+                    _record_skeleton_arc!(dcel, registry, p_old, meet, face_left, face_right)
+                end
+            end
             break
         end
         
@@ -392,54 +406,43 @@ function _build_collapsed_polygon_dcel(
     collapse_set::Set{Int},
     collapse_pt_for::Dict{Int, NTuple{2,Float64}}
 )
+    # Build new polygon after edge collapses.
+    #
+    # Key insight: 
+    # - Vertex i sits between edge i-1 (ending at i) and edge i (starting at i)
+    # - When edge i collapses, vertices i and i+1 merge to collapse_pt_for[i]
+    # - A vertex survives only if BOTH adjacent edges survive
+    # - Otherwise, vertex position comes from whichever adjacent edge collapsed
+    
     new_pts = NTuple{2,Float64}[]
     new_edge_map = Int[]
     
-    # Check for wrap-around
-    wrap_around = (1 in collapse_set) && (n_active in collapse_set)
-    
-    # Find first non-collapsed index
-    start_idx = 1
-    if wrap_around
-        for i in 1:n_active
-            if !(i in collapse_set)
-                start_idx = i
-                break
-            end
-        end
-    end
-    
-    visited = 0
-    i = start_idx
-    
-    while visited < n_active
-        if i in collapse_set
-            # Collapse run
-            run_pts = NTuple{2,Float64}[]
-            while i in collapse_set && visited < n_active
-                push!(run_pts, collapse_pt_for[i])
-                visited += 1
-                i = mod1(i + 1, n_active)
-            end
-            
-            # Average collapse points
-            avg_pt = (
-                sum(p[1] for p in run_pts) / length(run_pts),
-                sum(p[2] for p in run_pts) / length(run_pts)
-            )
-            
-            push!(new_pts, avg_pt)
-            
-            if !(i in collapse_set) && visited < n_active
-                push!(new_edge_map, edge_map[i])
-            elseif !isempty(new_edge_map)
-                push!(new_edge_map, new_edge_map[1])
-            end
+    for i in 1:n_active
+        prev_edge = mod1(i - 1, n_active)
+        curr_edge = i
+        
+        prev_collapsed = prev_edge in collapse_set
+        curr_collapsed = curr_edge in collapse_set
+        
+        if prev_collapsed && curr_collapsed
+            # Both adjacent edges collapsed - vertex merges into collapse region
+            # Skip this vertex; it will be represented by a collapse point
+            continue
+        elseif prev_collapsed && !curr_collapsed
+            # Previous edge collapsed, current survives
+            # This vertex is at the END of a collapse run
+            # Position comes from the collapse of prev_edge
+            push!(new_pts, collapse_pt_for[prev_edge])
+            push!(new_edge_map, edge_map[curr_edge])
+        elseif !prev_collapsed && curr_collapsed
+            # Previous survives, current collapsed
+            # This vertex is at the START of a collapse run
+            # Skip - the collapse point will be added when we exit the run
+            continue
         else
+            # Neither collapsed - vertex survives at advanced position
             push!(new_pts, advanced_pts[i])
-            push!(new_edge_map, edge_map[i])
-            visited += 1
-            i = mod1(i + 1, n_active)
+            push!(new_edge_map, edge_map[curr_edge])
         end
     end
     
