@@ -6,6 +6,7 @@
 using Pkg
 Pkg.activate(".")
 
+using Revise
 using StructuralSizer
 using Meshes
 using GLMakie

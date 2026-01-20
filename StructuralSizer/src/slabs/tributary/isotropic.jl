@@ -24,26 +24,31 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point})
     end
     
     # Track edges at each wavefront level
-    # edge_levels[level] = vector of edges, where edge[i] = (start_pt, end_pt)
-    edge_levels = Vector{Vector{NTuple{2, NTuple{2,Float64}}}}()
+    # edge_levels[level] = vector of edges (Nothing for inactive edges)
+    edge_levels = Vector{Vector{Union{Nothing, NTuple{2, NTuple{2,Float64}}}}}()
     
     # Initial edges (level 0) - edge i goes from vertex i to vertex i+1
-    initial_edges = [(pts[i], pts[mod1(i + 1, n)]) for i in 1:n]
+    initial_edges = Union{Nothing, NTuple{2, NTuple{2,Float64}}}[
+        (pts[i], pts[mod1(i + 1, n)]) for i in 1:n
+    ]
     push!(edge_levels, initial_edges)
     
     # Current polygon state
     current_pts = copy(pts)
     n_active = n
     
-    # Map from current vertex index to SET of original edge indices
-    # Each wavefront edge may own multiple original edges after collapses
-    edge_map = [[i] for i in 1:n]
+    # STRICT ownership: each wavefront edge owns exactly ONE original edge
+    edge_map = collect(1:n)
+    
+    # Track termination: when each original edge dies and where
+    edge_dead = falses(n)
+    collapse_point = Vector{Union{Nothing, NTuple{2,Float64}}}(nothing, n)
     
     while n_active > 2
         # Compute bisectors at each active vertex
         bisectors, speeds = _compute_bisectors_active(current_pts, n_active)
         
-        # Find next edge collapse (now returns intersection point)
+        # Find next edge collapse
         t_min, collapse_idx, collapse_pt = _find_next_collapse_active(current_pts, n_active, bisectors, speeds)
         
         if t_min == Inf || t_min <= 1e-10
@@ -59,37 +64,32 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point})
             new_pts[i] = (px + bx * s * t_min, py + by * s * t_min)
         end
         
-        # Record edges at this level - ALL original edges in each ownership set get geometry
-        level_edges = Vector{NTuple{2, NTuple{2,Float64}}}(undef, n)
-        for i in 1:n
-            level_edges[i] = ((0.0, 0.0), (0.0, 0.0))
-        end
+        # Record edges at this level (only for still-active original edges)
+        level_edges = Vector{Union{Nothing, NTuple{2, NTuple{2,Float64}}}}(nothing, n)
         for i in 1:n_active
             next_i = mod1(i + 1, n_active)
-            edge_geom = (new_pts[i], new_pts[next_i])
-            # Record this geometry for ALL original edges owned by this wavefront edge
-            for orig_edge in edge_map[i]
-                level_edges[orig_edge] = edge_geom
-            end
+            orig_edge = edge_map[i]
+            level_edges[orig_edge] = (new_pts[i], new_pts[next_i])
         end
         push!(edge_levels, level_edges)
         
-        # Collapse: edge at collapse_idx shrinks to zero
-        # Both vertices collapse_idx and next_idx merge into collapse_pt
-        next_idx = mod1(collapse_idx + 1, n_active)
+        # The collapsing wavefront edge is at collapse_idx
+        # Record termination for that original edge
+        dead_edge = edge_map[collapse_idx]
+        edge_dead[dead_edge] = true
+        collapse_point[dead_edge] = collapse_pt
         
-        # Build new vertex list and UNION edge ownership at collapse point
+        # Build new vertex list (strict ownership - no union)
+        next_idx = mod1(collapse_idx + 1, n_active)
         new_current_pts = NTuple{2,Float64}[]
-        new_edge_map = Vector{Vector{Int}}()
+        new_edge_map = Int[]
         for i in 1:n_active
             if i == collapse_idx
-                # Insert the true collapse point
+                # This edge died; insert collapse point but carry forward next_idx's edge ownership
                 push!(new_current_pts, collapse_pt)
-                # UNION: this wavefront edge now owns edges from BOTH collapsing vertices
-                merged_ownership = union(edge_map[collapse_idx], edge_map[next_idx])
-                push!(new_edge_map, merged_ownership)
+                push!(new_edge_map, edge_map[next_idx])  # Surviving edge takes over
             elseif i == next_idx
-                # Skip - this vertex merges into collapse_pt
+                # Skip - merged into collapse point
                 continue
             else
                 push!(new_current_pts, new_pts[i])
@@ -103,31 +103,29 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point})
         n_active = length(current_pts)
     end
     
-    # Final convergence for remaining 2-3 vertices
+    # Final convergence: all remaining edges terminate at the same point
     if n_active >= 2
         bisectors, speeds = _compute_bisectors_active(current_pts, n_active)
         t_min, _, final_pt = _find_next_collapse_active(current_pts, n_active, bisectors, speeds)
         
         if t_min < Inf && t_min > 1e-10
-            # All remaining vertices converge to the final point
-            final_pts = Vector{NTuple{2,Float64}}(undef, n_active)
-            for i in 1:n_active
-                final_pts[i] = final_pt  # All converge to same point
-            end
-            
-            # Record final level - propagate to ALL owned original edges
-            level_edges = Vector{NTuple{2, NTuple{2,Float64}}}(undef, n)
-            for i in 1:n
-                level_edges[i] = ((0.0, 0.0), (0.0, 0.0))
-            end
+            # Record final level
+            level_edges = Vector{Union{Nothing, NTuple{2, NTuple{2,Float64}}}}(nothing, n)
             for i in 1:n_active
                 next_i = mod1(i + 1, n_active)
-                edge_geom = (final_pts[i], final_pts[next_i])
-                for orig_edge in edge_map[i]
-                    level_edges[orig_edge] = edge_geom
-                end
+                orig_edge = edge_map[i]
+                level_edges[orig_edge] = (final_pt, final_pt)  # Collapsed to point
             end
             push!(edge_levels, level_edges)
+            
+            # All surviving edges terminate at final point
+            for i in 1:n_active
+                orig_edge = edge_map[i]
+                if !edge_dead[orig_edge]
+                    edge_dead[orig_edge] = true
+                    collapse_point[orig_edge] = final_pt
+                end
+            end
         end
     end
     
@@ -227,13 +225,13 @@ function _find_next_collapse_active(pts::Vector{NTuple{2,Float64}}, n::Int, bise
     return t_min, collapse_idx, collapse_pt
 end
 
-"""Reorganize edge_levels[level][edge] → sorted_by_edge[edge][level]."""
+"""Reorganize edge_levels[level][edge] → sorted_by_edge[edge][level], skipping Nothing entries."""
 function _reorganize_edge_levels(edge_levels, n_edges::Int)
     sorted_by_edge = [Vector{NTuple{2, NTuple{2,Float64}}}() for _ in 1:n_edges]
     
     for level in edge_levels
         for (edge_idx, edge) in enumerate(level)
-            push!(sorted_by_edge[edge_idx], edge)
+            edge !== nothing && push!(sorted_by_edge[edge_idx], edge)
         end
     end
     
