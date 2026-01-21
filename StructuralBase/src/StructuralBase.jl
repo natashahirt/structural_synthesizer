@@ -3,6 +3,11 @@ module StructuralBase
 using Unitful
 using Reexport
 
+# Units submodule (kip, ksi, psf, GRAVITY)
+# Keeps the StructuralUnits name for Unitful.register() compatibility
+include("Units.jl")
+@reexport using .StructuralUnits
+
 # Constants submodule (loads, material densities, unit standards)
 include("Constants.jl")
 @reexport using .Constants
@@ -13,6 +18,6 @@ include("types.jl")
 # Exports
 export AbstractMaterial, AbstractDesignCode, AbstractSection
 export AbstractStructuralSynthesizer, AbstractBuildingSkeleton, AbstractBuildingStructure
-export Constants  # Allow qualified access: Constants.LL_FLOOR, Constants.GRAVITY, etc.
+export Constants, StructuralUnits  # Allow qualified access
 
 end # module StructuralBase

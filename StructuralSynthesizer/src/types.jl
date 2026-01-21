@@ -1,6 +1,5 @@
-# Core type definitions for StructuralSynthesizer
+# Core types for StructuralSynthesizer
 
-"""Data container for a specific elevation level."""
 mutable struct Story{T}
     elevation::T
     vertices::Vector{Int}
@@ -10,25 +9,19 @@ end
 
 Story{T}(elev::T) where T = Story{T}(elev, Int[], Int[], Int[])
 
-# =============================================================================
-# Tributary Area Types
-# =============================================================================
+# Re-export from StructuralSizer
+const TributaryPolygon = StructuralSizer.TributaryPolygon
+const SpanInfo = StructuralSizer.SpanInfo
+const vertices = StructuralSizer.vertices
 
-"""Tributary polygon for one edge of a cell (2D, meters)."""
-struct TributaryPolygon
-    edge_idx::Int
-    vertices::Vector{NTuple{2, Float64}}
-    area::Float64
-    fraction::Float64  # of total cell area
-end
-
-"""Grouping of geometrically identical cells with same directionality."""
-struct CellGroup
+"""Grouping of geometrically identical cells."""
+mutable struct CellGroup
     hash::UInt64
     cell_indices::Vector{Int}
+    tributary::Union{Vector{TributaryPolygon}, Nothing}
 end
 
-CellGroup(hash::UInt64) = CellGroup(hash, Int[])
+CellGroup(hash::UInt64) = CellGroup(hash, Int[], nothing)
 
 # =============================================================================
 # Cell
@@ -38,22 +31,18 @@ CellGroup(hash::UInt64) = CellGroup(hash, Int[])
 mutable struct Cell{T, A, P}
     face_idx::Int
     area::A
-    span_x::T
-    span_y::T
+    spans::SpanInfo{T}
     sdl::P
     live_load::P
     self_weight::P
-    # Structural direction (from parent slab)
-    span_axis::Union{NTuple{3, Float64}, Nothing}
     floor_type::Symbol
     # Tributary results (one polygon per edge)
     tributary::Union{Vector{TributaryPolygon}, Nothing}
 end
 
-function Cell(face_idx::Int, area::A, span_x::T, span_y::T, 
+function Cell(face_idx::Int, area::A, spans::SpanInfo{T}, 
               sdl::P, live_load::P) where {T, A, P}
-    Cell{T, A, P}(face_idx, area, span_x, span_y, sdl, live_load, zero(P),
-                  nothing, :unknown, nothing)
+    Cell{T, A, P}(face_idx, area, spans, sdl, live_load, zero(P), :unknown, nothing)
 end
 
 """Total factored dead load (SDL + self-weight)."""
@@ -67,19 +56,21 @@ mutable struct Slab{T, R<:AbstractFloorResult}
     cell_indices::Vector{Int}
     result::R
     floor_type::Symbol        # :one_way, :two_way, :pt_banded, :flat_plate
-    span_axis::Union{Tuple{Float64, Float64, Float64}, Nothing}
+    spans::SpanInfo{T}        # Governing spans across all child cells
     group_id::Union{UInt64, Nothing}
 end
 
-function Slab(cell_indices::Vector{Int}, result::R; 
-              floor_type=:one_way, span_axis=nothing, group_id=nothing) where {R<:AbstractFloorResult}
-    # T is the length type of the result thickness
+function Slab(cell_indices::Vector{Int}, result::R, spans::SpanInfo; 
+              floor_type=:one_way, group_id=nothing) where {R<:AbstractFloorResult}
     T = typeof(StructuralSizer.total_depth(result))
-    Slab{T, R}(cell_indices, result, floor_type, span_axis, group_id)
+    # Convert SpanInfo to match slab's length type
+    spans_T = SpanInfo{T}(T(spans.primary), T(spans.secondary), spans.axis, T(spans.isotropic))
+    Slab{T, R}(cell_indices, result, floor_type, spans_T, group_id)
 end
 
 # Single-cell slab convenience
-Slab(cell_idx::Int, result::R; kwargs...) where {R<:AbstractFloorResult} = Slab([cell_idx], result; kwargs...)
+Slab(cell_idx::Int, result::R, spans::SpanInfo; kwargs...) where {R<:AbstractFloorResult} = 
+    Slab([cell_idx], result, spans; kwargs...)
 
 # Interface for Slab to mirror Result interface
 thickness(s::Slab) = StructuralSizer.total_depth(s.result)
@@ -197,6 +188,7 @@ mutable struct BuildingStructure{T, A, P} <: AbstractBuildingStructure
     member_groups::Dict{UInt64, MemberGroup}
     # Analysis
     asap_model::Asap.Model
+    cell_tributary_loads::Dict{Int, Vector{Asap.TributaryLoad}}  # cell_idx → loads for updates
 end
 
 function BuildingStructure(skel::BuildingSkeleton{T}) where T
@@ -207,7 +199,8 @@ function BuildingStructure(skel::BuildingSkeleton{T}) where T
         Cell{T, A, P}[], Dict{UInt64, CellGroup}(),
         Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
-        Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
+        Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[]),
+        Dict{Int, Vector{Asap.TributaryLoad}}()
     )
 end
 
@@ -217,6 +210,7 @@ function BuildingStructure{T, A, P}(skel::BuildingSkeleton{T}) where {T, A, P}
         Cell{T, A, P}[], Dict{UInt64, CellGroup}(),
         Slab{T, AbstractFloorResult}[], Dict{UInt64, SlabGroup}(),
         Segment{T}[], Member{T}[], Dict{UInt64, MemberGroup}(),
-        Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[])
+        Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[]),
+        Dict{Int, Vector{Asap.TributaryLoad}}()
     )
 end

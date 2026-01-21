@@ -3,29 +3,28 @@
 # =============================================================================
 
 """
-    get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=nothing)
+    get_tributary_polygons_isotropic(vertices; weights=nothing)
 
 Compute tributary polygons using straight skeleton with DCEL data structure.
-Returns Vector{TributaryResult}, one per original edge.
 
 ## Arguments
-- `vertices`: Polygon vertices as Meshes.Point objects
-- `weights`: Optional vector of edge weights (one per edge). 
-  - Higher weight = faster shrink = smaller tributary area
-  - Default `nothing` = all weights equal to 1.0 (isotropic)
-  - Example: `weights=[1.0, 2.0, 1.0, 2.0]` for a rectangle where 
-    opposite edges have different weights
+- `vertices::Vector{<:Point}`: Polygon vertices as Meshes.Point objects (any Unitful length - 
+  automatically converted to meters internally)
+- `weights::Union{Nothing, AbstractVector{<:Real}}`: Optional edge weights (one per edge).
+  Higher weight = faster shrink = smaller tributary area. Default `nothing` = all weights 1.0.
 
-## Weight Convention
-Weights represent the "speed" at which each edge moves inward during 
-wavefront propagation. A weight of 2.0 means the edge moves twice as 
-fast as an edge with weight 1.0, resulting in roughly half the tributary area.
+## Returns
+`Vector{TributaryPolygon}` in parametric form. All length values (`d`, `area`) are in meters.
+Use `vertices(trib, beam_start, beam_end)` with beam coords in meters to get absolute coords.
 """
-function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=nothing)
+function get_tributary_polygons_isotropic(
+    vertices::Vector{<:Point};
+    weights::Union{Nothing, AbstractVector{<:Real}} = nothing
+)
     m = length(vertices)  # Original vertex count
-    m >= 3 || return TributaryResult[]
+    m >= 3 || return TributaryPolygon[]
     
-    # Convert to simple 2D coords
+    # Convert to simple 2D coords in METERS
     pts_orig = [_to_2d(v) for v in vertices]
     
     # Ensure CCW orientation (algorithm assumes interior is on LEFT)
@@ -44,7 +43,7 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
     # Simplify collinear vertices (removes 180° degeneracies)
     pts, keep_idx = simplify_collinear_polygon(pts_orig; tol=1e-12)
     n = length(pts)
-    n >= 3 || return TributaryResult[]  # Degenerate after simplification
+    n >= 3 || return TributaryPolygon[]  # Degenerate after simplification
     
     # Build mapping: orig_to_simp[i] = simplified edge that contains original edge i
     # Also compute simplified weights (average weight of merged edges)
@@ -392,7 +391,7 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
     orig_edge_len = [_edge_len(pts_orig, i) for i in 1:m]
     
     # Map results back to original edges, using geometric splitting for collinear chains
-    results = TributaryResult[]
+    results = TributaryPolygon[]
     
     # Process each simplified edge k and its corresponding original edges
     for k in 1:n
@@ -403,7 +402,7 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
         if isempty(poly) || area_k <= 0
             # No valid polygon for this simplified edge
             for i in idxs
-                push!(results, TributaryResult(i, NTuple{2,Float64}[], 0.0, 0.0))
+                push!(results, _make_tributary(i, NTuple{2,Float64}[], pts_orig, 0.0, 0.0))
             end
             continue
         end
@@ -428,7 +427,7 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
             # Single edge: no splitting needed, use full polygon
             i = idxs[1]
             frac_i = total_area > 0 ? area_k / total_area : 0.0
-            push!(results, TributaryResult(i, poly, area_k, frac_i))
+            push!(results, _make_tributary(i, poly, pts_orig, area_k, frac_i))
         else
             # Multiple edges: split polygon geometrically
             split_polys = split_collinear_face(poly, chain_pts)
@@ -439,14 +438,14 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
                     split_poly = split_polys[j]
                     area_i = abs(_polygon_area(split_poly))
                     frac_i = total_area > 0 ? area_i / total_area : 0.0
-                    push!(results, TributaryResult(i, split_poly, area_i, frac_i))
+                    push!(results, _make_tributary(i, split_poly, pts_orig, area_i, frac_i))
                 else
                     # Fallback: proportional area split if splitting failed
                     denom = sum(orig_edge_len[idx] for idx in idxs)
                     share = denom > 0 ? orig_edge_len[i] / denom : 1/length(idxs)
                     area_i = area_k * share
                     frac_i = total_area > 0 ? area_i / total_area : 0.0
-                    push!(results, TributaryResult(i, poly, area_i, frac_i))
+                    push!(results, _make_tributary(i, poly, pts_orig, area_i, frac_i))
                 end
             end
         end
@@ -454,15 +453,15 @@ function get_tributary_polygons_isotropic(vertices::Vector{<:Point}; weights=not
     
     # Handle any original edges that didn't map to a simplified edge
     # (should be rare, but handle for completeness)
-    processed_edges = Set(r.edge_idx for r in results)
+    processed_edges = Set(r.local_edge_idx for r in results)
     for i in 1:m
         if i ∉ processed_edges && (orig_to_simp[i] == 0 || orig_to_simp[i] > n)
-            push!(results, TributaryResult(i, NTuple{2,Float64}[], 0.0, 0.0))
+            push!(results, _make_tributary(i, NTuple{2,Float64}[], pts_orig, 0.0, 0.0))
         end
     end
     
     # Sort results by edge index
-    sort!(results, by=r -> r.edge_idx)
+    sort!(results, by=r -> r.local_edge_idx)
     
     return results
 end

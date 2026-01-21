@@ -1,8 +1,7 @@
 module Constants
     using Unitful
 
-    # Physical Constants
-    const GRAVITY = 9.80665u"m/s^2"
+    # Note: GRAVITY is now in StructuralUnits (StructuralBase.StructuralUnits.GRAVITY)
 
     # Embodied Carbon Coefficients (kgCO2e/kg)
     const ECC_STEEL = 1.22

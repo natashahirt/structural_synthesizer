@@ -1,7 +1,7 @@
 using StructuralSynthesizer
 using StructuralSizer
 using StructuralBase
-using StructuralUnits  # For u"ksi" etc.
+using StructuralBase: StructuralUnits  # For u"ksi" etc.
 using Asap
 using Unitful
 using Test

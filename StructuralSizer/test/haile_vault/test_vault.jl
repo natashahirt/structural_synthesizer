@@ -617,7 +617,7 @@ end
             end
         end
         
-        println("\n✓ All $(length(vectors)) MATLAB test vectors validated")
+        println("\n✓ All $(length(vectors)) MATLAB test vectors validated for Haile vault.")
     end
 end
 

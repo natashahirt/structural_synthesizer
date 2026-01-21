@@ -12,6 +12,7 @@ Defines US customary units commonly used in structural analysis.
 # Usage
 Import units directly for precompile-safe use:
 ```julia
+using StructuralBase: StructuralUnits
 using StructuralUnits: kip, ksi, psf
 using Unitful: lbf, psi  # These are Unitful built-ins
 force = 10.0kip
@@ -20,7 +21,7 @@ stress = 50.0ksi
 
 To use `u"..."` syntax, register at runtime:
 ```julia
-using StructuralUnits
+using StructuralBase: StructuralUnits
 Unitful.register(StructuralUnits)
 force = 10.0u"kip"
 ```
@@ -43,7 +44,7 @@ Unitful.@unit ksi "ksi" KipPerSquareInch 6.894757e6u"Pa" false
 # Pounds per square foot: 1 psf = 1 lbf/ft² = 47.88 Pa
 Unitful.@unit psf "psf" PoundPerSquareFoot 47.88025898u"Pa" false
 
-# Export only the new units we define
+# Export the new units
 export kip, ksi, psf
 
 # =============================================================================
@@ -52,5 +53,6 @@ export kip, ksi, psf
 
 """Standard gravity acceleration."""
 const GRAVITY = 9.80665u"m/s^2"
+export GRAVITY
 
 end # module

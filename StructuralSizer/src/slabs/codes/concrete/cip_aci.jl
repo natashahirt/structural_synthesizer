@@ -1,7 +1,7 @@
 # ACI 318-19 Minimum Slab Thickness
 # Tables 7.3.1.1 (one-way) and 8.3.1.1 (two-way)
 
-using StructuralUnits: ksi  # Import ksi directly for precompile-safe use
+using StructuralBase.StructuralUnits: ksi  # Import ksi directly for precompile-safe use
 
 # =============================================================================
 # Table 7.3.1.1 - One-way slabs

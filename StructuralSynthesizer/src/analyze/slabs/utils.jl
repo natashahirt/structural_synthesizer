@@ -5,22 +5,32 @@
 # =============================================================================
 
 """
-    get_cell_spans(skel, face_idx)
+    get_cell_spans(skel, face_idx; axis=nothing) -> SpanInfo{T}
 
-Return `(span_x, span_y)` as the axis-aligned bounding-box spans of a face.
-This assumes the slab bay is roughly aligned to global X/Y (good enough for sizing).
+Compute SpanInfo for a skeleton face.
+
+## Arguments
+- `skel`: BuildingSkeleton
+- `face_idx`: Face index
+- `axis`: Optional primary span direction as `(x, y)` tuple. If `nothing`, auto-detects short axis.
+
+## Returns
+- `SpanInfo{T}`: Span info with values in skeleton's length type (with units)
 """
-function get_cell_spans(skel::BuildingSkeleton{T}, face_idx::Int) where T
-    polygon = skel.faces[face_idx]
-    pts = Meshes.vertices(polygon)
+function get_cell_spans(skel::BuildingSkeleton{T}, face_idx::Int; 
+                        axis::Union{Nothing, NTuple{2,Float64}}=nothing) where T
+    verts = [skel.vertices[i] for i in skel.face_vertex_indices[face_idx]]
     
-    xs = [Meshes.coords(p).x for p in pts]
-    ys = [Meshes.coords(p).y for p in pts]
+    # Compute SpanInfo (returns Float64 in meters)
+    si = StructuralSizer.SpanInfo(verts; axis=axis)
     
-    span_x = maximum(xs) - minimum(xs)
-    span_y = maximum(ys) - minimum(ys)
-    
-    return span_x, span_y
+    # Convert to Quantity with meter units
+    StructuralSizer.SpanInfo{T}(
+        si.primary * u"m",
+        si.secondary * u"m",
+        si.axis,
+        si.isotropic * u"m"
+    )
 end
 
 """Initialize cells from skeleton faces (geometry + service SDL/LL)."""
@@ -46,10 +56,9 @@ function initialize_cells!(struc::BuildingStructure{T, A, P}) where {T, A, P}
             
             polygon = skel.faces[face_idx]
             area = Meshes.measure(polygon)
-            span_x, span_y = get_cell_spans(skel, face_idx)
+            spans = get_cell_spans(skel, face_idx)
             
-            # Store service loads
-            cell = Cell(face_idx, area, span_x, span_y, sdl, ll)
+            cell = Cell(face_idx, area, spans, sdl, ll)
             push!(struc.cells, cell)
         end
     end
@@ -82,10 +91,10 @@ function initialize_slabs!(struc::BuildingStructure{T};
     groups = _group_slab_specs(slab_specs)
 
     # 4. Size once per slab group
-    group_results, group_sw = _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
+    group_results, group_sw, group_spans = _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
 
     # 5. Fan out results to cells and create Slab objects
-    _apply_slab_results!(struc, slab_specs, group_results, group_sw)
+    _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans)
 
     # 6. Finalize grouping structure in BuildingStructure
     groups = build_slab_groups!(struc)
@@ -108,24 +117,26 @@ function _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
     if isnothing(cell_groupings)
         # Default: 1 slab per cell
         for (cell_idx, cell) in enumerate(struc.cells)
-            span_x, span_y = cell.span_x, cell.span_y
-
-            ft_sym = floor_type == :auto ? infer_floor_type(span_x, span_y) : floor_type
+            spans = cell.spans
+            
+            # Use primary/secondary for floor type inference
+            ft_sym = floor_type == :auto ? infer_floor_type(spans.primary, spans.secondary) : floor_type
             gid = _resolve_slab_group_id(slab_group_ids, cell_idx; tag=:cell)
 
-            span_axis = span_x <= span_y ? (1.0, 0.0, 0.0) : (0.0, 1.0, 0.0)
             push!(slab_specs, (; cell_indices=[cell_idx],
-                              span_x_gov=span_x, span_y_gov=span_y,
+                              spans_gov=spans,
                               sdl_gov=cell.sdl, live_gov=cell.live_load,
-                              floor_type=ft_sym, span_axis=span_axis, group_id=gid))
+                              floor_type=ft_sym, group_id=gid))
         end
     else
         # Explicit groupings: combine cells into physical slabs (PT, etc.)
         for cell_indices in cell_groupings
             cells = [struc.cells[i] for i in cell_indices]
 
-            span_x_gov = maximum(c.span_x for c in cells)
-            span_y_gov = maximum(c.span_y for c in cells)
+            # Compute governing spans across all cells in this slab
+            cell_spans = [c.spans for c in cells]
+            spans_gov = StructuralSizer.governing_spans(cell_spans)
+            
             sdl_gov = maximum(c.sdl for c in cells)
             live_gov = maximum(c.live_load for c in cells)
 
@@ -136,9 +147,9 @@ function _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
             gid = _resolve_group_id_for_cell_set(slab_group_ids, cell_indices)
 
             push!(slab_specs, (; cell_indices=cell_indices,
-                              span_x_gov=span_x_gov, span_y_gov=span_y_gov,
+                              spans_gov=spans_gov,
                               sdl_gov=sdl_gov, live_gov=live_gov,
-                              floor_type=ft_sym, span_axis=nothing, group_id=gid))
+                              floor_type=ft_sym, group_id=gid))
         end
     end
     return slab_specs
@@ -165,16 +176,18 @@ end
 function _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
     group_results = Dict{UInt64, AbstractFloorResult}()
     group_sw = Dict{UInt64, Any}()  # pressure units vary by input type/units
+    group_spans = Dict{UInt64, SpanInfo}()
 
     for (gid, spec_idxs) in groups
         specs = slab_specs[spec_idxs]
-        result, sw_service = _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
+        result, sw_service, spans_gov = _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
         
         group_results[gid] = result
         group_sw[gid] = sw_service
+        group_spans[gid] = spans_gov
     end
 
-    return group_results, group_sw
+    return group_results, group_sw, group_spans
 end
 
 function _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
@@ -194,35 +207,37 @@ function _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
         end
     end
 
-    span_x_gov = maximum(getfield.(specs, :span_x_gov))
-    span_y_gov = maximum(getfield.(specs, :span_y_gov))
+    # Compute governing spans across all specs in this group
+    all_spans = [s.spans_gov for s in specs]
+    spans_gov = StructuralSizer.governing_spans(all_spans)
+    
     sdl_gov = maximum(getfield.(specs, :sdl_gov))
     live_gov = maximum(getfield.(specs, :live_gov))
 
-    span_for_sizing = _sizing_span(ft, span_x_gov, span_y_gov)
+    span_for_sizing = _sizing_span(ft, spans_gov)
     kwargs = _build_floor_kwargs(ft, span_for_sizing, floor_kwargs)
 
     result = size_floor(ft, span_for_sizing, sdl_gov, live_gov; material=material, kwargs...)
     sw_service = StructuralSizer.self_weight(result)
 
-    return result, sw_service
+    return result, sw_service, spans_gov
 end
 
-function _apply_slab_results!(struc, slab_specs, group_results, group_sw)
+function _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans)
     for spec in slab_specs
         gid = spec.group_id
         result = group_results[gid]
         sw_service = group_sw[gid]
+        spans_gov = group_spans[gid]
 
         # Propagate structural data to cells
         for c_idx in spec.cell_indices
             cell = struc.cells[c_idx]
             cell.self_weight = sw_service
-            cell.span_axis = spec.span_axis
             cell.floor_type = spec.floor_type
         end
 
-        slab = Slab(spec.cell_indices, result; floor_type=spec.floor_type, span_axis=spec.span_axis, group_id=gid)
+        slab = Slab(spec.cell_indices, result, spans_gov; floor_type=spec.floor_type, group_id=gid)
         push!(struc.slabs, slab)
     end
 end
@@ -264,7 +279,7 @@ end
 """
     build_cell_groups!(struc::BuildingStructure)
 
-Group cells by (geometry_hash, span_axis, floor_type) for tributary computation.
+Group cells by (geometry_hash, spans.axis) for tributary computation.
 Cells in the same group share identical tributary polygons (computed once).
 """
 function build_cell_groups!(struc::BuildingStructure)
@@ -286,8 +301,8 @@ end
 function _cell_group_hash(struc::BuildingStructure, cell::Cell)
     # Geometry: normalized vertex offsets (translation-invariant)
     geom_sig = _cell_geometry_signature(struc, cell)
-    # Direction + floor type
-    return UInt64(hash((geom_sig, cell.span_axis)))
+    # Direction + floor type (use spans.axis for direction)
+    return UInt64(hash((geom_sig, cell.spans.axis)))
 end
 
 """Compute translation-invariant geometry signature for a cell."""
@@ -312,45 +327,22 @@ end
 # =============================================================================
 
 """
-    compute_cell_tributaries!(struc::BuildingStructure)
-
-Compute tributary polygons for all cells, using CellGroups to avoid redundant work.
-Results are stored in `cell.tributary`.
+Compute parametric tributary polygons for all cells via CellGroups.
+Results stored in `cg.tributary` and `cell.tributary`.
 """
 function compute_cell_tributaries!(struc::BuildingStructure)
-    # Ensure cell groups exist
     isempty(struc.cell_groups) && build_cell_groups!(struc)
 
     for cg in values(struc.cell_groups)
-        # Compute once for canonical cell
-        canonical_idx = first(cg.cell_indices)
-        canonical_cell = struc.cells[canonical_idx]
+        canonical_cell = struc.cells[first(cg.cell_indices)]
+        verts = [struc.skeleton.vertices[i] for i in struc.skeleton.face_vertex_indices[canonical_cell.face_idx]]
+        trib = StructuralSizer.get_tributary_polygons_isotropic(verts)
         
-        trib = _compute_cell_tributary(struc, canonical_cell)
-        
-        # Apply to all cells in group
+        cg.tributary = trib
         for c_idx in cg.cell_indices
             struc.cells[c_idx].tributary = trib
         end
     end
-end
-
-"""
-Compute tributary polygons for a single cell using straight skeleton algorithm.
-Returns Vector{TributaryPolygon}, one per edge.
-"""
-function _compute_cell_tributary(struc::BuildingStructure, cell::Cell)::Vector{TributaryPolygon}
-    skel = struc.skeleton
-    edge_ids = skel.face_edge_indices[cell.face_idx]
-    vert_indices = skel.face_vertex_indices[cell.face_idx]
-    vertices = [skel.vertices[i] for i in vert_indices]
-    
-    # Use straight skeleton algorithm (DCEL-based)
-    results = StructuralSizer.get_tributary_polygons_isotropic(vertices)
-    
-    # Convert TributaryResult → TributaryPolygon with correct edge indices
-    return [TributaryPolygon(edge_ids[r.edge_idx], r.vertices, r.area, r.fraction) 
-            for r in results]
 end
 
 function _resolve_slab_group_id(slab_group_ids, idx::Int; tag::Symbol)
@@ -381,17 +373,18 @@ end
 """
 Pick the `span` passed into `size_floor(ft, span, ...)`.
 
-- Default: short span (`min(span_x, span_y)`)
-- Two-way/plate/PT/waffle ACI thickness rules: long span (`max(span_x, span_y)`)
+Uses SpanInfo to select the appropriate span for each floor system type:
+- One-way systems: primary (short) span
+- Two-way systems: isotropic span or max(primary, secondary)
 """
-_sizing_span(::AbstractFloorSystem, span_x, span_y) = min(span_x, span_y)
+_sizing_span(::AbstractFloorSystem, si::SpanInfo) = si.primary
 
 # ACI two-way / plate / waffle / PT thickness rules are based on the long span.
-_sizing_span(::TwoWay, span_x, span_y) = max(span_x, span_y)
-_sizing_span(::FlatPlate, span_x, span_y) = max(span_x, span_y)
-_sizing_span(::FlatSlab, span_x, span_y) = max(span_x, span_y)
-_sizing_span(::PTBanded, span_x, span_y) = max(span_x, span_y)
-_sizing_span(::Waffle, span_x, span_y) = max(span_x, span_y)
+_sizing_span(::TwoWay, si::SpanInfo) = si.isotropic
+_sizing_span(::FlatPlate, si::SpanInfo) = max(si.primary, si.secondary)
+_sizing_span(::FlatSlab, si::SpanInfo) = max(si.primary, si.secondary)
+_sizing_span(::PTBanded, si::SpanInfo) = max(si.primary, si.secondary)
+_sizing_span(::Waffle, si::SpanInfo) = max(si.primary, si.secondary)
 
 # =============================================================================
 # Structural Effects Application

@@ -10,7 +10,7 @@
 # - Extrados is intrados shifted vertically by shell thickness
 # - Optional ribs modeled as flat-topped extensions above extrados
 
-const GRAVITY = ustrip(u"m/s^2", Constants.GRAVITY)  # m/s²
+const GRAVITY = ustrip(u"m/s^2", StructuralUnits.GRAVITY)  # m/s²
 
 # =============================================================================
 # Geometry Utilities

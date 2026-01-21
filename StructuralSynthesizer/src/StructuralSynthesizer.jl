@@ -1,4 +1,3 @@
-__precompile__()  # allow package precompilation
 module StructuralSynthesizer
 
 using Logging
@@ -15,7 +14,8 @@ import Graphs
 import Asap
 import LinearAlgebra: norm, normalize
 using Unitful
-using StructuralUnits  # Shared unit definitions (already registered)
+using StructuralBase: StructuralUnits  # Shared unit definitions (already registered)
+import StructuralPlots  # Colors and themes for visualization
 
 include("types.jl")
 include("./core/_core.jl")
@@ -30,7 +30,7 @@ export gen_medium_office
 # Core types
 export BuildingSkeleton, BuildingStructure, Story
 export Cell, Slab, SlabGroup, total_dead_load, thickness
-export CellGroup, TributaryPolygon
+export CellGroup, TributaryPolygon, SpanInfo, vertices
 export Segment, Member, MemberGroup
 
 # Functions
@@ -42,9 +42,7 @@ export initialize!
 export initialize_cells!, initialize_slabs!
 export initialize_segments!, initialize_members!, update_bracing!
 export build_slab_groups!, build_cell_groups!, compute_cell_tributaries!
-
-# Geometry extraction (for tributary area computation)
-export extract_cell_geometry, extract_slab_geometry, extract_slabgroup_geometry
+export update_slab_loads!, update_all_slab_loads!
 
 # Member sizing (catalog-based)
 export build_member_groups!, member_group_demands, size_members_discrete!

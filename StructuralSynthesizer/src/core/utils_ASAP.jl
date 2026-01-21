@@ -1,22 +1,22 @@
 """
     to_asap!(struc)
+
 Converts a BuildingStructure into an Asap.Model.
+Uses TributaryLoads for accurate load distribution based on tributary polygons.
 All quantities are passed as Unitful and converted to base SI units internally by Asap.
 """
 function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
     skel = struc.skeleton
     
-    # 1. nodes
+    # 1. Nodes
     support_indices = get(skel.groups_vertices, :support, Int[])
     
     nodes = map(enumerate(skel.vertices)) do (v_idx, v)
         coords = Meshes.coords(v)
-        # Convert to meters (Asap.Node expects Unitful quantities)
         x = uconvert(u"m", coords.x)
         y = uconvert(u"m", coords.y)
         z = uconvert(u"m", coords.z)
         
-        # ground level fixed, all else moment connected
         is_support = v_idx in support_indices
         dofs = is_support ? [false, false, false, false, false, false] : [true, true, true, false, false, false]
         return Asap.Node([x, y, z], dofs)
@@ -28,27 +28,162 @@ function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
         return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed)
     end
     
-    # 3. loads
-    loads = Asap.AbstractLoad[]
-    # Temporarily set model so apply_effects! can find it
-    struc.asap_model = Asap.Model(nodes, elements, loads)
+    # 3. Compute tributaries if not done
+    isempty(struc.cell_groups) && build_cell_groups!(struc)
+    any(isnothing(c.tributary) for c in struc.cells) && compute_cell_tributaries!(struc)
     
+    # 4. Create loads using TributaryLoad
+    loads = Asap.AbstractLoad[]
+    empty!(struc.cell_tributary_loads)
+    
+    for (cell_idx, cell) in enumerate(struc.cells)
+        cell_loads = _create_cell_tributary_loads!(loads, elements, skel, cell, cell_idx)
+        struc.cell_tributary_loads[cell_idx] = cell_loads
+    end
+    
+    # 5. Add structural effects (e.g., vault thrust)
     for slab in struc.slabs
-        # 3. Slab-derived loads (gravity + effects) as unified edge specs
-        #    Uses tributary area distribution by default
-        for spec in slab_edge_load_specs(struc, slab)
+        for spec in slab_edge_line_loads(struc, slab)
             el = elements[spec.edge_idx]
             push_asap_loads!(loads, el, spec)
         end
     end
 
-    model = struc.asap_model
-    @debug "Converted to Asap.Model" nodes=length(nodes) elements=length(elements) loads=length(model.loads)
+    # 6. Build and solve model
+    struc.asap_model = Asap.Model(nodes, elements, loads)
+    
+    @debug "Converted to Asap.Model" nodes=length(nodes) elements=length(elements) loads=length(loads) tributary_loads=sum(length, values(struc.cell_tributary_loads))
 
-    Asap.process!(model)
-    Asap.solve!(model)
+    Asap.process!(struc.asap_model)
+    Asap.solve!(struc.asap_model)
 
-    return model
+    return struc.asap_model
+end
+
+"""Create TributaryLoads for a single cell from its tributary polygons."""
+function _create_cell_tributary_loads!(
+    loads::Vector{Asap.AbstractLoad},
+    elements::Vector{<:Asap.Element},
+    skel::BuildingSkeleton,
+    cell::Cell,
+    cell_idx::Int
+)::Vector{Asap.TributaryLoad}
+    cell_loads = Asap.TributaryLoad[]
+    
+    isnothing(cell.tributary) && return cell_loads
+    
+    face_edges = skel.face_edge_indices[cell.face_idx]
+    pressure = uconvert(u"Pa", total_factored_pressure(cell))
+    
+    for trib in cell.tributary
+        # Skip empty tributaries
+        trib.area < 1e-12 && continue
+        length(trib.s) < 2 && continue
+        
+        # Extract width profile from tributary polygon
+        positions, widths_m = _extract_width_profile(trib)
+        length(positions) < 2 && continue
+        
+        # Map local edge index to global edge/element
+        global_edge_idx = face_edges[trib.local_edge_idx]
+        el = elements[global_edge_idx]
+        
+        # Convert widths to Unitful
+        widths = [w * u"m" for w in widths_m]
+        
+        # Create TributaryLoad (gravity direction)
+        tload = Asap.TributaryLoad(el, positions, widths, pressure, (0.0, 0.0, -1.0))
+        
+        push!(loads, tload)
+        push!(cell_loads, tload)
+    end
+    
+    return cell_loads
+end
+
+"""
+Extract a sorted width profile from a TributaryPolygon.
+
+The polygon vertices trace the boundary, but TributaryLoad needs positions
+sorted along the beam with corresponding widths.
+
+Returns (positions, widths) where positions are in [0,1] sorted order.
+"""
+function _extract_width_profile(trib::TributaryPolygon)
+    isempty(trib.s) && return (Float64[], Float64[])
+    
+    # Collect (s, |d|) pairs and sort by s
+    pairs = [(trib.s[i], abs(trib.d[i])) for i in eachindex(trib.s)]
+    sort!(pairs, by=first)
+    
+    # Remove duplicates (keep max width at each position)
+    merged = Tuple{Float64, Float64}[]
+    for (s, w) in pairs
+        if isempty(merged) || abs(s - merged[end][1]) > 1e-9
+            push!(merged, (s, w))
+        else
+            # Same position - keep max width
+            merged[end] = (merged[end][1], max(merged[end][2], w))
+        end
+    end
+    
+    # Extract separate vectors
+    positions = [p[1] for p in merged]
+    widths = [p[2] for p in merged]
+    
+    # Ensure positions are clamped to [0, 1]
+    positions = clamp.(positions, 0.0, 1.0)
+    
+    return (positions, widths)
+end
+
+"""
+    update_slab_loads!(struc, slab_idx)
+
+Update tributary load pressures when a slab's properties change.
+Call this after modifying slab sizing results, then the model will be re-solved.
+"""
+function update_slab_loads!(struc::BuildingStructure, slab_idx::Int)
+    slab = struc.slabs[slab_idx]
+    sw = StructuralSizer.self_weight(slab.result)
+    
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        cell.self_weight = sw
+        
+        new_pressure = uconvert(u"Pa", total_factored_pressure(cell))
+        
+        for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
+            tload.pressure = new_pressure
+        end
+    end
+    
+    Asap.solve!(struc.asap_model; reprocess=true)
+end
+
+"""
+    update_all_slab_loads!(struc)
+
+Update all tributary load pressures and re-solve.
+"""
+function update_all_slab_loads!(struc::BuildingStructure)
+    for slab_idx in eachindex(struc.slabs)
+        slab = struc.slabs[slab_idx]
+        sw = StructuralSizer.self_weight(slab.result)
+        
+        for cell_idx in slab.cell_indices
+            cell = struc.cells[cell_idx]
+            cell.self_weight = sw
+            
+            new_pressure = uconvert(u"Pa", total_factored_pressure(cell))
+            
+            for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
+                tload.pressure = new_pressure
+            end
+        end
+    end
+    
+    Asap.solve!(struc.asap_model; reprocess=true)
 end
 
 # =============================================================================
@@ -120,57 +255,6 @@ function slab_face_edge_ids(struc::BuildingStructure, slab::Slab)
     edge_ids = collect(edge_set)
     sort!(edge_ids)  # deterministic ordering (useful for reproducibility/debug)
     return edge_ids
-end
-
-"""
-    extract_cell_geometry(struc, cell_idx) -> CellGeometry
-
-Extract polygon geometry from a cell for tributary area calculation.
-Converts from skeleton/Meshes format to pure CellGeometry.
-"""
-function extract_cell_geometry(struc::BuildingStructure, cell_idx::Int)
-    cell = struc.cells[cell_idx]
-    skel = struc.skeleton
-    face_idx = cell.face_idx
-    
-    # Get vertices from polygon
-    polygon = skel.faces[face_idx]
-    pts = Meshes.vertices(polygon)
-    
-    verts = NTuple{2, Float64}[]
-    for p in pts
-        c = Meshes.coords(p)
-        x = Float64(ustrip(uconvert(u"m", c.x)))
-        y = Float64(ustrip(uconvert(u"m", c.y)))
-        push!(verts, (x, y))
-    end
-    
-    # Get edge indices
-    edge_ids = collect(skel.face_edge_indices[face_idx])
-    
-    return StructuralSizer.CellGeometry(verts, edge_ids; cell_idx=cell_idx, face_idx=face_idx)
-end
-
-"""
-    extract_slab_geometry(struc, slab_idx) -> SlabGeometry
-
-Extract geometry for all cells in a slab.
-"""
-function extract_slab_geometry(struc::BuildingStructure, slab_idx::Int)
-    slab = struc.slabs[slab_idx]
-    cells = [extract_cell_geometry(struc, ci) for ci in slab.cell_indices]
-    return StructuralSizer.SlabGeometry(slab_idx, cells)
-end
-
-"""
-    extract_slabgroup_geometry(struc, group_id) -> SlabGroupGeometry
-
-Extract geometry for all slabs in a slab group.
-"""
-function extract_slabgroup_geometry(struc::BuildingStructure, group_id::UInt64)
-    group = struc.slab_groups[group_id]
-    slabs = [extract_slab_geometry(struc, si) for si in group.slab_indices]
-    return StructuralSizer.SlabGroupGeometry(group_id, slabs)
 end
 
 """
@@ -248,8 +332,8 @@ function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, eff::Stru
     thrust_factored = eff.dead * Constants.DL_FACTOR + eff.live * Constants.LL_FACTOR
     mag_N_m = ustrip(u"N/m", uconvert(u"N/m", thrust_factored))
 
-    # Span axis (default to X)
-    span_vec = isnothing(slab.span_axis) ? [1.0, 0.0, 0.0] : collect(slab.span_axis)
+    # Span axis from slab spans
+    span_vec = [slab.spans.axis[1], slab.spans.axis[2], 0.0]
 
     # Vault slabs are enforced as single rectangular faces; thrust acts on that perimeter.
     face_idx = struc.cells[first(slab.cell_indices)].face_idx

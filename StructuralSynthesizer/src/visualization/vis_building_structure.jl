@@ -10,10 +10,12 @@ is_released_end(::Type{Asap.Joist}) = true
 
 """
 Helper to get start and end points for drawing, accounting for releases.
+Returns positions as Float64 arrays in meters.
 """
 function get_drawing_pts(element::Asap.Element{R}, gap_factor=0.05) where R
-    p1 = element.nodeStart.position
-    p2 = element.nodeEnd.position
+    # Strip units to meters for visualization
+    p1 = [ustrip(u"m", x) for x in element.nodeStart.position]
+    p2 = [ustrip(u"m", x) for x in element.nodeEnd.position]
     
     # Vector from start to end (the axis of the element)
     vec = p2 .- p1
@@ -29,9 +31,9 @@ end
 
 # Fallback for TrussElements (always pinned-pinned, but usually drawn connected unless specified)
 function get_drawing_pts(element::Asap.TrussElement, gap_factor=0.1)
-    # Truss elements are inherently pinned, so we might want to show gaps by default
-    p1 = element.nodeStart.position
-    p2 = element.nodeEnd.position
+    # Strip units to meters for visualization
+    p1 = [ustrip(u"m", x) for x in element.nodeStart.position]
+    p2 = [ustrip(u"m", x) for x in element.nodeEnd.position]
     v = p2 .- p1
     return p1 .+ (v .* gap_factor), p2 .- (v .* gap_factor)
 end
@@ -39,16 +41,7 @@ end
 """
     visualize(struc::BuildingStructure; kwargs...)
 
-Karamba-style visualization for a BuildingStructure. 
-"""
-function visualize(struc::BuildingStructure; kwargs...)
-    return visualize(struc.skeleton, struc.asap_model; kwargs...)
-end
-
-"""
-    visualize(skel::BuildingSkeleton, model::Asap.Model; kwargs...)
-
-Karamba-style visualization for Asap models, using skeleton groups for supports.
+Karamba-style visualization for a BuildingStructure.
 
 # Arguments
 - `deflection_scale::Union{Float64,Symbol}=:auto`: Scale factor for deflected shape, or `:auto` to auto-compute.
@@ -58,6 +51,8 @@ Karamba-style visualization for Asap models, using skeleton groups for supports.
   - `:displacement_global` - total displacement magnitude (includes rigid body motion)
   - `:displacement_local` - chord-relative deflection (member bending only, excludes rigid body motion)
   - `:stress` - combined stress approximation
+  - `:tributary` - show tributary area polygons for each cell (beams shown in black)
+- `theme::Union{Nothing,Symbol}=nothing`: Apply StructuralPlots theme (`:light`, `:dark`, or `nothing` for default)
 - `show_nodes::Bool=true`: Whether to show nodes.
 - `show_supports::Bool=true`: Whether to show supports.
 - `show_releases::Bool=true`: Whether to show element releases (gaps).
@@ -67,10 +62,11 @@ Karamba-style visualization for Asap models, using skeleton groups for supports.
 - `linewidth::Float64=1.0`: Line width for elements.
 - `markersize::Float64=10.0`: Marker size for nodes/supports.
 """
-function visualize(skel::BuildingSkeleton, model::Asap.Model;
-    deflection_scale = :auto, # :auto or a Float64 scale factor
-    mode = :original, # :original, :deflected
-    color_by = :none, # :none, :displacement_global, :displacement_local, :stress
+function visualize(struc::BuildingStructure;
+    deflection_scale = :auto,
+    mode = :original,
+    color_by = :none,
+    theme::Union{Nothing, Symbol} = nothing,
     show_nodes = true,
     show_supports = true,
     show_releases = true,
@@ -80,22 +76,38 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
     linewidth = 1.0,
     markersize = 10.0
 )
+    skel = struc.skeleton
+    model = struc.asap_model
+    
+    # Apply StructuralPlots theme if specified
+    if theme == :light
+        GLMakie.set_theme!(StructuralPlots.sp_light)
+    elseif theme == :dark
+        GLMakie.set_theme!(StructuralPlots.sp_dark)
+    end
+
     fig = GLMakie.Figure(size = (1200, 800))
-    ax = GLMakie.Axis3(fig[1, 1], aspect = :data, title = "Asap Model Visualization ($(mode))")
+    ax = GLMakie.Axis3(fig[1, 1], 
+        aspect = :data, 
+        title = "Structural Model ($(mode))",
+        xlabel = "x [m]",
+        ylabel = "y [m]",
+        zlabel = "z [m]"
+    )
 
     # Collectors for custom legend
     leg_elems = []
     leg_labels = String[]
+    
+    # Color data (populated in :deflected mode with coloring)
+    all_colors = Float64[]
+    crange = (0.0, 1.0)
 
     # 1. Elements
     if mode == :original
         for element in model.elements
-            if show_releases
-                p1, p2 = get_drawing_pts(element, 0.05)
-            else
-                p1 = element.nodeStart.position
-                p2 = element.nodeEnd.position
-            end
+            # get_drawing_pts returns positions in meters (raw Float64)
+            p1, p2 = get_drawing_pts(element, show_releases ? 0.05 : 0.0)
             GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]], 
                           color = :black, linewidth = linewidth)
         end
@@ -106,8 +118,8 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         if show_original_geometry
             # Draw original geometry as thin dotted lines for reference
             for element in model.elements
-                p1 = element.nodeStart.position
-                p2 = element.nodeEnd.position
+                # get_drawing_pts returns positions in meters (raw Float64)
+                p1, p2 = get_drawing_pts(element, 0.0)
                 GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]], 
                             color = (:black, 0.75), linewidth = 0.5, linestyle = :dash)
             end
@@ -142,7 +154,6 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
 
         # Collectors for consistent coloring across all members
         all_points = Vector{GLMakie.Point3f}[]
-        all_colors = Float64[]
 
         for (i, edisp) in enumerate(edisps)
             # basepositions + (deflection * uglobal)
@@ -196,9 +207,12 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         end
 
         # Plot deflected elements
+        # Note: :tributary coloring only applies to :original mode, so treat it as :none here
+        use_coloring = color_by ∉ (:none, :tributary) && !isempty(all_colors)
+        
         color_idx = 1
         for pts in all_points
-            if color_by == :none
+            if !use_coloring
                 GLMakie.lines!(ax, pts, color = :black, linewidth = linewidth)
             else
                 res = length(pts)
@@ -209,10 +223,15 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
             end
         end
         
-        if color_by == :none
+        if !use_coloring
             push!(leg_elems, GLMakie.LineElement(color = :black, linewidth = 2))
             push!(leg_labels, "Elements (Deflected)")
         end
+    end
+
+    # 1b. Tributary Areas (works with both original and deflected modes)
+    if color_by == :tributary
+        _draw_tributary_areas!(ax, struc, leg_elems, leg_labels)
     end
 
     # 2. Nodes
@@ -240,9 +259,10 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
         # Ensure model is processed to populate length, LCS, etc.
         model.processed || Asap.process!(model)
 
-        # Estimate a good reference size for markers
-        avg_len = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0
-        size_ref = avg_len * 0.15
+        # Estimate a good reference size for markers (in meters)
+        avg_len_unitful = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0u"m"
+        avg_len = ustrip(u"m", avg_len_unitful)  # Convert to Float64 in meters
+        size_ref = avg_len * 0.15  # Now a Float64 in meters
         
         t_pos, t_dir = GLMakie.Point3f[], GLMakie.Vec3f[]
         r_pos, r_rot = GLMakie.Point3f[], GLMakie.Quaternionf[]
@@ -316,4 +336,79 @@ function visualize(skel::BuildingSkeleton, model::Asap.Model;
     end
     display(fig)
     return fig
+end
+
+"""Draw tributary area polygons in 3D using StructuralPlots colors."""
+function _draw_tributary_areas!(ax, struc::BuildingStructure, leg_elems, leg_labels)
+    skel = struc.skeleton
+    
+    # Compute tributaries if needed
+    any(isnothing(c.tributary) for c in struc.cells) && compute_cell_tributaries!(struc)
+    
+    # Use StructuralPlots harmonic palette (main colors, no accents)
+    colors = StructuralPlots.harmonic
+    
+    drawn_edges = Set{Int}()
+    
+    for cell in struc.cells
+        isnothing(cell.tributary) && continue
+        
+        # Use same vertex source as tributary computation (face_vertex_indices)
+        v_indices = skel.face_vertex_indices[cell.face_idx]
+        face_verts = [skel.vertices[i] for i in v_indices]
+        face_edges = skel.face_edge_indices[cell.face_idx]
+        
+        # Get z-coordinate - use meters for 3D visualization (Asap uses meters internally)
+        z_coord = ustrip(u"m", Meshes.coords(face_verts[1]).z)
+        
+        # Convert to 2D coords in meters and ensure CCW to match tributary computation
+        # Tributary computation uses meters internally, so we must use meters here
+        verts_2d = NTuple{2, Float64}[]
+        for p in face_verts
+            c = Meshes.coords(p)
+            push!(verts_2d, (ustrip(u"m", c.x), ustrip(u"m", c.y)))
+        end
+        verts_2d = StructuralSizer._ensure_ccw(verts_2d)
+        n_verts = length(verts_2d)
+        
+        for trib in cell.tributary
+            isempty(trib.s) && continue
+            
+            # Get beam endpoints from CCW-ordered vertices (in meters, matching trib.d)
+            local_idx = trib.local_edge_idx
+            beam_start = verts_2d[local_idx]
+            beam_end = verts_2d[mod1(local_idx + 1, n_verts)]
+            
+            # Get tributary vertices in absolute coords (meters)
+            trib_verts_2d = StructuralSizer.vertices(trib, beam_start, beam_end)
+            
+            # Convert to 3D points
+            pts_3d = [GLMakie.Point3f(v[1], v[2], z_coord) for v in trib_verts_2d]
+            length(pts_3d) < 3 && continue
+            
+            # Create triangulated mesh for the polygon
+            n_pts = length(pts_3d)
+            tri_faces = [GLMakie.TriangleFace(1, k, k+1) for k in 2:n_pts-1]
+            
+            # Color based on global edge index (consistent coloring for same beam)
+            global_edge_idx = local_idx <= length(face_edges) ? face_edges[local_idx] : 0
+            color = colors[mod1(max(global_edge_idx, 1), length(colors))]
+            
+            mesh = GLMakie.GeometryBasics.Mesh(pts_3d, tri_faces)
+            GLMakie.mesh!(ax, mesh, color = (color, 0.6), transparency = true)
+            
+            # Outline
+            outline = vcat(pts_3d, [pts_3d[1]])
+            GLMakie.lines!(ax, outline, color = color, linewidth = 1.5)
+            
+            # Track which edges we've drawn for legend
+            global_edge_idx > 0 && push!(drawn_edges, global_edge_idx)
+        end
+    end
+    
+    # Add legend entry
+    if !isempty(drawn_edges)
+        push!(leg_elems, GLMakie.PolyElement(color = (:coral, 0.6), strokecolor = :coral, strokewidth = 1))
+        push!(leg_labels, "Tributary Areas")
+    end
 end

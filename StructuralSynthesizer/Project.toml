@@ -7,6 +7,7 @@ version = "0.1.0"
 Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
 AsapToolkit = "45845293-de45-4074-bf34-b603320deb79"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+StructuralPlots = "a1b2c3d4-5678-90ab-cdef-123456789abc"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
@@ -18,7 +19,6 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 StructuralBase = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
 StructuralSizer = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
-StructuralUnits = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
@@ -26,8 +26,8 @@ XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 Asap = {path = "../external/Asap"}
 AsapToolkit = {path = "../external/AsapToolkit"}
 StructuralBase = {path = "../StructuralBase"}
+StructuralPlots = {path = "../StructuralPlots"}
 StructuralSizer = {path = "../StructuralSizer"}
-StructuralUnits = {path = "../StructuralUnits"}
 
 [compat]
 Interpolations = "0.16.2"

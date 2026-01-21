@@ -1,9 +1,10 @@
 # Visualization for cell groups and tributary areas
+# All coordinates are in METERS (SI units)
 
 """
     visualize_cell_groups(struc::BuildingStructure; kwargs...)
 
-Plot each unique cell group geometry on its own axis.
+Plot each unique cell group geometry on its own axis. All coordinates in meters.
 
 # Arguments
 - `max_cols::Int=4`: Maximum columns in the grid layout.
@@ -40,7 +41,7 @@ function visualize_cell_groups(struc::BuildingStructure;
         canonical_idx = first(cg.cell_indices)
         cell = struc.cells[canonical_idx]
         
-        # Extract 2D geometry
+        # Extract 2D geometry in meters
         verts = _get_cell_vertices_2d(struc, cell)
         
         # Create axis
@@ -66,24 +67,29 @@ function visualize_cell_groups(struc::BuildingStructure;
     return fig
 end
 
-"""Extract cell vertices as 2D points centered at origin."""
+"""Extract cell vertices as 2D points (meters) centered at origin."""
 function _get_cell_vertices_2d(struc::BuildingStructure, cell::Cell)
     verts, offset = _get_cell_vertices_2d_with_offset(struc, cell)
     return [(v[1] - offset[1], v[2] - offset[2]) for v in verts]
 end
 
-"""Extract cell vertices as 2D points (raw) and centering offset."""
+"""Extract cell vertices as 2D points in meters (raw) and centering offset."""
 function _get_cell_vertices_2d_with_offset(struc::BuildingStructure, cell::Cell)
-    poly = struc.skeleton.faces[cell.face_idx]
-    pts = Meshes.vertices(poly)
+    # Use same vertex source as tributary computation (face_vertex_indices)
+    v_indices = struc.skeleton.face_vertex_indices[cell.face_idx]
+    pts = [struc.skeleton.vertices[i] for i in v_indices]
     
     coords = NTuple{2, Float64}[]
     for p in pts
         c = Meshes.coords(p)
+        # Convert to meters (matching TributaryPolygon internal storage)
         x = Float64(ustrip(u"m", c.x))
         y = Float64(ustrip(u"m", c.y))
         push!(coords, (x, y))
     end
+    
+    # IMPORTANT: Ensure CCW ordering to match tributary computation
+    coords = StructuralSizer._ensure_ccw(coords)
     
     # Compute centroid offset
     cx = sum(v[1] for v in coords) / length(coords)
@@ -134,7 +140,7 @@ end
     visualize_cell_tributaries(struc::BuildingStructure; kwargs...)
 
 Plot all cell groups with their tributary polygons (grid layout like visualize_cell_groups).
-Automatically computes tributaries if not already computed.
+Automatically computes tributaries if not already computed. All coordinates in meters.
 
 # Arguments
 - `max_cols::Int=4`: Maximum columns in the grid layout.
@@ -165,7 +171,8 @@ function visualize_cell_tributaries(struc::BuildingStructure;
     
     fig = GLMakie.Figure(size = (350 * n_cols, 350 * n_rows))
     
-    colors = [:coral, :skyblue, :lightgreen, :plum, :gold, :salmon, :cyan, :pink]
+    # Use StructuralPlots harmonic palette (main colors, no accents)
+    colors = StructuralPlots.harmonic
     
     for (i, cg) in enumerate(groups)
         row = div(i - 1, n_cols) + 1
@@ -186,33 +193,45 @@ function visualize_cell_tributaries(struc::BuildingStructure;
             ylabel = "y [m]"
         )
         
-        # Get cell vertices and centering offset
+        # Get cell vertices and centering offset (in meters)
         verts_raw, offset = _get_cell_vertices_2d_with_offset(struc, cell)
         verts = [(v[1] - offset[1], v[2] - offset[2]) for v in verts_raw]
         
         # Plot tributary polygons
         if !isnothing(cell.tributary)
+            n_verts = length(verts_raw)
             for (j, trib) in enumerate(cell.tributary)
-                if !isempty(trib.vertices)
-                    txs = [v[1] - offset[1] for v in trib.vertices]
-                    tys = [v[2] - offset[2] for v in trib.vertices]
+                if !isempty(trib.s)
+                    # Get beam endpoints for this tributary (in meters)
+                    local_idx = trib.local_edge_idx
+                    beam_start = verts_raw[local_idx]
+                    beam_end = verts_raw[mod1(local_idx + 1, n_verts)]
+                    
+                    # Compute absolute coordinates from parametric (all in meters)
+                    trib_verts = vertices(trib, beam_start, beam_end)
+                    
+                    txs = [v[1] - offset[1] for v in trib_verts]
+                    tys = [v[2] - offset[2] for v in trib_verts]
                     push!(txs, txs[1])
                     push!(tys, tys[1])
                     
                     c = colors[mod1(j, length(colors))]
                     GLMakie.poly!(ax, GLMakie.Point2f.(txs, tys),
-                                 color = (c, 0.5),
+                                 color = (c, 0.3),
                                  strokecolor = c,
                                  strokewidth = 1.5)
                 end
                 
                 # Labels
-                if show_labels && j <= length(verts)
-                    label = "$(round(trib.fraction*100, digits=0))%"
-                    mx = (verts[j][1] + verts[mod1(j+1, length(verts))][1]) / 2
-                    my = (verts[j][2] + verts[mod1(j+1, length(verts))][2]) / 2
-                    GLMakie.text!(ax, mx, my, text=label, fontsize=9, 
-                                 align=(:center, :center), color=:black)
+                if show_labels
+                    local_idx = trib.local_edge_idx
+                    if local_idx <= length(verts)
+                        label = "$(round(trib.fraction*100, digits=0))%"
+                        mx = (verts[local_idx][1] + verts[mod1(local_idx+1, length(verts))][1]) / 2
+                        my = (verts[local_idx][2] + verts[mod1(local_idx+1, length(verts))][2]) / 2
+                        GLMakie.text!(ax, mx, my, text=label, fontsize=9, 
+                                     align=(:center, :center), color=:black)
+                    end
                 end
             end
         end
@@ -231,7 +250,7 @@ end
 """
     visualize_cell_tributary(struc::BuildingStructure, cell_idx::Int)
 
-Plot a single cell with its tributary polygons (one per edge).
+Plot a single cell with its tributary polygons (one per edge). All coordinates in meters.
 """
 function visualize_cell_tributary(struc::BuildingStructure, cell_idx::Int)
     cell = struc.cells[cell_idx]
@@ -250,33 +269,44 @@ function visualize_cell_tributary(struc::BuildingStructure, cell_idx::Int)
         ylabel = "y [m]"
     )
     
-    # Get cell vertices and compute centering offset
+    # Get cell vertices and compute centering offset (in meters)
     verts_raw, offset = _get_cell_vertices_2d_with_offset(struc, cell)
     verts = [(v[1] - offset[1], v[2] - offset[2]) for v in verts_raw]
     
-    colors = [:coral, :skyblue, :lightgreen, :plum, :gold, :salmon, :cyan, :pink]
+    # Use StructuralPlots harmonic palette (main colors, no accents)
+    colors = StructuralPlots.harmonic
     
     # Plot tributary polygons
     if !isnothing(cell.tributary)
+        n_verts = length(verts_raw)
         for (i, trib) in enumerate(cell.tributary)
-            if !isempty(trib.vertices)
-                txs = [v[1] - offset[1] for v in trib.vertices]
-                tys = [v[2] - offset[2] for v in trib.vertices]
+            if !isempty(trib.s)
+                # Get beam endpoints for this tributary (in meters)
+                local_idx = trib.local_edge_idx
+                beam_start = verts_raw[local_idx]
+                beam_end = verts_raw[mod1(local_idx + 1, n_verts)]
+                
+                # Compute absolute coordinates from parametric (all in meters)
+                trib_verts = vertices(trib, beam_start, beam_end)
+                
+                txs = [v[1] - offset[1] for v in trib_verts]
+                tys = [v[2] - offset[2] for v in trib_verts]
                 push!(txs, txs[1])
                 push!(tys, tys[1])
                 
                 c = colors[mod1(i, length(colors))]
                 GLMakie.poly!(ax, GLMakie.Point2f.(txs, tys),
-                             color = (c, 0.5),
+                             color = (c, 0.3),
                              strokecolor = c,
                              strokewidth = 1.5)
             end
             
-            # Label with edge index and fraction
-            label = "e$(trib.edge_idx)\n$(round(trib.fraction*100, digits=1))%"
-            if i <= length(verts)
-                mx = (verts[i][1] + verts[mod1(i+1, length(verts))][1]) / 2
-                my = (verts[i][2] + verts[mod1(i+1, length(verts))][2]) / 2
+            # Label with local edge index and fraction
+            local_idx = trib.local_edge_idx
+            label = "e$(local_idx)\n$(round(trib.fraction*100, digits=1))%"
+            if local_idx <= length(verts)
+                mx = (verts[local_idx][1] + verts[mod1(local_idx+1, length(verts))][1]) / 2
+                my = (verts[local_idx][2] + verts[mod1(local_idx+1, length(verts))][2]) / 2
                 GLMakie.text!(ax, mx, my, text=label, fontsize=9, 
                              align=(:center, :center), color=:black)
             end

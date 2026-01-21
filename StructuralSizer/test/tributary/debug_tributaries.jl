@@ -159,6 +159,25 @@ with_collinear() = make_vertices([
 ])
 
 # =============================================================================
+# Helpers for Parametric TributaryPolygon
+# =============================================================================
+
+"""Get absolute vertices from parametric tributary given original polygon vertices."""
+function get_abs_vertices(trib::StructuralSizer.TributaryPolygon, orig_pts::Vector{NTuple{2,Float64}})
+    isempty(trib.s) && return NTuple{2,Float64}[]
+    n = length(orig_pts)
+    beam_start = orig_pts[trib.local_edge_idx]
+    beam_end = orig_pts[mod1(trib.local_edge_idx + 1, n)]
+    return StructuralSizer.vertices(trib, beam_start, beam_end)
+end
+
+"""Get absolute vertices from parametric tributary given Meshes.Point vertices."""
+function get_abs_vertices(trib::StructuralSizer.TributaryPolygon, verts::Vector{<:Meshes.Point})
+    pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in verts]
+    return get_abs_vertices(trib, pts)
+end
+
+# =============================================================================
 # Visualization
 # =============================================================================
 
@@ -180,9 +199,10 @@ function plot_tributaries!(ax, verts, results; title="", colors=nothing)
     
     # Plot tributary polygons
     for (i, trib) in enumerate(results)
-        if !isempty(trib.vertices)
-            txs = [v[1] - cx for v in trib.vertices]
-            tys = [v[2] - cy for v in trib.vertices]
+        abs_verts = get_abs_vertices(trib, pts)
+        if !isempty(abs_verts)
+            txs = [v[1] - cx for v in abs_verts]
+            tys = [v[2] - cy for v in abs_verts]
             push!(txs, txs[1])
             push!(tys, tys[1])
             
@@ -220,7 +240,7 @@ function plot_tributaries!(ax, verts, results; title="", colors=nothing)
 end
 
 """Create the full debug visualization."""
-function visualize_tributary_debug(; axis::Union{Nothing, Vector{Float64}} = nothing)
+function visualize_tributary_debug(; axis::Union{Nothing, AbstractVector{<:Real}} = nothing)
     # Define all test shapes: (name, vertices, weights)
     # weights = nothing means isotropic (all weights = 1.0)
     shapes = [
@@ -365,7 +385,7 @@ function validate_shapes()
         println("  Total area: $(round(total_area, digits=2)) m²")
         println("  Per edge:")
         for r in results
-            println("    Edge $(r.edge_idx): $(round(r.fraction*100, digits=1))% ($(round(r.area, digits=2)) m²)")
+            println("    Edge $(r.local_edge_idx): $(round(r.fraction*100, digits=1))% ($(round(r.area, digits=2)) m²)")
         end
     end
     
@@ -383,11 +403,14 @@ validate_shapes()
 println("\n" * "=" ^ 60)
 println("Octagon Tributary Polygons — One-Way Algorithm (axis=[1.0, 0.0])")
 println("=" ^ 60)
-oct_results = get_tributary_polygons(octagon(); axis=[1.0, 0.0])
+oct_verts = octagon()
+oct_pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in oct_verts]
+oct_results = get_tributary_polygons(oct_verts; axis=[1.0, 0.0])
 for r in oct_results
-    println("\nEdge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
-    if !isempty(r.vertices)
-        for (j, v) in enumerate(r.vertices)
+    abs_verts = get_abs_vertices(r, oct_pts)
+    println("\nEdge $(r.local_edge_idx): $(length(abs_verts)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(abs_verts)
+        for (j, v) in enumerate(abs_verts)
             println("  [$j] ($(round(v[1], digits=4)), $(round(v[2], digits=4)))")
         end
     else
@@ -401,24 +424,28 @@ println("\n" * "=" ^ 60)
 println("Weighted Rectangle Test")
 println("=" ^ 60)
 rect = rectangle()
+rect_pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in rect]
 println("\nOne-Way (axis=[1.0, 0.0], all weights = 1.0):")
 rect_iso = get_tributary_polygons(rect; weights=nothing, axis=[1.0, 0.0])
 for r in rect_iso
-    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
-    if !isempty(r.vertices) && length(r.vertices) <= 8
-        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    abs_verts = get_abs_vertices(r, rect_pts)
+    println("  Edge $(r.local_edge_idx): $(length(abs_verts)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(abs_verts) && length(abs_verts) <= 8
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in abs_verts])")
     end
 end
 
 println("\nOne-Way (axis=[1.0, 0.0]) Weighted [1.0, 1.0, 1.0, 2.0] (edge 4 moves 2x faster): (Parallelogram)")
 par = parallelogram()
-println("Parallelogram vertices: $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in par])")
+par_pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in par]
+println("Parallelogram vertices: $(par_pts)")
 par_weighted = get_tributary_polygons(par; weights=[1.0, 1.0, 1.0, 2.0], axis=[1.0, 0.0])
 println("\nResults:")
 for r in par_weighted
-    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
-    if !isempty(r.vertices) && length(r.vertices) <= 10
-        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    abs_verts = get_abs_vertices(r, par_pts)
+    println("  Edge $(r.local_edge_idx): $(length(abs_verts)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(abs_verts) && length(abs_verts) <= 10
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in abs_verts])")
     end
 end
 println("\nExpected: edge 4 (weight=2) should have SMALLER area")
@@ -428,13 +455,15 @@ println("\n" * "=" ^ 60)
 println("Triangle Test (One Short Edge Issue)")
 println("=" ^ 60)
 tri = rect_one_short_edge()  # (0,0), (3,0), (1.5, 5)
-println("\nTriangle vertices: $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in tri])")
+tri_pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in tri]
+println("\nTriangle vertices: $(tri_pts)")
 println("\nOne-Way (axis=[1.0, 0.0]) Isotropic:")
 tri_results = get_tributary_polygons(tri; axis=[1.0, 0.0])
 for r in tri_results
-    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
-    if !isempty(r.vertices)
-        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    abs_verts = get_abs_vertices(r, tri_pts)
+    println("  Edge $(r.local_edge_idx): $(length(abs_verts)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(abs_verts)
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in abs_verts])")
     else
         println("    (empty polygon)")
     end
@@ -447,18 +476,20 @@ println("\n" * "=" ^ 60)
 println("Chevron Test")
 println("=" ^ 60)
 chev = chevron()
-println("\nChevron vertices: $([(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in chev])")
+chev_pts = [(Float64(Meshes.coords(v).x.val), Float64(Meshes.coords(v).y.val)) for v in chev]
+println("\nChevron vertices: $(chev_pts)")
 println("\nOne-Way (axis=[1.0, 0.0]) Isotropic (all weights = 1.0):")
 chev_iso = get_tributary_polygons(chev; axis=[1.0, 0.0])
 for r in chev_iso
-    println("  Edge $(r.edge_idx): $(length(r.vertices)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
-    if !isempty(r.vertices) && length(r.vertices) <= 10
-        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in r.vertices])")
+    abs_verts = get_abs_vertices(r, chev_pts)
+    println("  Edge $(r.local_edge_idx): $(length(abs_verts)) vertices, area=$(round(r.area, digits=4)) m² ($(round(r.fraction*100, digits=1))%)")
+    if !isempty(abs_verts) && length(abs_verts) <= 10
+        println("    Vertices: $([(round(v[1], digits=3), round(v[2], digits=3)) for v in abs_verts])")
     end
 end
 total_frac_chev = sum(r.fraction for r in chev_iso)
 println("\nTotal fraction: $(round(total_frac_chev * 100, digits=1))%")
 
 println("\nGenerating full debug visualization...")
-fig = visualize_tributary_debug()
+fig = visualize_tributary_debug(axis = [1,0])
 display(fig)

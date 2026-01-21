@@ -2,7 +2,7 @@ using StructuralSynthesizer
 using StructuralSizer
 using StructuralSizer: get_Fe_flexural, get_Fe_torsional, get_compression_factors
 using StructuralBase
-using StructuralUnits  # For u"ksi" etc.
+using StructuralBase: StructuralUnits  # For u"ksi" etc.
 using Asap
 using Unitful
 using Test

@@ -1,0 +1,220 @@
+# ============================================================================
+# Theme Configuration
+# ============================================================================
+
+# Text sizes (optimized for half-width journal formatting)
+const tickFontSize  = 12
+const labelFontSize = 14
+const titleFontSize = 14
+
+# Default typeface
+const typeface = "Inter"
+
+# ============================================================================
+# Light Theme - sp_light
+# ============================================================================
+
+sp_light = Theme(
+    backgroundcolor = :transparent,
+    palette = (
+        color  = [sp_ceruleanblue, sp_magenta, sp_gold, sp_irispurple, sp_orange, sp_lilac, sp_charcoalgrey],
+        marker = [:circle, :rect, :utriangle, :xcross, :diamond, :star5],
+    ),
+    Axis = (
+        aspect            = 1,
+        backgroundcolor   = :transparent,
+        xlabelfont        = typeface,
+        xlabelsize        = labelFontSize,
+        ylabelfont        = typeface,
+        ylabelsize        = labelFontSize,
+        xticklabelfont    = typeface,
+        xticklabelsize    = tickFontSize,
+        yticklabelfont    = typeface,
+        yticklabelsize    = tickFontSize,
+        titlefont         = typeface,
+        titlesize         = titleFontSize,
+        xgridcolor        = sp_lightgray,
+        ygridcolor        = sp_lightgray,
+        xgridvisible      = false,
+        ygridvisible      = false,
+        xtickalign        = 1,
+        ytickalign        = 1,
+        xticksmirrored    = true,
+        yticksmirrored    = true,
+    ),
+    Axis3 = (
+        backgroundcolor   = :transparent,
+        aspect            = (1, 1, 1),
+        xgridcolor        = sp_lightgray,
+        ygridcolor        = sp_lightgray,
+        zgridcolor        = sp_lightgray,
+        titlefont         = typeface,
+        xlabelfont        = typeface,
+        ylabelfont        = typeface,
+        zlabelfont        = typeface,
+        xticklabelfont    = typeface,
+        yticklabelfont    = typeface,
+        zticklabelfont    = typeface,
+        titlesize         = titleFontSize,
+        xlabelsize        = labelFontSize,
+        ylabelsize        = labelFontSize,
+        zlabelsize        = labelFontSize,
+        xticklabelsize    = tickFontSize,
+        yticklabelsize    = tickFontSize,
+        zticklabelsize    = tickFontSize,
+        azimuth           = -3π / 4,
+        elevation         = π / 8,
+    ),
+    Lines = (
+        linewidth = 2,
+    ),
+    Colorbar = (
+        labelfont     = typeface,
+        ticksvisible  = false,
+        spinewidth    = 0,
+        ticklabelfont = typeface,
+        colormap      = trans2black,
+    ),
+    Legend = (
+        backgroundcolor = :white,
+        framecolor      = :black,
+        labelfont       = typeface,
+        titlefont       = typeface,
+    ),
+    Heatmap = (colormap = trans2black,),
+    Surface = (colormap = trans2black,),
+    Spy     = (colormap = trans2black,),
+    Scatter = (
+        strokewidth = 1,
+        cycle       = [:color, :marker],
+        strokecolor = :black,
+    ),
+    Hist = (
+        color       = sp_ceruleanblue,
+        strokecolor = :black,
+    ),
+    BarPlot = (
+        color       = sp_ceruleanblue,
+        gap         = 0,
+        strokewidth = 0,
+        strokecolor = :white,
+    ),
+    Text = (font = typeface,),
+)
+
+# ============================================================================
+# Dark Theme - sp_dark
+# ============================================================================
+
+sp_dark = Theme(
+    textcolor       = :white,
+    backgroundcolor = sp_nearblack,
+    palette = (
+        color  = [sp_skyblue, sp_magenta, sp_gold, sp_lilac, sp_orange, sp_ceruleanblue, sp_powderblue],
+        marker = [:circle, :rect, :utriangle, :xcross, :diamond, :star5],
+    ),
+    Axis = (
+        aspect            = 1,
+        backgroundcolor   = :transparent,
+        xlabelfont        = typeface,
+        xlabelsize        = labelFontSize,
+        ylabelfont        = typeface,
+        ylabelsize        = labelFontSize,
+        xticklabelfont    = typeface,
+        xticklabelsize    = tickFontSize,
+        yticklabelfont    = typeface,
+        yticklabelsize    = tickFontSize,
+        titlefont         = typeface,
+        titlesize         = titleFontSize,
+        bottomspinecolor  = :white,
+        topspinecolor     = :white,
+        leftspinecolor    = :white,
+        rightspinecolor   = :white,
+        xtickcolor        = :white,
+        ytickcolor        = :white,
+        xgridvisible      = false,
+        xgridcolor        = sp_darkgray,
+        ygridvisible      = false,
+        ygridcolor        = sp_darkgray,
+        xtickalign        = 1,
+        ytickalign        = 1,
+        xticksmirrored    = true,
+        yticksmirrored    = true,
+    ),
+    Axis3 = (
+        backgroundcolor   = :transparent,
+        aspect            = (1, 1, 1),
+        xspinecolor_1     = :white,
+        xspinecolor_2     = :white,
+        xspinecolor_3     = :white,
+        xlabelcolor       = :white,
+        xticklabelcolor   = :white,
+        xtickcolor        = :white,
+        yspinecolor_1     = :white,
+        yspinecolor_2     = :white,
+        yspinecolor_3     = :white,
+        ylabelcolor       = :white,
+        yticklabelcolor   = :white,
+        ytickcolor        = :white,
+        zspinecolor_1     = :white,
+        zspinecolor_2     = :white,
+        zspinecolor_3     = :white,
+        zlabelcolor       = :white,
+        zticklabelcolor   = :white,
+        ztickcolor        = :white,
+        titlefont         = typeface,
+        xlabelfont        = typeface,
+        ylabelfont        = typeface,
+        zlabelfont        = typeface,
+        xticklabelfont    = typeface,
+        yticklabelfont    = typeface,
+        zticklabelfont    = typeface,
+        titlesize         = titleFontSize,
+        xlabelsize        = labelFontSize,
+        ylabelsize        = labelFontSize,
+        zlabelsize        = labelFontSize,
+        xticklabelsize    = tickFontSize,
+        yticklabelsize    = tickFontSize,
+        zticklabelsize    = tickFontSize,
+        xgridcolor        = sp_darkgray,
+        ygridcolor        = sp_darkgray,
+        zgridcolor        = sp_darkgray,
+        azimuth           = -3π / 4,
+        elevation         = π / 8,
+    ),
+    Lines = (
+        linewidth = 2,
+    ),
+    Colorbar = (
+        labelfont     = typeface,
+        ticksvisible  = false,
+        spinewidth    = 0,
+        ticklabelfont = typeface,
+        colormap      = trans2white,
+    ),
+    Legend = (
+        backgroundcolor = sp_nearblack,
+        framecolor      = :white,
+        labelfont       = typeface,
+        titlefont       = typeface,
+    ),
+    Heatmap = (colormap = trans2white,),
+    Surface = (colormap = trans2white,),
+    Spy     = (colormap = trans2white,),
+    Scatter = (
+        strokewidth = 1,
+        cycle       = [:color, :marker],
+        strokecolor = sp_nearblack,
+    ),
+    Hist = (
+        color       = sp_skyblue,
+        strokecolor = :white,
+    ),
+    BarPlot = (
+        color       = sp_skyblue,
+        gap         = 0,
+        strokewidth = 0,
+        strokecolor = sp_nearblack,
+    ),
+    Text = (font = typeface,),
+)

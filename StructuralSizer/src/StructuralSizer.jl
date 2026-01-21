@@ -3,7 +3,7 @@ module StructuralSizer
 using Logging
 using CSV
 using StructuralBase
-using StructuralUnits  # Shared unit definitions (kip, ksi, psf)
+using StructuralBase: StructuralUnits  # Shared unit definitions (kip, ksi, psf)
 using Unitful
 using QuadGK: quadgk
 using Roots: find_zero, Brent, Order0
@@ -127,33 +127,17 @@ export solve_equilibrium_rise
 export parabolic_arc_length, vault_volume_per_area
 
 # =============================================================================
-# SlabGroup Geometry Extraction
-# =============================================================================
-
-# Point types
-export Point2D, Point3D
-
-# Geometry types
-export CellGeometry, SlabGeometry, SlabGroupGeometry
-
-# Extraction functions
-export extract_cell_geometry, extract_slab_geometry, extract_slabgroup_geometry
-
-# Accessors
-export get_vertices, get_all_vertices, get_cell_polygons
-export total_area, cell_count, slab_count
-
-# =============================================================================
 # Tributary Area (Straight Skeleton)
 # =============================================================================
 
-export TributaryResult
+export TributaryPolygon
+export vertices  # for converting parametric → absolute coords
 export get_tributary_polygons
 export get_tributary_polygons_isotropic
 
-# DCEL types (for advanced users)
-export DCEL, DCELVertex, HalfEdge, DCELFace
-export validate_dcel, extract_face_polygon, extract_face_polygon_by_edges
-export insert_artificial_bisectors!
+# Span calculations
+export SpanInfo, governing_spans
+export short_span, long_span, two_way_span
+export get_polygon_span
 
 end # module

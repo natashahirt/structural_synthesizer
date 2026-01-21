@@ -3,27 +3,26 @@
 # =============================================================================
 
 """
-    get_tributary_polygons_one_way(vertices::Vector{<:Point}; weights=nothing, axis)
+    get_tributary_polygons_one_way(vertices; weights=nothing, axis)
 
 Compute tributary polygons using one-way directed partitioning along the specified axis.
 
-Each interior point is assigned to the edge closest along ±axis direction.
-Edges parallel to axis get zero area (they're never "closest" in this metric).
+## Arguments
+- `vertices::Vector{<:Point}`: Polygon vertices as Meshes.Point objects
+- `weights::Union{Nothing, AbstractVector{<:Real}}`: Optional edge weights (one per edge)
+- `axis::AbstractVector{<:Real}`: Direction vector [vx, vy] for load distribution
 
-Algorithm:
-1. Transform to (s,t) coordinates where t is perpendicular to the load-span axis
-2. Sweep horizontal strips between consecutive vertex t-values  
-3. Within each strip, partition the interior via weighted split between bounding edges
-4. Sum trapezoid areas directly (exact, no polygon union needed)
-5. Reconstruct polygons using actual polygon vertices for exterior boundary
-
-Key insight: Each edge's tributary region has two types of boundaries:
-- EXTERIOR: follows the actual polygon edge (use exact vertex coordinates)
-- INTERIOR: follows the weighted split line (computed from scanline)
+## Returns
+`Vector{TributaryPolygon}` in parametric form. Edges parallel to axis get zero area.
+Use `vertices(trib, beam_start, beam_end)` to get absolute coordinates.
 """
-function get_tributary_polygons_one_way(vertices::Vector{<:Point}; weights=nothing, axis)
+function get_tributary_polygons_one_way(
+    vertices::Vector{<:Point};
+    weights::Union{Nothing, AbstractVector{<:Real}} = nothing,
+    axis::AbstractVector{<:Real}
+)
     m = length(vertices)
-    m >= 3 || return TributaryResult[]
+    m >= 3 || return TributaryPolygon[]
     
     # Convert to 2D coords and ensure CCW
     pts_orig = [_to_2d(v) for v in vertices]
@@ -44,7 +43,7 @@ function get_tributary_polygons_one_way(vertices::Vector{<:Point}; weights=nothi
     
     # Get critical t-values (vertex t's) - these define strip boundaries
     t_vals = sort(unique([p[2] for p in pts_st]))
-    length(t_vals) < 2 && return [TributaryResult(i, NTuple{2,Float64}[], 0.0, 0.0) for i in 1:m]
+    length(t_vals) < 2 && return [_make_tributary(i, NTuple{2,Float64}[], pts_orig, 0.0, 0.0) for i in 1:m]
     
     # For each edge, collect:
     # - Total area (summed directly)
@@ -116,11 +115,11 @@ function get_tributary_polygons_one_way(vertices::Vector{<:Point}; weights=nothi
     total_area = abs(_polygon_area(pts_orig))
     
     # Build results
-    results = TributaryResult[]
+    results = TributaryPolygon[]
     
     for i in 1:m
         if edge_areas[i] < 1e-12
-            push!(results, TributaryResult(i, NTuple{2,Float64}[], 0.0, 0.0))
+            push!(results, _make_tributary(i, NTuple{2,Float64}[], pts_orig, 0.0, 0.0))
             continue
         end
         
@@ -140,7 +139,7 @@ function get_tributary_polygons_one_way(vertices::Vector{<:Point}; weights=nothi
         area = edge_areas[i]
         frac = total_area > 0 ? area / total_area : 0.0
         
-        push!(results, TributaryResult(i, poly_xy, area, frac))
+        push!(results, _make_tributary(i, poly_xy, pts_orig, area, frac))
     end
     
     return results

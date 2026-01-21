@@ -1,223 +1,134 @@
-# =============================================================================
-# Tributary Area Types and Utilities (Straight Skeleton)
-# =============================================================================
+# Tributary Area Types and Utilities
 
 import Meshes: Point, coords
 using Unitful: ustrip, @u_str
 
-# Geometry tolerance for vertex/edge comparisons
-const GEOM_TOL = 1e-9
+"""
+Parametric tributary polygon relative to a beam edge.
 
-"""Result of tributary area computation for one edge."""
-struct TributaryResult
-    edge_idx::Int
-    vertices::Vector{NTuple{2, Float64}}  # polygon vertices (m)
-    area::Float64                          # tributary area (m²)
-    fraction::Float64                      # fraction of total cell area
+All length values are in **meters** (SI base unit).
+
+Fields:
+- `local_edge_idx`: Edge index within cell (1..n_edges)
+- `s`: Normalized positions along beam [0,1] (unitless)
+- `d`: Perpendicular distances from beam (meters)
+- `area`: Tributary area (m²)
+- `fraction`: Fraction of total cell area (unitless)
+"""
+struct TributaryPolygon
+    local_edge_idx::Int
+    s::Vector{Float64}
+    d::Vector{Float64}
+    area::Float64
+    fraction::Float64
 end
 
-"""Convert Meshes.Point to (x, y) tuple in meters."""
+"""
+Convert parametric (s,d) to absolute (x,y) coordinates in meters.
+
+beam_start and beam_end must be in meters.
+"""
+function vertices(trib::TributaryPolygon, beam_start::NTuple{2,Float64}, 
+                  beam_end::NTuple{2,Float64})::Vector{NTuple{2,Float64}}
+    beam_vec = (beam_end[1] - beam_start[1], beam_end[2] - beam_start[2])
+    beam_len = hypot(beam_vec...)
+    beam_len < 1e-12 && return NTuple{2, Float64}[]
+    
+    beam_dir = (beam_vec[1] / beam_len, beam_vec[2] / beam_len)
+    beam_normal = (-beam_dir[2], beam_dir[1])
+    
+    return [(beam_start[1] + s * beam_len * beam_dir[1] + d * beam_normal[1],
+             beam_start[2] + s * beam_len * beam_dir[2] + d * beam_normal[2])
+            for (s, d) in zip(trib.s, trib.d)]
+end
+
+"""Convert Meshes.Point to (x,y) tuple in meters."""
 function _to_2d(p::Point)
     c = coords(p)
-    x = Float64(ustrip(u"m", c.x))
-    y = Float64(ustrip(u"m", c.y))
-    return (x, y)
+    (Float64(ustrip(u"m", c.x)), Float64(ustrip(u"m", c.y)))
 end
 
-"""
-    _is_convex(pts) -> Bool
-
-Check if polygon vertices (in order) form a convex shape.
-Returns true if all cross products have the same sign (no reflex vertices).
-"""
-function _is_convex(pts::Vector{NTuple{2,Float64}})
-    n = length(pts)
-    n < 3 && return true
+"""Convert absolute vertices to parametric (s,d) relative to beam."""
+function _to_parametric(abs_verts::Vector{NTuple{2,Float64}}, beam_start::NTuple{2,Float64},
+                        beam_end::NTuple{2,Float64})::Tuple{Vector{Float64}, Vector{Float64}}
+    isempty(abs_verts) && return (Float64[], Float64[])
     
-    sign = 0
-    for i in 1:n
-        p1 = pts[mod1(i - 1, n)]
-        p2 = pts[i]
-        p3 = pts[mod1(i + 1, n)]
-        
-        # Cross product of edges meeting at p2
-        cross = (p2[1] - p1[1]) * (p3[2] - p2[2]) - (p2[2] - p1[2]) * (p3[1] - p2[1])
-        
-        if abs(cross) > GEOM_TOL
-            s = cross > 0 ? 1 : -1
-            if sign == 0
-                sign = s
-            elseif sign != s
-                return false  # Reflex vertex found → non-convex
-            end
-        end
-    end
-    return true
-end
-
-"""Compute bisector directions and speed factors for active vertices."""
-function _compute_bisectors_with_speed(pts::Vector{NTuple{2,Float64}}, active::Vector{Int})
-    n = length(active)
-    bisectors = Vector{NTuple{2,Float64}}(undef, n)
-    speeds = Vector{Float64}(undef, n)
+    beam_vec = (beam_end[1] - beam_start[1], beam_end[2] - beam_start[2])
+    beam_len = hypot(beam_vec...)
+    beam_len < 1e-12 && return (zeros(length(abs_verts)), zeros(length(abs_verts)))
     
-    for i in 1:n
-        prev_i = mod1(i - 1, n)
-        next_i = mod1(i + 1, n)
-        
-        p_prev = pts[active[prev_i]]
-        p_curr = pts[active[i]]
-        p_next = pts[active[next_i]]
-        
-        # Edge vectors
-        v_in = (p_curr[1] - p_prev[1], p_curr[2] - p_prev[2])
-        v_out = (p_next[1] - p_curr[1], p_next[2] - p_curr[2])
-        
-        len_in = hypot(v_in...)
-        len_out = hypot(v_out...)
-        
-        if len_in < 1e-10 || len_out < 1e-10
-            bisectors[i] = (0.0, 0.0)
-            speeds[i] = 0.0
-            continue
-        end
-        
-        # Normalize
-        v_in = v_in ./ len_in
-        v_out = v_out ./ len_out
-        
-        # Inward normals (90° CCW rotation for CCW polygon - interior is on LEFT)
-        n_in = (-v_in[2], v_in[1])
-        n_out = (-v_out[2], v_out[1])
-        
-        # Bisector direction
-        bx, by = n_in[1] + n_out[1], n_in[2] + n_out[2]
-        blen = hypot(bx, by)
-        
-        if blen < 1e-10
-            bisectors[i] = (0.0, 0.0)
-            speeds[i] = 0.0
-        else
-            bisectors[i] = (bx / blen, by / blen)
-            # Speed = 1/sin(half interior angle)
-            # sin(half_angle) = blen / 2
-            speeds[i] = 2.0 / blen
-        end
+    beam_dir = (beam_vec[1] / beam_len, beam_vec[2] / beam_len)
+    beam_normal = (-beam_dir[2], beam_dir[1])
+    
+    s_vals, d_vals = Float64[], Float64[]
+    for v in abs_verts
+        rel = (v[1] - beam_start[1], v[2] - beam_start[2])
+        push!(s_vals, (rel[1] * beam_dir[1] + rel[2] * beam_dir[2]) / beam_len)
+        push!(d_vals, rel[1] * beam_normal[1] + rel[2] * beam_normal[2])
     end
     
-    return bisectors, speeds
+    _rotate_to_beam_first(s_vals, d_vals)
 end
 
-"""Find the next edge collapse event (smallest positive time)."""
-function _find_next_collapse(pts, active, bisectors, speeds)
-    n = length(active)
-    t_min = Inf
-    collapse_idx = 0
+"""Rotate (s,d) arrays so beam edge vertices come first."""
+function _rotate_to_beam_first(s::Vector{Float64}, d::Vector{Float64})
+    n = length(s)
+    n < 2 && return (s, d)
     
-    for i in 1:n
-        next_i = mod1(i + 1, n)
-        
-        # Ray-ray intersection: when do vertices i and next_i meet?
-        p1 = pts[active[i]]
-        p2 = pts[active[next_i]]
-        d1 = bisectors[i] .* speeds[i]
-        d2 = bisectors[next_i] .* speeds[next_i]
-        
-        t = _ray_ray_intersect_time(p1, d1, p2, d2)
-        
-        if t > 1e-10 && t < t_min
-            t_min = t
-            collapse_idx = i
-        end
-    end
-    
-    return t_min, collapse_idx
-end
-
-
-"""Compute centroid of active polygon."""
-function _polygon_centroid(pts, active)
-    cx, cy = 0.0, 0.0
-    for ai in active
-        cx += pts[ai][1]
-        cy += pts[ai][2]
-    end
-    n = length(active)
-    return (cx / n, cy / n)
-end
-
-"""Finalize tributary polygon: close it and compute area."""
-function _finalize_tributary(edge_idx::Int, verts::Vector{NTuple{2,Float64}}, 
-                             original_pts::Vector{NTuple{2,Float64}}, n_orig::Int)
-    # Compute polygon area using shoelace formula
-    area = _polygon_area(verts)
-    total = _polygon_area(original_pts)
-    frac = total > 0 ? abs(area) / total : 0.0
-    
-    return TributaryResult(edge_idx, verts, abs(area), frac)
-end
-
-"""Shoelace formula for polygon area (signed: positive=CCW, negative=CW)."""
-function _polygon_area(pts::Vector{NTuple{2,Float64}})
-    n = length(pts)
-    n >= 3 || return 0.0
-    
-    area = 0.0
+    tol = 1e-6
+    best_idx, best_score = 1, Inf
     for i in 1:n
         j = mod1(i + 1, n)
-        area += pts[i][1] * pts[j][2]
-        area -= pts[j][1] * pts[i][2]
+        score = abs(d[i]) + abs(d[j])
+        if score < best_score && s[i] <= s[j] + tol
+            best_score, best_idx = score, i
+        end
     end
-    return area / 2
+    
+    best_idx == 1 && return (s, d)
+    (vcat(s[best_idx:end], s[1:best_idx-1]), vcat(d[best_idx:end], d[1:best_idx-1]))
 end
 
-"""Check if polygon is CCW (counter-clockwise) oriented."""
+"""Create TributaryPolygon from absolute vertices (in meters) with precomputed area/frac."""
+function _make_tributary(edge_idx::Int, verts::Vector{NTuple{2,Float64}}, 
+                         original_pts::Vector{NTuple{2,Float64}}, area::Float64, 
+                         frac::Float64)::TributaryPolygon
+    isempty(verts) && return TributaryPolygon(edge_idx, Float64[], Float64[], area, frac)
+    
+    n = length(original_pts)
+    s, d = _to_parametric(verts, original_pts[edge_idx], original_pts[mod1(edge_idx + 1, n)])
+    TributaryPolygon(edge_idx, s, d, area, frac)
+end
+
+"""Shoelace formula for signed polygon area."""
+function _polygon_area(pts::Vector{NTuple{2,Float64}})
+    n = length(pts)
+    n < 3 && return 0.0
+    sum(pts[i][1] * pts[mod1(i+1,n)][2] - pts[mod1(i+1,n)][1] * pts[i][2] for i in 1:n) / 2
+end
+
 _is_ccw(pts::Vector{NTuple{2,Float64}}) = _polygon_area(pts) > 0
 
-"""Ensure polygon is CCW oriented. Returns reversed copy if CW."""
-function _ensure_ccw(pts::Vector{NTuple{2,Float64}})
-    if _is_ccw(pts)
-        return pts
-    else
-        return reverse(pts)
-    end
-end
+"""Ensure polygon is CCW oriented."""
+_ensure_ccw(pts::Vector{NTuple{2,Float64}}) = _is_ccw(pts) ? pts : reverse(pts)
 
-# =============================================================================
-# Collinear Vertex Simplification
-# =============================================================================
-
-"""Check if three consecutive points are collinear within tolerance."""
-function _is_collinear_triplet(p_prev, p, p_next; tol=1e-12)
-    cross = (p[1]-p_prev[1])*(p_next[2]-p[2]) - (p[2]-p_prev[2])*(p_next[1]-p[1])
-    return abs(cross) ≤ tol
-end
-
-"""
-Simplify polygon by dropping collinear vertices. Keeps CCW order.
-Returns (simp_pts, keep_idx) where keep_idx[i] = original index of simp vertex i.
-"""
+"""Simplify polygon by dropping collinear vertices."""
 function simplify_collinear_polygon(pts::Vector{NTuple{2,Float64}}; tol=1e-12)
     n = length(pts)
     n ≤ 3 && return pts, collect(1:n)
     
-    keep = Int[]
-    for i in 1:n
-        p_prev = pts[mod1(i-1, n)]
-        p = pts[i]
-        p_next = pts[mod1(i+1, n)]
-        if !_is_collinear_triplet(p_prev, p, p_next; tol=tol)
-            push!(keep, i)
-        end
+    is_collinear(i) = begin
+        p_prev, p, p_next = pts[mod1(i-1,n)], pts[i], pts[mod1(i+1,n)]
+        abs((p[1]-p_prev[1])*(p_next[2]-p[2]) - (p[2]-p_prev[2])*(p_next[1]-p[1])) ≤ tol
     end
     
+    keep = [i for i in 1:n if !is_collinear(i)]
     simp = [pts[i] for i in keep]
     
-    # Ensure still CCW
     if _polygon_area(simp) < 0
         reverse!(simp)
         reverse!(keep)
     end
     
-    return simp, keep
+    simp, keep
 end

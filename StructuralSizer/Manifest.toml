@@ -2,7 +2,7 @@
 
 julia_version = "1.11.6"
 manifest_format = "2.0"
-project_hash = "776bde552fac1d86cf02b81db45f7737071d79e5"
+project_hash = "43a98843ed7901be4778091a8a2260d6fec2a477"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -358,9 +358,9 @@ uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.6.0"
 
 [[deps.EnumX]]
-git-tree-sha1 = "bddad79635af6aec424f53ed8aad5d7555dc6f00"
+git-tree-sha1 = "7bebc8aad6ee6217c78c5ddcf7ed289d65d0263e"
 uuid = "4e289a0a-7415-4d19-859d-a7e5c4648b56"
-version = "1.0.5"
+version = "1.0.6"
 
 [[deps.ExactPredicates]]
 deps = ["IntervalArithmetic", "Random", "StaticArrays"]
@@ -1033,12 +1033,6 @@ version = "2.6.2"
 deps = ["Reexport", "Unitful"]
 path = "../StructuralBase"
 uuid = "7e8f2a1b-4c3d-5e6f-9a0b-1c2d3e4f5a6b"
-version = "0.1.0"
-
-[[deps.StructuralUnits]]
-deps = ["Unitful"]
-path = "../StructuralUnits"
-uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"
 
 [[deps.SuiteSparse]]
