@@ -5,7 +5,7 @@
 # Steel, rebar: 1.72
 
 # ASTM A992 Steel (USA)
-const A992_Steel = Metal(
+const A992_Steel = StructuralSteel(
     200.0u"GPa",        # E  (29000 ksi ≈ 200 GPa)
     77.2u"GPa",         # G  (11500 ksi ≈ 77.2 GPa)
     345.0u"MPa",        # Fy (50 ksi ≈ 345 MPa)
@@ -16,7 +16,7 @@ const A992_Steel = Metal(
 )
 
 # S355 Steel (European)
-const S355_Steel = Metal(
+const S355_Steel = StructuralSteel(
     210.0u"GPa",        # E
     80.7u"GPa",         # G
     355.0u"MPa",        # Fy
@@ -27,7 +27,7 @@ const S355_Steel = Metal(
 )
 
 # ASTM A615 Rebar Steel Grades (portlandbolt.com)
-const Rebar_40 = Metal(200.0u"GPa", 77.2u"GPa", 276.0u"MPa", 414.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=40ksi, Fu=60ksi
-const Rebar_60 = Metal(200.0u"GPa", 77.2u"GPa", 414.0u"MPa", 620.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=60ksi, Fu=90ksi
-const Rebar_75 = Metal(200.0u"GPa", 77.2u"GPa", 517.0u"MPa", 689.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=75ksi, Fu=100ksi
-const Rebar_80 = Metal(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=80ksi, Fu=105ksi
+const Rebar_40 = RebarSteel(200.0u"GPa", 77.2u"GPa", 276.0u"MPa", 414.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=40ksi, Fu=60ksi
+const Rebar_60 = RebarSteel(200.0u"GPa", 77.2u"GPa", 414.0u"MPa", 620.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=60ksi, Fu=90ksi
+const Rebar_75 = RebarSteel(200.0u"GPa", 77.2u"GPa", 517.0u"MPa", 689.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=75ksi, Fu=100ksi
+const Rebar_80 = RebarSteel(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=80ksi, Fu=105ksi

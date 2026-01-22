@@ -141,15 +141,16 @@ function visualize(skel::BuildingSkeleton;
     face_palette = [:blue, :red, :green, :orange, :purple]
     for (i, (group_name, face_indices)) in enumerate(skel.groups_faces)
         group_name == :slabs && continue
-        group_polygons = skel.faces[face_indices]
         color_base = face_palette[mod1(i, length(face_palette))]
         
         # Add a nice square swatch for the face group to legend
         push!(leg_elems, GLMakie.PolyElement(color = (color_base, 0.5), strokecolor = :black, strokewidth = 1))
         push!(leg_labels, string(group_name))
 
-        for (j, poly) in enumerate(group_polygons)
-            pts = [extract_point3f(v) for v in Meshes.vertices(poly)]
+        for face_idx in face_indices
+            # Use face_vertex_indices for consistency with tributary computation
+            v_indices = skel.face_vertex_indices[face_idx]
+            pts = [extract_point3f(skel.vertices[vi]) for vi in v_indices]
             
             # Simple triangulation for convex polygons (like floor panels)
             # Create TriangleFaces: (1,2,3), (1,3,4), ..., (1, n-1, n)

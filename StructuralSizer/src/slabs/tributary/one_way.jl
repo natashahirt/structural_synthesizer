@@ -3,7 +3,7 @@
 # =============================================================================
 
 """
-    get_tributary_polygons_one_way(vertices; weights=nothing, axis)
+    get_tributary_polygons_one_way(vertices; weights=nothing, axis, buffers=nothing)
 
 Compute tributary polygons using one-way directed partitioning along the specified axis.
 
@@ -11,6 +11,7 @@ Compute tributary polygons using one-way directed partitioning along the specifi
 - `vertices::Vector{<:Point}`: Polygon vertices as Meshes.Point objects
 - `weights::Union{Nothing, AbstractVector{<:Real}}`: Optional edge weights (one per edge)
 - `axis::AbstractVector{<:Real}`: Direction vector [vx, vy] for load distribution
+- `buffers::Union{Nothing, TributaryBuffers}`: Optional pre-allocated buffers for reduced GC
 
 ## Returns
 `Vector{TributaryPolygon}` in parametric form. Edges parallel to axis get zero area.
@@ -19,7 +20,8 @@ Use `vertices(trib, beam_start, beam_end)` to get absolute coordinates.
 function get_tributary_polygons_one_way(
     vertices::Vector{<:Point};
     weights::Union{Nothing, AbstractVector{<:Real}} = nothing,
-    axis::AbstractVector{<:Real}
+    axis::AbstractVector{<:Real},
+    buffers::Union{Nothing, TributaryBuffers} = nothing
 )
     m = length(vertices)
     m >= 3 || return TributaryPolygon[]
@@ -50,10 +52,20 @@ function get_tributary_polygons_one_way(
     # - Interior boundary points (split line) 
     # - t-range where edge contributes
     # - Which side the edge is on (left=true, right=false)
-    edge_areas = zeros(m)
-    edge_interior_pts = [NTuple{2,Float64}[] for _ in 1:m]  # split line points
-    edge_t_range = [(Inf, -Inf) for _ in 1:m]
-    edge_is_left = [true for _ in 1:m]  # track if edge is on left side of interval
+    
+    # Use buffers if provided, otherwise allocate
+    if !isnothing(buffers)
+        ensure_capacity!(buffers, m)
+        edge_areas = @view buffers.edge_areas[1:m]
+        edge_interior_pts = @view buffers.edge_interior_pts[1:m]
+        edge_t_range = @view buffers.edge_t_range[1:m]
+        edge_is_left = @view buffers.edge_is_left[1:m]
+    else
+        edge_areas = zeros(m)
+        edge_interior_pts = [NTuple{2,Float64}[] for _ in 1:m]
+        edge_t_range = [(Inf, -Inf) for _ in 1:m]
+        edge_is_left = [true for _ in 1:m]
+    end
     
     # Process each horizontal strip
     for k in 1:(length(t_vals) - 1)

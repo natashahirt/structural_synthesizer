@@ -1,10 +1,21 @@
-function add_vertex!(skel::BuildingSkeleton{T}, pt::Meshes.Point; group::Symbol=:unknown, level_idx::Int=-1) where T
-    # check if vertex exists
-    idx = findfirst(v -> v == pt, skel.vertices)
+"""
+    add_vertex!(skel, pt; group=:unknown, level_idx=-1)
+
+Add a vertex to the skeleton, returning its index. If vertex already exists, returns existing index.
+Automatically uses O(1) lookup if `skel.lookup` is enabled.
+"""
+function add_vertex!(skel::BuildingSkeleton{T}, pt::Meshes.Point; 
+                     group::Symbol=:unknown, level_idx::Int=-1) where T
+    # O(1) lookup if available, else O(n) fallback
+    idx = find_vertex(skel, pt)
+    
     if isnothing(idx)
         push!(skel.vertices, pt)
         Graphs.add_vertex!(skel.graph)
         idx = length(skel.vertices)
+        
+        # Update lookup if enabled
+        _register_vertex!(skel, idx, pt)
     end
 
     # assign to group
@@ -32,7 +43,6 @@ function add_vertex!(skel::BuildingSkeleton{T}, pt::Meshes.Point; group::Symbol=
     # assign to story
     if level_idx != -1
         if !haskey(skel.stories, level_idx)
-            # Story creation logic if it doesn't exist
             z_val = Meshes.coords(pt).z
             elev = T <: Unitful.Quantity ? z_round * unit(z_val) : T(z_round)
             skel.stories[level_idx] = Story{T}(elev, Int[], Int[], Int[])
@@ -52,7 +62,14 @@ function add_vertex!(skel::BuildingSkeleton{T}, coords::AbstractVector{<:Real}; 
     return add_vertex!(skel, pt; kwargs...)
 end
 
-function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; group::Symbol=:unknown, level_idx::Int=-1) where T
+"""
+    add_element!(skel, seg; group=:unknown, level_idx=-1)
+
+Add an edge element to the skeleton. Also adds vertices if they don't exist.
+Automatically uses O(1) lookup if `skel.lookup` is enabled.
+"""
+function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; 
+                      group::Symbol=:unknown, level_idx::Int=-1) where T
     # get/create vertex indices
     v_indices = Vector{Int}(undef, 2)
     
@@ -65,6 +82,9 @@ function add_element!(skel::BuildingSkeleton{T}, seg::Meshes.Segment; group::Sym
 
     idx = length(skel.edges)
     Graphs.add_edge!(skel.graph, v_indices[1], v_indices[2])
+    
+    # Update lookup if enabled
+    _register_edge!(skel, idx, v_indices[1], v_indices[2])
 
     # assign to group
     if !haskey(skel.groups_edges, group)
@@ -93,29 +113,45 @@ function add_element!(skel::BuildingSkeleton{T}, v1_idx::Int, v2_idx::Int; kwarg
     return add_element!(skel, seg; kwargs...)
 end
 
-function add_face!(skel::BuildingSkeleton{T}, face::Meshes.Polygon; group::Symbol=:unknown, level_idx::Int=-1, v_indices::Vector{Int}=Int[]) where T
+"""
+    add_face!(skel, face; group=:unknown, level_idx=-1, v_indices=Int[])
+
+Add a face (polygon) to the skeleton. Also adds vertices if they don't exist.
+Automatically uses O(1) lookup if `skel.lookup` is enabled.
+"""
+function add_face!(skel::BuildingSkeleton{T}, face::Meshes.Polygon; 
+                   group::Symbol=:unknown, level_idx::Int=-1, 
+                   v_indices::Vector{Int}=Int[]) where T
     # get vertex indices if not provided
     if isempty(v_indices)
         v_indices = [add_vertex!(skel, v) for v in Meshes.vertices(face)]
     end
 
-    idx = findfirst(f -> f == face, skel.faces) 
+    # Check if face already exists (O(1) if lookup enabled)
+    idx = find_face(skel, v_indices)
+    if isnothing(idx)
+        # Also check by geometry comparison as fallback
+        idx = findfirst(f -> f == face, skel.faces)
+    end
+    
     if isnothing(idx)
         push!(skel.faces, face)
         push!(skel.face_vertex_indices, v_indices)
         
-        # compute edge indices for this face (vertex pairs → edge index)
+        # compute edge indices for this face (O(1) per edge if lookup enabled)
         n_verts = length(v_indices)
         e_indices = Int[]
         for i in 1:n_verts
             v1, v2 = v_indices[i], v_indices[mod1(i + 1, n_verts)]
-            # find edge index (check both orderings)
-            edge_idx = findfirst(e -> e == (v1, v2) || e == (v2, v1), skel.edge_indices)
+            edge_idx = find_edge(skel, v1, v2)
             !isnothing(edge_idx) && push!(e_indices, edge_idx)
         end
         push!(skel.face_edge_indices, e_indices)
         
         idx = length(skel.faces)
+        
+        # Update lookup if enabled
+        _register_face!(skel, idx, v_indices)
     end
 
     # assign to group
@@ -130,7 +166,6 @@ function add_face!(skel::BuildingSkeleton{T}, face::Meshes.Polygon; group::Symbo
     # assign to story
     if level_idx != -1
         if !haskey(skel.stories, level_idx)
-            # Story creation logic if it doesn't exist
             z_val = Meshes.coords(skel.vertices[v_indices[1]]).z
             r_z = round(ustrip(z_val), digits=2)
             elev = T <: Unitful.Quantity ? r_z * unit(z_val) : T(r_z)
@@ -153,9 +188,9 @@ function find_faces!(skel::BuildingSkeleton{T}) where T
         # build local adjacency with CCW-sorted neighbors (rotation system)
         adj = Dict{Int, Vector{Int}}()
         for v in v_indices
-            neighbors = [n for n in Graphs.neighbors(skel.graph, v) if n in v_indices] # get neighbors using graph
+            neighbors = [n for n in Graphs.neighbors(skel.graph, v) if n in v_indices]
             p_v = Meshes.coords(skel.vertices[v])
-            sort!(neighbors, by=n -> begin # sort by angle
+            sort!(neighbors, by=n -> begin
                 p_n = Meshes.coords(skel.vertices[n])
                 atan(ustrip(p_n.y) - ustrip(p_v.y), ustrip(p_n.x) - ustrip(p_v.x))
             end)
@@ -191,7 +226,6 @@ function find_faces!(skel::BuildingSkeleton{T}) where T
                             polygon = Meshes.Ngon(skel.vertices[cycle]...)
                             add_face!(skel, polygon, group=:slabs, level_idx=level_idx, v_indices=cycle)
                             faces_found += 1
-                        else
                         end
                     end
                 end

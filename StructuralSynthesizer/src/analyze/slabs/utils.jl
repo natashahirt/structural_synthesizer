@@ -81,6 +81,12 @@ function initialize_slabs!(struc::BuildingStructure{T};
                            slab_group_ids::Union{Nothing, AbstractVector}=nothing) where T
     empty!(struc.slabs)
     
+    # Clear stale cell groups and tributary data (floor type may have changed)
+    empty!(struc.cell_groups)
+    for cell in struc.cells
+        cell.tributary = nothing
+    end
+    
     # 1. Build per-slab "specs"
     slab_specs = _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
 
@@ -93,16 +99,15 @@ function initialize_slabs!(struc::BuildingStructure{T};
     # 4. Size once per slab group
     group_results, group_sw, group_spans = _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
 
-    # 5. Fan out results to cells and create Slab objects
-    _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans)
+    # 5. Fan out results to cells and create Slab objects (with volumes)
+    opts = get(floor_kwargs, :options, StructuralSizer.FloorOptions())
+    _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans, material, opts)
 
     # 6. Finalize grouping structure in BuildingStructure
-    groups = build_slab_groups!(struc)
+    build_slab_groups!(struc)
 
-    for sg in values(groups)
-        sg.material = material
-    end
-
+    # 7. Compute tributary areas with options (if provided)
+    compute_cell_tributaries!(struc; opts=opts)
 
     @debug "Initialized $(length(struc.slabs)) slabs from $(length(struc.cells)) cells"
 end
@@ -223,7 +228,8 @@ function _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
     return result, sw_service, spans_gov
 end
 
-function _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans)
+function _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_spans, 
+                              primary_material, opts::StructuralSizer.FloorOptions)
     for spec in slab_specs
         gid = spec.group_id
         result = group_results[gid]
@@ -237,9 +243,29 @@ function _apply_slab_results!(struc, slab_specs, group_results, group_sw, group_
             cell.floor_type = spec.floor_type
         end
 
-        slab = Slab(spec.cell_indices, result, spans_gov; floor_type=spec.floor_type, group_id=gid)
+        # Compute floor area and material volumes
+        floor_area = sum(struc.cells[i].area for i in spec.cell_indices)
+        volumes = _compute_slab_volumes(result, floor_area, primary_material, opts)
+
+        slab = Slab(spec.cell_indices, result, spans_gov; 
+                    floor_type=spec.floor_type, group_id=gid, volumes=volumes)
         push!(struc.slabs, slab)
     end
+end
+
+"""Compute material volumes for a slab from its result and floor area."""
+function _compute_slab_volumes(result::R, floor_area, primary_mat, opts) where R<:AbstractFloorResult
+    # Get material mapping: symbol → actual material object
+    mat_map = StructuralSizer.result_materials(result, primary_mat, opts)
+    
+    # Compute volumes: material → total volume
+    volumes = MaterialVolumes()
+    for mat_sym in StructuralSizer.materials(result)
+        mat = mat_map[mat_sym]
+        vol_per_area = StructuralSizer.volume_per_area(result, mat_sym)
+        volumes[mat] = vol_per_area * floor_area
+    end
+    return volumes
 end
 
 # =============================================================================
@@ -279,8 +305,11 @@ end
 """
     build_cell_groups!(struc::BuildingStructure)
 
-Group cells by (geometry_hash, spans.axis) for tributary computation.
-Cells in the same group share identical tributary polygons (computed once).
+Group cells by rotation-invariant geometry for tributary computation.
+- For isotropic cells: groups cells with same shape (rotation + reflection invariant)
+- For one-way cells: groups cells with same shape AND same relative span direction
+
+Cells in the same group share identical parametric tributary polygons (computed once).
 """
 function build_cell_groups!(struc::BuildingStructure)
     empty!(struc.cell_groups)
@@ -297,29 +326,183 @@ function build_cell_groups!(struc::BuildingStructure)
     return struc.cell_groups
 end
 
-"""Hash cell by geometry signature + direction."""
+"""
+Hash cell by rotation-invariant geometry signature.
+
+For isotropic cells (spans.axis ≈ (0,0)): hash only the canonical geometry.
+For one-way cells: hash canonical geometry + canonical span edge index.
+"""
 function _cell_group_hash(struc::BuildingStructure, cell::Cell)
-    # Geometry: normalized vertex offsets (translation-invariant)
-    geom_sig = _cell_geometry_signature(struc, cell)
-    # Direction + floor type (use spans.axis for direction)
-    return UInt64(hash((geom_sig, cell.spans.axis)))
+    canon_sig, canon_start, is_reversed = _cell_geometry_signature(struc, cell)
+    
+    # Check if isotropic (axis ≈ zero)
+    axis = cell.spans.axis
+    is_isotropic = hypot(axis[1], axis[2]) < 1e-9
+    
+    if is_isotropic
+        # Isotropic: only geometry matters (full rotation + reflection invariance)
+        return UInt64(hash(canon_sig))
+    else
+        # One-way: include canonical span edge index
+        n_edges = length(canon_sig)
+        span_edge_idx = _find_span_edge_index(struc, cell)
+        canon_span_idx = _canonicalize_edge_index(span_edge_idx, canon_start, is_reversed, n_edges)
+        return UInt64(hash((canon_sig, canon_span_idx)))
+    end
 end
 
-"""Compute translation-invariant geometry signature for a cell."""
+"""
+Compute rotation+reflection invariant geometry signature.
+
+Returns:
+- `canon_sig`: Canonical feature sequence (edge_length, interior_angle) tuples
+- `canon_start`: Starting vertex index in the canonical form
+- `is_reversed`: Whether the canonical form is the reversed (reflected) sequence
+"""
 function _cell_geometry_signature(struc::BuildingStructure, cell::Cell)
     poly = struc.skeleton.faces[cell.face_idx]
     pts = Meshes.vertices(poly)
     
-    # Get 2D coords, strip units
+    # Get 2D coords in meters
     coords = [(Float64(ustrip(u"m", Meshes.coords(p).x)),
                Float64(ustrip(u"m", Meshes.coords(p).y))) for p in pts]
     
-    # Translate to origin (first vertex)
-    x0, y0 = first(coords)
-    normalized = [(x - x0, y - y0) for (x, y) in coords]
+    # Compute edge lengths and interior angles
+    features = _compute_polygon_features(coords)
     
-    # Round to avoid floating-point noise in hash
-    return Tuple(round.(v, digits=6) for v in normalized)
+    # Find canonical rotation (and check reversed)
+    return _find_canonical_form(features)
+end
+
+"""Compute (edge_length, interior_angle) for each vertex."""
+function _compute_polygon_features(coords::AbstractVector{<:NTuple{2, <:Real}})
+    n = length(coords)
+    features = NTuple{2, Float64}[]
+    
+    for i in 1:n
+        # Edge from vertex i to i+1
+        p1 = coords[i]
+        p2 = coords[mod1(i + 1, n)]
+        edge_len = round(hypot(p2[1] - p1[1], p2[2] - p1[2]), digits=6)
+        
+        # Interior angle at vertex i (angle between edge i-1→i and edge i→i+1)
+        p0 = coords[mod1(i - 1, n)]
+        v1 = (p1[1] - p0[1], p1[2] - p0[2])  # incoming edge
+        v2 = (p2[1] - p1[1], p2[2] - p1[2])  # outgoing edge
+        
+        # Angle via atan2 of cross and dot products
+        cross = v1[1] * v2[2] - v1[2] * v2[1]
+        dot = v1[1] * v2[1] + v1[2] * v2[2]
+        angle = round(atan(cross, dot), digits=6)  # Signed angle (-π to π)
+        
+        push!(features, (edge_len, angle))
+    end
+    
+    return features
+end
+
+"""
+Find the lexicographically smallest rotation, checking both forward and reversed sequences.
+
+Returns (canonical_sequence, start_index, is_reversed).
+"""
+function _find_canonical_form(features::AbstractVector{<:NTuple{2, <:Real}})
+    n = length(features)
+    
+    # Try all rotations of forward sequence
+    best_seq = features
+    best_start = 1
+    best_reversed = false
+    
+    for start in 1:n
+        rotated = _circshift_features(features, start)
+        if rotated < best_seq
+            best_seq = rotated
+            best_start = start
+            best_reversed = false
+        end
+    end
+    
+    # Try all rotations of reversed sequence (handles reflection)
+    # When reversed, edge i becomes edge n-i, and angles flip sign
+    reversed_features = [(features[mod1(n - i + 1, n)][1], -features[mod1(n - i + 2, n)][2]) 
+                         for i in 1:n]
+    
+    for start in 1:n
+        rotated = _circshift_features(reversed_features, start)
+        if rotated < best_seq
+            best_seq = rotated
+            best_start = start
+            best_reversed = true
+        end
+    end
+    
+    # Convert to tuple for hashing
+    canon_tuple = Tuple(round.(v, digits=6) for v in best_seq)
+    return canon_tuple, best_start, best_reversed
+end
+
+"""Circular shift returning a new vector starting at index `start`."""
+function _circshift_features(v::AbstractVector{<:NTuple{2, <:Real}}, start::Int)
+    n = length(v)
+    return [v[mod1(start + i - 1, n)] for i in 1:n]
+end
+
+"""
+Find which edge index (1-based, CCW order) the span axis is most parallel to.
+
+For one-way systems, the span direction is perpendicular to the supporting edges.
+This returns the index of the edge that best aligns with the span direction.
+"""
+function _find_span_edge_index(struc::BuildingStructure, cell::Cell)
+    skel = struc.skeleton
+    v_indices = skel.face_vertex_indices[cell.face_idx]
+    n = length(v_indices)
+    
+    axis = cell.spans.axis
+    ax_norm = hypot(axis[1], axis[2])
+    ax_norm < 1e-9 && return 0  # Isotropic, no meaningful edge
+    
+    ax_unit = (axis[1] / ax_norm, axis[2] / ax_norm)
+    
+    # Find edge most parallel to axis (span runs along this edge direction)
+    best_idx = 1
+    best_alignment = -Inf
+    
+    for i in 1:n
+        v1 = skel.vertices[v_indices[i]]
+        v2 = skel.vertices[v_indices[mod1(i + 1, n)]]
+        
+        c1, c2 = Meshes.coords(v1), Meshes.coords(v2)
+        dx = Float64(ustrip(u"m", c2.x - c1.x))
+        dy = Float64(ustrip(u"m", c2.y - c1.y))
+        edge_len = hypot(dx, dy)
+        edge_len < 1e-9 && continue
+        
+        edge_unit = (dx / edge_len, dy / edge_len)
+        
+        # Dot product: how parallel is edge to axis?
+        alignment = abs(ax_unit[1] * edge_unit[1] + ax_unit[2] * edge_unit[2])
+        
+        if alignment > best_alignment
+            best_alignment = alignment
+            best_idx = i
+        end
+    end
+    
+    return best_idx
+end
+
+"""Transform edge index through canonicalization (rotation + optional reversal)."""
+function _canonicalize_edge_index(edge_idx::Int, canon_start::Int, is_reversed::Bool, n::Int)
+    if is_reversed
+        # Reversal maps edge i → edge (n - i + 1), then apply rotation
+        reversed_idx = mod1(n - edge_idx + 1, n)
+        return mod1(reversed_idx - canon_start + 1, n)
+    else
+        # Just rotation
+        return mod1(edge_idx - canon_start + 1, n)
+    end
 end
 
 # =============================================================================
@@ -327,21 +510,37 @@ end
 # =============================================================================
 
 """
-Compute parametric tributary polygons for all cells via CellGroups.
-Results stored in `cg.tributary` and `cell.tributary`.
-"""
-function compute_cell_tributaries!(struc::BuildingStructure)
-    isempty(struc.cell_groups) && build_cell_groups!(struc)
+    compute_cell_tributaries!(struc; opts=FloorOptions())
 
-    for cg in values(struc.cell_groups)
-        canonical_cell = struc.cells[first(cg.cell_indices)]
-        verts = [struc.skeleton.vertices[i] for i in struc.skeleton.face_vertex_indices[canonical_cell.face_idx]]
-        trib = StructuralSizer.get_tributary_polygons_isotropic(verts)
+Compute parametric tributary polygons for each cell individually.
+Results stored in `cell.tributary`.
+
+Uses one-way directed partitioning for one-way floor types (along span axis),
+isotropic straight skeleton for two-way systems. The `tributary_axis` option
+in `FloorOptions` can override the default behavior.
+
+Note: Tributaries are computed per-cell (not shared via groups) because the
+parametric `local_edge_idx` must match each cell's specific vertex order.
+"""
+function compute_cell_tributaries!(struc::BuildingStructure; 
+                                    opts::StructuralSizer.FloorOptions=StructuralSizer.FloorOptions())
+    for cell in struc.cells
+        # Get this cell's vertices (will be CCW ordered internally by tributary computation)
+        verts = [struc.skeleton.vertices[i] for i in struc.skeleton.face_vertex_indices[cell.face_idx]]
         
-        cg.tributary = trib
-        for c_idx in cg.cell_indices
-            struc.cells[c_idx].tributary = trib
+        # Resolve tributary axis based on floor type and options
+        ft = StructuralSizer.floor_type(cell.floor_type)
+        axis = StructuralSizer.resolve_tributary_axis(ft, cell.spans, opts)
+        
+        trib = if isnothing(axis)
+            # Isotropic: straight skeleton
+            StructuralSizer.get_tributary_polygons_isotropic(verts)
+        else
+            # Directed: partition along axis
+            StructuralSizer.get_tributary_polygons(verts; axis=collect(axis))
         end
+        
+        cell.tributary = trib
     end
 end
 

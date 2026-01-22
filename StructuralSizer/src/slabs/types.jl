@@ -264,6 +264,34 @@ function get_gravity_loads(result::AbstractFloorResult, sdl, live)
 end
 
 # =============================================================================
+# Tributary Axis (Analysis Direction)
+# =============================================================================
+
+"""
+    default_tributary_axis(ft, spans) -> Union{NTuple{2,Float64}, Nothing}
+
+Default tributary axis for a floor type.
+- One-way systems: use span direction (loads span perpendicular to beams)
+- Two-way systems: isotropic (returns `nothing` → straight skeleton)
+"""
+default_tributary_axis(::AbstractFloorSystem, spans) = nothing
+
+# One-way systems default to span direction
+default_tributary_axis(::OneWay, spans) = spans.axis
+default_tributary_axis(::CompositeDeck, spans) = spans.axis
+default_tributary_axis(::NonCompositeDeck, spans) = spans.axis
+default_tributary_axis(::JoistRoofDeck, spans) = spans.axis
+default_tributary_axis(::HollowCore, spans) = spans.axis
+default_tributary_axis(::CLT, spans) = spans.axis
+default_tributary_axis(::DLT, spans) = spans.axis
+default_tributary_axis(::NLT, spans) = spans.axis
+default_tributary_axis(::MassTimberJoist, spans) = spans.axis
+default_tributary_axis(::Vault, spans) = spans.axis
+
+# Convenience: no options → use floor type default
+resolve_tributary_axis(ft::AbstractFloorSystem, spans) = default_tributary_axis(ft, spans)
+
+# =============================================================================
 # Material Requirements
 # =============================================================================
 

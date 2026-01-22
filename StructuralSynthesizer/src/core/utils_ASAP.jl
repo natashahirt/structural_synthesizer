@@ -73,7 +73,9 @@ function _create_cell_tributary_loads!(
     isnothing(cell.tributary) && return cell_loads
     
     face_edges = skel.face_edge_indices[cell.face_idx]
+    face_verts = skel.face_vertex_indices[cell.face_idx]
     pressure = uconvert(u"Pa", total_factored_pressure(cell))
+    n_verts = length(face_verts)
     
     for trib in cell.tributary
         # Skip empty tributaries
@@ -85,8 +87,25 @@ function _create_cell_tributary_loads!(
         length(positions) < 2 && continue
         
         # Map local edge index to global edge/element
-        global_edge_idx = face_edges[trib.local_edge_idx]
+        local_idx = trib.local_edge_idx
+        global_edge_idx = face_edges[local_idx]
         el = elements[global_edge_idx]
+        
+        # Check if edge direction matches face CCW order
+        # Face expects: face_verts[local_idx] → face_verts[local_idx+1]
+        # Edge stored as: skel.edge_indices[global_edge_idx] = (v1, v2)
+        expected_v1 = face_verts[local_idx]
+        expected_v2 = face_verts[mod1(local_idx + 1, n_verts)]
+        actual_v1, actual_v2 = skel.edge_indices[global_edge_idx]
+        
+        # If edge is reversed relative to face CCW order, flip the parametric positions
+        edge_reversed = (actual_v1 == expected_v2 && actual_v2 == expected_v1)
+        
+        if edge_reversed
+            # Flip: s → 1-s, and reverse the arrays to maintain sorted order
+            positions = reverse(1.0 .- positions)
+            widths_m = reverse(widths_m)
+        end
         
         # Convert widths to Unitful
         widths = [w * u"m" for w in widths_m]
@@ -200,40 +219,11 @@ function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, sp
     error("No ASAP conversion defined for $(typeof(spec))")
 end
 
-function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgePointLoadSpec)
-    for (x, F) in zip(spec.xs, spec.F)
-        # ASAP expects a *normalized* position in (0,1), not an absolute distance.
-        # Also, it rejects exactly 0.0 and 1.0, so clamp slightly inward.
-        x01 = clamp(Float64(x), eps(Float64), 1.0 - eps(Float64))
-        # Convert Float64 forces (assumed SI N) to Unitful
-        F_unitful = [f * u"N" for f in collect(F)]
-        push!(loads, Asap.PointLoad(el, x01, F_unitful))
-    end
-    return loads
-end
-
 function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgeLineLoadSpec)
     # Convert Float64 line load (assumed SI N/m) to Unitful
     w_unitful = [w * u"N/m" for w in collect(spec.w)]
     push!(loads, Asap.LineLoad(el, w_unitful))
     return loads
-end
-
-"""
-    slab_total_factored_force(struc, slab) -> (Fx, Fy, Fz) [N]
-
-Compute the factored slab resultant in global coordinates (SI N).
-Currently gravity-only: `(0, 0, -total_Fz)` using `total_factored_pressure(cell) * cell.area`.
-"""
-function slab_total_factored_force(struc::BuildingStructure, slab::Slab)
-    total_Fz = 0.0
-    for cell_idx in slab.cell_indices
-        cell = struc.cells[cell_idx]
-        p = ustrip(uconvert(u"N/m^2", total_factored_pressure(cell)))
-        a = ustrip(uconvert(u"m^2", cell.area))
-        total_Fz += p * a
-    end
-    return (0.0, 0.0, -total_Fz)
 end
 
 """
@@ -257,40 +247,6 @@ function slab_face_edge_ids(struc::BuildingStructure, slab::Slab)
     return edge_ids
 end
 
-"""
-    cell_total_factored_force(struc, cell_idx) -> (Fx, Fy, Fz) [N]
-
-Compute factored force for a single cell.
-"""
-function cell_total_factored_force(struc::BuildingStructure, cell_idx::Int)
-    cell = struc.cells[cell_idx]
-    p = ustrip(uconvert(u"N/m^2", total_factored_pressure(cell)))
-    a = ustrip(uconvert(u"m^2", cell.area))
-    return (0.0, 0.0, -p * a)
-end
-
-"""Internal helper: gravity point loads as `EdgePointLoadSpec` (uniform distribution)."""
-function slab_edge_point_loads(
-    struc::BuildingStructure,
-    slab::Slab;
-    xs::AbstractVector{<:Real} = [0.5],
-    total_force::Union{Nothing, NTuple{3, Float64}} = nothing,
-)::Vector{EdgePointLoadSpec}
-    edge_ids = slab_face_edge_ids(struc, slab)
-    n_edges = length(edge_ids)
-    n_edges > 0 || return EdgePointLoadSpec[]
-
-    xs_vec = Float64.(xs)
-    n_pts = length(xs_vec)
-    n_pts > 0 || return EdgePointLoadSpec[]
-
-    Fx, Fy, Fz = isnothing(total_force) ? slab_total_factored_force(struc, slab) : total_force
-    scale = 1.0 / n_edges
-    f_per_edge = (Fx * scale, Fy * scale, Fz * scale)
-
-    return [EdgePointLoadSpec(Int(e), xs_vec, fill(f_per_edge, n_pts)) for e in edge_ids]
-end
-
 """Internal helper: structural effects as `EdgeLineLoadSpec` (e.g. vault thrust)."""
 function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{EdgeLineLoadSpec}
     effects = StructuralSizer.structural_effects(slab.result)
@@ -305,25 +261,6 @@ function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{Edge
     end
 
     return loads
-end
-
-"""
-    slab_edge_load_specs(struc, slab; xs=[0.5])
-
-Unified slab load API: returns a single list of edge load specs (point + line).
-
-# Keyword Arguments
-- `xs::AbstractVector{<:Real}`: Load positions along each edge (0–1), default midpoint
-"""
-function slab_edge_load_specs(
-    struc::BuildingStructure,
-    slab::Slab;
-    xs::AbstractVector{<:Real} = [0.5],
-)::Vector{AbstractEdgeLoadSpec}
-    specs = AbstractEdgeLoadSpec[]
-    append!(specs, slab_edge_point_loads(struc, slab; xs=xs))
-    append!(specs, slab_edge_line_loads(struc, slab))
-    return specs
 end
 
 # --- Vault thrust → edge line loads (simple implementation) ---

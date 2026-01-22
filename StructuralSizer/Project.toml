@@ -18,17 +18,21 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [sources]
 Asap = {path = "../external/Asap"}
+AsapToolkit = {path = "../external/AsapToolkit"}
 StructuralBase = {path = "../StructuralBase"}
+StructuralPlots = {path = "../StructuralPlots"}
 StructuralSynthesizer = {path = "../StructuralSynthesizer"}
 
 [extras]
 Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
+AsapToolkit = "45845293-de45-4074-bf34-b603320deb79"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+StructuralPlots = "a1b2c3d4-5678-90ab-cdef-123456789abc"
 StructuralSynthesizer = "fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Asap", "DelimitedFiles", "StructuralSynthesizer", "Test"]
+test = ["Asap", "AsapToolkit", "DelimitedFiles", "StructuralPlots", "StructuralSynthesizer", "Test"]
 
 [compat]
 CSV = "0.10"

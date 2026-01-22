@@ -13,7 +13,9 @@ using Asap
 # =============================================================================
 # Generate building geometry
 # =============================================================================
-skel = gen_medium_office(160.0u"ft", 110.0u"ft", 13.0u"ft", 4, 3, 4, irregular=:shift_x, offset=1.0u"m");
+skel = gen_medium_office(240.0u"ft", 160.0u"ft", 13.0u"ft", 8, 6, 12, offset=1.0u"m");
+visualize(skel)
+
 struc = BuildingStructure(skel);
 
 # =============================================================================
@@ -35,18 +37,6 @@ initialize!(struc; floor_type=:two_way, floor_kwargs=(options=opts,));
 # =============================================================================
 # This computes tributary polygons and creates TributaryLoad for each cell-edge
 to_asap!(struc);
-
-# Summary of tributary loads per cell
-println("\n--- Tributary Load Summary ---")
-total_trib_loads = 0
-for (cell_idx, cell_loads) in struc.cell_tributary_loads
-    n_loads = length(cell_loads)
-    total_trib_loads += n_loads
-    if n_loads > 0
-        println("Cell $cell_idx: $n_loads TributaryLoads")
-    end
-end
-println("Total TributaryLoads: $total_trib_loads")
 
 # =============================================================================
 # Slab summary
@@ -70,6 +60,35 @@ for (gid, group) in struc.member_groups
 end
 
 # =============================================================================
+# Size Foundations (Grouped by similar reactions)
+# =============================================================================
+# Initialize supports from analysis results (extracts reactions)
+initialize_supports!(struc);
+
+# Create foundations (1:1 mapping by default)
+initialize_foundations!(struc);
+
+# Group foundations with similar loads (±15% tolerance)
+# This standardizes footing sizes for constructability
+group_foundations_by_reaction!(struc)
+
+# Size at group level (governing load → applies to all in group)
+size_foundations_grouped!(struc;
+    soil=MEDIUM_SAND,
+    concrete=NWC_4000,
+    rebar=Rebar_60,
+    pier_width=0.35u"m",  # Column width
+    min_depth=0.4u"m",    # Frost depth / minimum
+);
+
+# Print grouped summary
+foundation_group_summary(struc)
+
+# Alternative: Individual sizing (uncomment to use instead)
+# size_foundations!(struc; soil=MEDIUM_SAND, concrete=NWC_4000, rebar=Rebar_60)
+# foundation_summary(struc)
+
+# =============================================================================
 # Example: Update loads after changing floor conditions
 # =============================================================================
 # Uncomment to demonstrate load updates:
@@ -84,7 +103,12 @@ end
 # =============================================================================
 # Visualize
 # =============================================================================
-visualize(skel)
-visualize(struc, mode=:deflected, color_by=:displacement_global, show_original_geometry=false)
 visualize(struc, mode=:deflected, color_by=:tributary, show_original_geometry=false)
+visualize(struc, mode=:deflected, color_by=:displacement_local, show_original_geometry=false, show_foundations=true)
 visualize_cell_tributaries(struc)
+
+# =============================================================================
+# Embodied Carbon Calculation
+# =============================================================================
+ec_summary(struc)
+vis_embodied_carbon_summary(struc)

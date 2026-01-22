@@ -2,6 +2,7 @@
 # Run with: julia --project=. test/runtests.jl
 
 using Test
+using Unitful
 using StructuralSizer
 using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
 
@@ -13,4 +14,5 @@ using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
     include("steel_member/test_aisc_column_examples.jl")
     include("tributary/test_spans.jl")
     include("tributary/test_tributary_workflow.jl")
+    include("foundations/test_spread_footing.jl")
 end

@@ -3,6 +3,86 @@
 import Meshes: Point, coords
 using Unitful: ustrip, @u_str
 
+# =============================================================================
+# Reusable Buffer for Tributary Computation (reduces GC pressure)
+# =============================================================================
+
+"""
+    TributaryBuffers
+
+Pre-allocated buffers for tributary area computations.
+Reuse across multiple cells to reduce allocations.
+
+# Example
+```julia
+buffers = TributaryBuffers(max_vertices=20)
+for cell in cells
+    results = get_tributary_polygons(verts; buffers=buffers)
+end
+```
+"""
+mutable struct TributaryBuffers
+    # 2D coordinate buffers
+    pts_2d::Vector{NTuple{2,Float64}}
+    pts_st::Vector{NTuple{2,Float64}}
+    # Weight buffers
+    weights::Vector{Float64}
+    # Edge tracking buffers  
+    edge_areas::Vector{Float64}
+    edge_interior_pts::Vector{Vector{NTuple{2,Float64}}}
+    edge_t_range::Vector{Tuple{Float64,Float64}}
+    edge_is_left::Vector{Bool}
+    # Scanline working buffers
+    crosses::Vector{Tuple{Float64,Int}}
+    intervals::Vector{Tuple{Tuple{Float64,Int}, Tuple{Float64,Int}}}
+    # Polygon reconstruction
+    poly_st::Vector{NTuple{2,Float64}}
+    poly_xy::Vector{NTuple{2,Float64}}
+end
+
+"""Create buffers sized for polygons with up to `max_vertices` vertices."""
+function TributaryBuffers(; max_vertices::Int=32)
+    TributaryBuffers(
+        Vector{NTuple{2,Float64}}(undef, max_vertices),
+        Vector{NTuple{2,Float64}}(undef, max_vertices),
+        Vector{Float64}(undef, max_vertices),
+        Vector{Float64}(undef, max_vertices),
+        [NTuple{2,Float64}[] for _ in 1:max_vertices],
+        Vector{Tuple{Float64,Float64}}(undef, max_vertices),
+        Vector{Bool}(undef, max_vertices),
+        Tuple{Float64,Int}[],
+        Tuple{Tuple{Float64,Int}, Tuple{Float64,Int}}[],
+        NTuple{2,Float64}[],
+        NTuple{2,Float64}[]
+    )
+end
+
+"""Ensure buffers can handle `n` vertices, growing if needed."""
+function ensure_capacity!(buf::TributaryBuffers, n::Int)
+    if length(buf.pts_2d) < n
+        resize!(buf.pts_2d, n)
+        resize!(buf.pts_st, n)
+        resize!(buf.weights, n)
+        resize!(buf.edge_areas, n)
+        while length(buf.edge_interior_pts) < n
+            push!(buf.edge_interior_pts, NTuple{2,Float64}[])
+        end
+        resize!(buf.edge_t_range, n)
+        resize!(buf.edge_is_left, n)
+    end
+    # Reset accumulators
+    fill!(buf.edge_areas, 0.0)
+    for v in buf.edge_interior_pts
+        empty!(v)
+    end
+    fill!(buf.edge_t_range, (Inf, -Inf))
+    fill!(buf.edge_is_left, true)
+    empty!(buf.crosses)
+    empty!(buf.intervals)
+    empty!(buf.poly_st)
+    empty!(buf.poly_xy)
+end
+
 """
 Parametric tributary polygon relative to a beam edge.
 

@@ -294,7 +294,8 @@ Respects `Member.group_id` by solving at the group level.
   If `nothing`, no deflection check is performed (strength-only).
 
 Side effects:
-- populates/overwrites `struc.member_groups[gid].section` and `.material`
+- populates/overwrites `struc.member_groups[gid].section` (shared for ASAP updates)
+- populates each `member.section` and `member.volumes` for individual access
 - updates ASAP element sections for all member segments in `member_edge_group`
 """
 function size_members_discrete!(
@@ -341,7 +342,7 @@ function size_members_discrete!(
         deflection_limit=deflection_limit,
     )
 
-    # Apply results to member groups + ASAP elements
+    # Apply results to member groups + ASAP elements + individual members
     for (g_idx, gid) in enumerate(group_ids)
         chosen_template = result.sections[g_idx]
         
@@ -352,7 +353,6 @@ function size_members_discrete!(
 
         mg = struc.member_groups[gid]
         mg.section = chosen
-        mg.material = material
 
         # Build ASAP section once per group
         chosen.name === nothing && throw(ArgumentError("Chosen section has no name; cannot convert to ASAP section via `toASAPframe(name, ...)`."))
@@ -361,6 +361,15 @@ function size_members_discrete!(
 
         for m_idx in mg.member_indices
             m = struc.members[m_idx]
+            
+            # Compute total length and store section/volume on member
+            # Ensure L_total has units (skeleton may use plain Float64)
+            L_raw = sum(struc.segments[i].L for i in m.segment_indices)
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            m.section = chosen
+            m.volumes = MaterialVolumes(material => StructuralSizer.area(chosen) * L_total)
+            
+            # Update ASAP elements
             for seg_idx in m.segment_indices
                 edge_idx = struc.segments[seg_idx].edge_idx
                 edge_idx in edge_ids_in_group || continue

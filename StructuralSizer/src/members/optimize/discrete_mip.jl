@@ -10,6 +10,84 @@ catch
     _HAS_GUROBI[] = false
 end
 
+# =============================================================================
+# Capacity Caching (avoids repeated AISC capacity calculations)
+# =============================================================================
+
+"""Round length to nearest mm for cache key (avoids floating-point key issues)."""
+@inline _length_key(L_m::Float64)::Int = round(Int, L_m * 1000)
+
+"""
+    CapacityCache
+
+Local cache for length-dependent capacity calculations during MIP feasibility filtering.
+Avoids repeated `get_ϕPn` and `get_ϕMn` calls for the same (section, length) pairs.
+"""
+struct CapacityCache
+    ϕPn_strong::Dict{Tuple{Int, Int}, Float64}   # (section_idx, Lc_mm) → ϕPn
+    ϕPn_weak::Dict{Tuple{Int, Int}, Float64}
+    ϕPn_torsional::Dict{Tuple{Int, Int}, Float64}
+    ϕMn_strong::Dict{Tuple{Int, Int, Int}, Float64}  # (section_idx, Lb_mm, Cb_100) → ϕMn
+end
+
+CapacityCache() = CapacityCache(
+    Dict{Tuple{Int, Int}, Float64}(),
+    Dict{Tuple{Int, Int}, Float64}(),
+    Dict{Tuple{Int, Int}, Float64}(),
+    Dict{Tuple{Int, Int, Int}, Float64}()
+)
+
+"""Get cached ϕPn or compute and cache."""
+function _get_ϕPn_cached!(
+    cache::CapacityCache, 
+    axis::Symbol, 
+    j::Int, 
+    Lc_m::Float64,
+    section, 
+    material
+)::Float64
+    Lc_key = _length_key(Lc_m)
+    dict = if axis === :strong
+        cache.ϕPn_strong
+    elseif axis === :weak
+        cache.ϕPn_weak
+    else
+        cache.ϕPn_torsional
+    end
+    
+    key = (j, Lc_key)
+    val = get(dict, key, nothing)
+    if isnothing(val)
+        Lc = Lc_m * u"m"
+        val = ustrip(uconvert(u"N", get_ϕPn(section, material, Lc; axis=axis)))
+        dict[key] = val
+    end
+    return val
+end
+
+"""Get cached ϕMn (strong axis) or compute and cache."""
+function _get_ϕMnx_cached!(
+    cache::CapacityCache,
+    j::Int,
+    Lb_m::Float64,
+    Cb::Float64,
+    section,
+    material,
+    ϕ_b::Float64
+)::Float64
+    Lb_key = _length_key(Lb_m)
+    Cb_key = round(Int, Cb * 100)  # 2 decimal precision
+    key = (j, Lb_key, Cb_key)
+    
+    val = get(cache.ϕMn_strong, key, nothing)
+    if isnothing(val)
+        Lb = Lb_m * u"m"
+        val = ustrip(uconvert(u"N*m", get_ϕMn(section, material; Lb=Lb, Cb=Cb, axis=:strong, ϕ=ϕ_b)))
+        cache.ϕMn_strong[key] = val
+    end
+    return val
+end
+
 """
     _choose_mip_optimizer(optimizer::Symbol)
 
@@ -186,44 +264,46 @@ function optimize_member_groups_discrete(
 
     max_depth_m = ustrip(uconvert(u"m", max_depth))
 
-    # --- Candidate filtering per group ---
+    # --- Candidate filtering per group (with capacity caching) ---
+    cache = CapacityCache()
     feasible = Dict{Int, Vector{Int}}()
+    
+    # Convert Lb to Float64 meters for cache keys
+    Lb_m = [ustrip(uconvert(u"m", Lb_g[i])) for i in 1:n_groups]
+    
     for i in 1:n_groups
         idxs = Int[]
+        
+        # Precompute effective lengths for this group (in meters, for cache)
+        Lc_x_m = Kx_g[i] * Ltot[i]
+        Lc_y_m = Ky_g[i] * Ltot[i]
+        
         for j in 1:n_sections
             d[j] <= max_depth_m || continue
             
-            # Shear Checks
+            # Shear Checks (length-independent, precomputed)
             ϕVn_s[j] >= Vus[i] || continue
             ϕVn_w[j] >= Vuw[i] || continue
 
-            # Calculate Flexural Capacity (Strong Axis)
-            ϕMnx = ustrip(uconvert(u"N*m", get_ϕMn(catalogue[j], material; Lb=Lb_g[i], Cb=Cb_g[i], axis=:strong, ϕ=ϕ_b)))
+            # Strong Axis Flexure (cached by Lb, Cb)
+            ϕMnx = _get_ϕMnx_cached!(cache, j, Lb_m[i], Cb_g[i], catalogue[j], material, ϕ_b)
             
             # --- Check 1: Compression Interaction ---
-            Lc_x = (Kx_g[i] * Ltot[i]) * u"m"
-            Lc_y = (Ky_g[i] * Ltot[i]) * u"m"
+            # Cached compression capacities
+            ϕPn_x = _get_ϕPn_cached!(cache, :strong, j, Lc_x_m, catalogue[j], material)
+            ϕPn_y = _get_ϕPn_cached!(cache, :weak, j, Lc_y_m, catalogue[j], material)
+            ϕPn_z = _get_ϕPn_cached!(cache, :torsional, j, Lc_y_m, catalogue[j], material)
             
-            ϕPn_x = get_ϕPn(catalogue[j], material, Lc_x; axis=:strong)
-            ϕPn_y = get_ϕPn(catalogue[j], material, Lc_y; axis=:weak)
-            # Torsional buckling often governed by weak axis bracing distance.
-            # We assume Kz*L = Ky*L for simplicity.
-            ϕPn_z = get_ϕPn(catalogue[j], material, Lc_y; axis=:torsional)
-            
-            ϕPnc = ustrip(uconvert(u"N", min(ϕPn_x, ϕPn_y, ϕPn_z)))
+            ϕPnc = min(ϕPn_x, ϕPn_y, ϕPn_z)
 
             ur_c = check_PMxMy_interaction(Pu_c[i], Mux[i], Muy[i], ϕPnc, ϕMnx, ϕMny[j])
             ur_c <= 1.0 || continue
 
             # --- Check 2: Tension Interaction ---
-            # AISC H1-1 applies to tension as well (Pr/Pc where Pc is tensile strength).
-            # Note: We use the standard Cb for LTB capacity (ϕMnx) even under tension. 
-            # While tension stabilizes LTB, AISC does not require a modified Cb, so this is safe/standard.
             ur_t = check_PMxMy_interaction(Pu_t[i], Mux[i], Muy[i], ϕPnt[j], ϕMnx, ϕMny[j])
             ur_t <= 1.0 || continue
 
             # --- Check 3: Deflection Limit (Optional) ---
-            # Scale deflection by moment of inertia ratio: δ_new = δ_ref * I_ref / I_new
             if !isnothing(deflection_limit) && I_ref_g[i] > 0 && δ_max_g[i] > 0
                 δ_scaled = δ_max_g[i] * I_ref_g[i] / Ix[j]
                 δ_ratio = δ_scaled / Ltot[i]

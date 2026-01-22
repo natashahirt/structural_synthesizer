@@ -22,10 +22,13 @@ include("members/_members.jl")
 # Slabs (types, codes, optimization)
 include("slabs/_slabs.jl")
 
+# Foundations (types, soils, design codes)
+include("foundations/_foundations.jl")
+
 # === Exports ===
 
 # Types
-export Metal, Concrete, ISymmSection
+export Metal, StructuralSteel, RebarSteel, Concrete, ISymmSection
 
 # Demand types
 export AbstractDemand, MemberDemand
@@ -85,8 +88,9 @@ export ShapedSlab
 export SupportCondition, SIMPLE, ONE_END_CONT, BOTH_ENDS_CONT, CANTILEVER
 
 # Floor sizing options + guidance
-export FloorOptions, CIPOptions, VaultOptions
+export FloorOptions, CIPOptions, VaultOptions, CompositeDeckOptions, TimberOptions
 export required_floor_options, floor_options_help
+export result_materials
 
 # Type mapping utilities
 export floor_type, floor_symbol, infer_floor_type
@@ -108,6 +112,7 @@ export has_structural_effects, apply_effects!
 export required_materials
 export load_distribution, get_gravity_loads, LoadDistributionType
 export DISTRIBUTION_ONE_WAY, DISTRIBUTION_TWO_WAY, DISTRIBUTION_POINT, DISTRIBUTION_CUSTOM
+export default_tributary_axis, resolve_tributary_axis
 
 # Material volumes interface
 export materials, material_volumes
@@ -139,5 +144,40 @@ export get_tributary_polygons_isotropic
 export SpanInfo, governing_spans
 export short_span, long_span, two_way_span
 export get_polygon_span
+
+# =============================================================================
+# Foundation Types
+# =============================================================================
+
+# Abstract hierarchy
+export AbstractFoundation
+export AbstractShallowFoundation, AbstractDeepFoundation
+
+# Shallow foundation types
+export SpreadFooting, CombinedFooting, StripFooting, MatFoundation
+
+# Deep foundation types
+export DrivenPile, DrilledShaft, Micropile
+
+# Soil properties
+export Soil
+export LOOSE_SAND, MEDIUM_SAND, DENSE_SAND
+export SOFT_CLAY, STIFF_CLAY, HARD_CLAY
+
+# Foundation result types
+export AbstractFoundationResult
+export SpreadFootingResult, CombinedFootingResult, PileCapResult
+
+# Foundation demand
+export FoundationDemand
+
+# Type mapping
+export foundation_type, foundation_symbol
+
+# Common interface
+export concrete_volume, steel_volume, footprint_area, utilization
+
+# Design functions
+export design_spread_footing, check_spread_footing
 
 end # module

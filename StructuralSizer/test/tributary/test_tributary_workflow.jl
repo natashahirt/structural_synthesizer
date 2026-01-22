@@ -148,6 +148,6 @@ using Asap
     println("\n✓ All tests passed!")
     
     # Visualize with tributary areas
-    println("\n--- Visualizing with tributary areas ---")
-    visualize(struc, mode=:original, color_by=:tributary)
+    # println("\n--- Visualizing with tributary areas ---")
+    # visualize(struc, mode=:original, color_by=:tributary)
 end

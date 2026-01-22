@@ -38,16 +38,71 @@ Base.@kwdef struct VaultOptions
     allowable_stress::Union{Real,Nothing} = nothing
     deflection_limit = nothing   # length
     check_asymmetric::Union{Bool,Nothing} = nothing
+    
+    # Material for EC calculation (uses primary if nothing)
+    concrete_material::Union{Concrete, Nothing} = nothing
+end
+
+"""Composite deck options (steel deck + concrete fill)."""
+Base.@kwdef struct CompositeDeckOptions
+    deck_material::Metal = A992_Steel
+    fill_material::Union{Concrete, Nothing} = nothing  # Uses primary if nothing
+    deck_profile::String = "2VLI"
+end
+
+"""Timber panel options (CLT, DLT, NLT)."""
+Base.@kwdef struct TimberOptions
+    timber_material::Union{AbstractMaterial, Nothing} = nothing  # Uses primary if nothing
 end
 
 """
-Unified options container for floor sizing.
+    FloorOptions(; cip, vault, composite, timber, tributary_axis)
+
+Unified options container for floor sizing and analysis.
 
 Only the relevant sub-options for a given floor type are used.
+
+## Fields
+- `cip::CIPOptions`: ACI 318 options for cast-in-place concrete
+- `vault::VaultOptions`: Haile vault sizing options
+- `composite::CompositeDeckOptions`: Steel composite deck options
+- `timber::TimberOptions`: Timber panel options (CLT, DLT, NLT)
+- `tributary_axis`: Tributary area analysis direction override
+  - `nothing` (default): use floor type default (one-way → span axis, two-way → isotropic)
+  - `:isotropic`: force isotropic straight skeleton (two-way behavior)
+  - `(x, y)` tuple: custom axis direction for directed partitioning
+
+## Examples
+
+```julia
+using StructuralSizer, StructuralSynthesizer
+
+# Default behavior: one-way slabs use directed partitioning along span axis,
+# two-way slabs use isotropic straight skeleton
+opts = FloorOptions(cip=CIPOptions(support=ONE_END_CONT))
+initialize!(struc; floor_type=:one_way, floor_kwargs=(options=opts,))
+
+# Force isotropic analysis on a one-way slab (e.g., for comparison)
+opts = FloorOptions(tributary_axis=:isotropic)
+initialize!(struc; floor_type=:one_way, floor_kwargs=(options=opts,))
+
+# Composite deck with custom materials
+opts = FloorOptions(composite=CompositeDeckOptions(deck_material=A992_Steel))
+initialize!(struc; floor_type=:composite_deck, floor_kwargs=(options=opts,))
+```
 """
 Base.@kwdef struct FloorOptions
     cip::CIPOptions = CIPOptions()
     vault::VaultOptions = VaultOptions()
+    composite::CompositeDeckOptions = CompositeDeckOptions()
+    timber::TimberOptions = TimberOptions()
+    tributary_axis::Union{Nothing, Symbol, NTuple{2, Float64}} = nothing
+end
+
+# Constructor that accepts any Real values for tributary_axis and converts to Float64
+function FloorOptions(cip::CIPOptions, vault::VaultOptions, composite::CompositeDeckOptions,
+                      timber::TimberOptions, tributary_axis::NTuple{2, <:Real})
+    FloorOptions(cip, vault, composite, timber, (Float64(tributary_axis[1]), Float64(tributary_axis[2])))
 end
 
 # =============================================================================
@@ -82,3 +137,116 @@ function floor_options_help(ft::AbstractFloorSystem)
     return "Options for $(typeof(ft)): " * join(string.(opts), ", ")
 end
 
+# =============================================================================
+# Tributary Axis Resolution
+# =============================================================================
+
+"""
+    resolve_tributary_axis(ft, spans, opts) -> Union{NTuple{2,Float64}, Nothing}
+
+Resolve the tributary axis for a floor type, respecting user override in FloorOptions.
+
+## Returns
+- `nothing`: Use isotropic straight skeleton (two-way tributary areas)
+- `(x, y)` tuple: Use directed partitioning along this axis (one-way tributary areas)
+
+## Resolution Priority
+1. `opts.tributary_axis === :isotropic` → `nothing` (force isotropic)
+2. `opts.tributary_axis isa NTuple{2,Float64}` → use that custom axis
+3. Otherwise → `default_tributary_axis(ft, spans)` (floor type default)
+
+## Examples
+
+```julia
+ft = OneWay()
+spans = SpanInfo(verts)  # e.g., axis = (1.0, 0.0)
+
+# Default: one-way uses span axis
+resolve_tributary_axis(ft, spans, FloorOptions())  # → (1.0, 0.0)
+
+# Override to isotropic
+resolve_tributary_axis(ft, spans, FloorOptions(tributary_axis=:isotropic))  # → nothing
+
+# Override to custom 45° axis
+resolve_tributary_axis(ft, spans, FloorOptions(tributary_axis=(0.707, 0.707)))  # → (0.707, 0.707)
+```
+"""
+function resolve_tributary_axis(ft::AbstractFloorSystem, spans, opts::FloorOptions)
+    tax = opts.tributary_axis
+    
+    # Explicit override: force isotropic
+    if tax === :isotropic
+        return nothing
+    end
+    
+    # Explicit override: custom axis (accept any Real tuple, convert to Float64)
+    if tax isa NTuple{2, <:Real}
+        return (Float64(tax[1]), Float64(tax[2]))
+    end
+    
+    # Use floor type default
+    return default_tributary_axis(ft, spans)
+end
+
+# =============================================================================
+# Material Resolution (for EC calculation)
+# =============================================================================
+
+"""
+    result_materials(result, primary_mat, opts) -> Dict{Symbol, AbstractMaterial}
+
+Get material dict for a floor result, mapping material symbols to actual material objects.
+Uses type-specific options for secondary materials, falling back to primary for unspecified.
+
+## Example
+```julia
+result = CIPSlabResult(...)
+mats = result_materials(result, NWC_4000, FloorOptions())
+# → Dict(:concrete => NWC_4000, :steel => Rebar_60)
+```
+"""
+function result_materials end
+
+function result_materials(::CIPSlabResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(
+        :concrete => primary_mat,
+        :steel => opts.cip.rebar_material
+    )
+end
+
+function result_materials(::ProfileResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(:concrete => primary_mat)
+end
+
+function result_materials(::CompositeDeckResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(
+        :steel => opts.composite.deck_material,
+        :concrete => something(opts.composite.fill_material, primary_mat)
+    )
+end
+
+function result_materials(::JoistDeckResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(:steel => opts.composite.deck_material)
+end
+
+function result_materials(::TimberPanelResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(
+        :timber => something(opts.timber.timber_material, primary_mat)
+    )
+end
+
+function result_materials(::TimberJoistResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(
+        :timber => something(opts.timber.timber_material, primary_mat)
+    )
+end
+
+function result_materials(::VaultResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(
+        :concrete => something(opts.vault.concrete_material, primary_mat)
+    )
+end
+
+function result_materials(::ShapedSlabResult, primary_mat, opts::FloorOptions)
+    Dict{Symbol, AbstractMaterial}(:concrete => primary_mat)
+end
