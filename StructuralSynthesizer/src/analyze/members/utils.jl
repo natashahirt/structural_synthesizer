@@ -34,36 +34,145 @@ function initialize_segments!(struc::BuildingStructure{T}; default_Cb=1.0) where
 end
 
 """
-Initialize members from segments.
-Default: each segment becomes its own member (1:1 mapping).
-Override by passing explicit segment groupings.
+    initialize_members!(struc; default_Kx=1.0, default_Ky=1.0)
+
+Initialize typed members (Beam, Column, Strut) from skeleton edge groups.
+
+Uses skeleton `groups_edges` to determine member type:
+- `:beams` → `Beam` (with role classification)
+- `:columns` → `Column` (with position classification)
+- `:braces` → `Strut`
+
+Each segment becomes one member by default (1:1 mapping).
 """
 function initialize_members!(struc::BuildingStructure{T}; 
-                             segment_groupings::Union{Nothing, Vector{Vector{Int}}}=nothing,
                              default_Kx=1.0, default_Ky=1.0) where T
-    empty!(struc.members)
+    skel = struc.skeleton
     
-    if isnothing(segment_groupings)
-        # Default: 1 member per segment
-        for (seg_idx, seg) in enumerate(struc.segments)
-            member = Member(seg_idx, seg.L; Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb)
-            push!(struc.members, member)
-        end
-    else
-        # Explicit groupings: combine segments into members
-        for seg_indices in segment_groupings
-            segs = [struc.segments[i] for i in seg_indices]
-            # Governing values
-            L_gov = sum(s.L for s in segs)
-            Lb_gov = maximum(s.Lb for s in segs)
-            Cb_gov = minimum(s.Cb for s in segs)  # conservative
+    # Clear existing members
+    empty!(struc.beams)
+    empty!(struc.columns)
+    empty!(struc.struts)
+    
+    # Get edge groups from skeleton
+    beam_edges = Set(get(skel.groups_edges, :beams, Int[]))
+    column_edges = Set(get(skel.groups_edges, :columns, Int[]))
+    brace_edges = Set(get(skel.groups_edges, :braces, Int[]))
+    
+    for (seg_idx, seg) in enumerate(struc.segments)
+        edge_idx = seg.edge_idx
+        
+        if edge_idx in column_edges
+            # Create Column
+            # Find which vertex this column connects to (bottom vertex for column position)
+            v1, v2 = skel.edge_indices[edge_idx]
+            z1 = Meshes.coords(skel.vertices[v1]).z
+            z2 = Meshes.coords(skel.vertices[v2]).z
+            # Bottom vertex is the one with lower z
+            vertex_idx = z1 < z2 ? v1 : v2
             
-            member = Member(seg_indices, L_gov; Lb=Lb_gov, Kx=default_Kx, Ky=default_Ky, Cb=Cb_gov)
-            push!(struc.members, member)
+            # Determine story from edge level
+            story = get_edge_story(skel, edge_idx)
+            
+            # Classify position based on connectivity
+            position = classify_column_position(skel, vertex_idx)
+            
+            col = Column(seg_idx, seg.L; 
+                        Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                        vertex_idx=vertex_idx, story=story, position=position)
+            push!(struc.columns, col)
+            
+        elseif edge_idx in brace_edges
+            # Create Strut
+            strut = Strut(seg_idx, seg.L;
+                         Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                         brace_type=:both)
+            push!(struc.struts, strut)
+            
+        else
+            # Default to Beam (includes edges in :beams group or ungrouped)
+            role = classify_beam_role(skel, edge_idx)
+            beam = Beam(seg_idx, seg.L;
+                       Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                       role=role)
+            push!(struc.beams, beam)
         end
     end
     
-    @debug "Initialized $(length(struc.members)) members from $(length(struc.segments)) segments"
+    n_total = length(struc.beams) + length(struc.columns) + length(struc.struts)
+    @debug "Initialized members from $(length(struc.segments)) segments" beams=length(struc.beams) columns=length(struc.columns) struts=length(struc.struts)
+    return struc
+end
+
+"""
+    get_edge_story(skel, edge_idx) -> Int
+
+Determine which story an edge belongs to based on its z-coordinate.
+"""
+function get_edge_story(skel::BuildingSkeleton, edge_idx::Int)
+    v1, v2 = skel.edge_indices[edge_idx]
+    z1 = Meshes.coords(skel.vertices[v1]).z
+    z2 = Meshes.coords(skel.vertices[v2]).z
+    z_mid = (z1 + z2) / 2
+    
+    # Find which story interval contains z_mid
+    for (level_idx, story) in skel.stories
+        if abs(story.elevation - z_mid) < 0.1u"m" || 
+           (level_idx > 0 && z_mid > skel.stories_z[level_idx] && z_mid <= story.elevation)
+            return level_idx
+        end
+    end
+    return 0
+end
+
+"""
+    classify_column_position(skel, vertex_idx) -> Symbol
+
+Classify column position based on number of connected horizontal edges at ground level.
+- 4+ connections → :interior
+- 2 connections → :corner  
+- 3 connections → :edge
+"""
+function classify_column_position(skel::BuildingSkeleton, vertex_idx::Int)
+    # Count horizontal edges connected to this vertex at ground level
+    neighbors = Graphs.neighbors(skel.graph, vertex_idx)
+    
+    # Filter to horizontal edges (same z-level)
+    v_z = Meshes.coords(skel.vertices[vertex_idx]).z
+    horizontal_neighbors = filter(neighbors) do n_idx
+        n_z = Meshes.coords(skel.vertices[n_idx]).z
+        abs(n_z - v_z) < 0.01u"m"  # Same level (within tolerance)
+    end
+    
+    n_connections = length(horizontal_neighbors)
+    
+    if n_connections >= 4
+        return :interior
+    elseif n_connections <= 2
+        return :corner
+    else
+        return :edge
+    end
+end
+
+"""
+    classify_beam_role(skel, edge_idx) -> Symbol
+
+Classify beam role based on position in framing:
+- Perimeter beams → :girder (primary)
+- Interior beams on column lines → :girder
+- Other beams → :beam (secondary)
+
+Note: This is a simplified classification. For more accurate role assignment,
+consider using explicit framing layout or load path analysis.
+"""
+function classify_beam_role(skel::BuildingSkeleton, edge_idx::Int)
+    # Simple heuristic: beams on the building perimeter are girders
+    # Check if edge is on any face boundary
+    
+    # For now, default to :beam - can be refined based on framing analysis
+    # A more sophisticated approach would check if this edge lies on a column line
+    return :beam
 end
 
 """
@@ -102,21 +211,37 @@ end
 # =============================================================================
 
 """
-    build_member_groups!(struc::BuildingStructure)
+    build_member_groups!(struc::BuildingStructure; member_type::Symbol=:beams)
 
-Populate `struc.member_groups` from `struc.members` using `Member.group_id`.
+Populate `struc.member_groups` from the specified member collection.
 
-- If `member.group_id === nothing`, the member is treated as its own singleton group
+- `member_type`: Which members to group - `:beams`, `:columns`, `:struts`, or `:all`
+- If `member.base.group_id === nothing`, the member is treated as its own singleton group
   and a deterministic `UInt64` group id is assigned.
-- If `member.group_id` is set, all members with the same id are grouped together.
-"""
-function build_member_groups!(struc::BuildingStructure)
-    empty!(struc.member_groups)
+- If `member.base.group_id` is set, all members with the same id are grouped together.
 
-    for (m_idx, m) in enumerate(struc.members)
-        gid = m.group_id === nothing ? UInt64(hash((:singleton_member_group, m_idx))) : m.group_id
-        # Persist the resolved group id back onto the member (useful for downstream operations)
-        m.group_id = gid
+Note: member_indices in MemberGroup refer to indices within the specific member vector
+(e.g., struc.beams[idx] for beams).
+"""
+function build_member_groups!(struc::BuildingStructure; member_type::Symbol=:beams)
+    empty!(struc.member_groups)
+    
+    members = if member_type == :beams
+        struc.beams
+    elseif member_type == :columns
+        struc.columns
+    elseif member_type == :struts
+        struc.struts
+    elseif member_type == :all
+        collect(all_members(struc))
+    else
+        throw(ArgumentError("Unknown member_type: $member_type. Use :beams, :columns, :struts, or :all"))
+    end
+
+    for (m_idx, m) in enumerate(members)
+        gid = group_id(m) === nothing ? UInt64(hash((:singleton_member_group, member_type, m_idx))) : group_id(m)
+        # Persist the resolved group id back onto the member
+        set_group_id!(m, gid)
 
         mg = get!(struc.member_groups, gid) do
             MemberGroup(gid)
@@ -147,8 +272,8 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
     skel = struc.skeleton
     beam_edge_ids = Set(get(skel.groups_edges, member_edge_group, Int[]))
 
-    # Build member groups if needed
-    isempty(struc.member_groups) && build_member_groups!(struc)
+    # Build member groups for beams if needed
+    isempty(struc.member_groups) && build_member_groups!(struc; member_type=:beams)
 
     # Only include groups that actually contain at least one segment in `beam_edge_ids`.
     all_group_ids = sort!(collect(keys(struc.member_groups)))  # deterministic ordering
@@ -189,13 +314,13 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         I_ref = 0.0
 
         for m_idx in mg.member_indices
-            m = struc.members[m_idx]
+            m = struc.beams[m_idx]  # member_groups for beams index into struc.beams
             
             # Group geometry governance (take worst case K across members in group)
-            Kx_gov = max(Kx_gov, m.Kx)
-            Ky_gov = max(Ky_gov, m.Ky)
+            Kx_gov = max(Kx_gov, m.base.Kx)
+            Ky_gov = max(Ky_gov, m.base.Ky)
 
-            for seg_idx in m.segment_indices
+            for seg_idx in segment_indices(m)
                 seg = struc.segments[seg_idx]
                 edge_idx = seg.edge_idx
                 edge_idx in beam_edge_ids || continue
@@ -366,17 +491,17 @@ function size_members_discrete!(
         asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
 
         for m_idx in mg.member_indices
-            m = struc.members[m_idx]
+            m = struc.beams[m_idx]  # member_groups for beams index into struc.beams
             
             # Compute total length and store section/volume on member
             # Ensure L_total has units (skeleton may use plain Float64)
-            L_raw = sum(struc.segments[i].L for i in m.segment_indices)
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
             L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
-            m.section = chosen
-            m.volumes = MaterialVolumes(material => StructuralSizer.area(chosen) * L_total)
+            set_section!(m, chosen)
+            set_volumes!(m, MaterialVolumes(material => StructuralSizer.area(chosen) * L_total))
             
             # Update ASAP elements
-            for seg_idx in m.segment_indices
+            for seg_idx in segment_indices(m)
                 edge_idx = struc.segments[seg_idx].edge_idx
                 edge_idx in edge_ids_in_group || continue
                 struc.asap_model.elements[edge_idx].section = asap_sec

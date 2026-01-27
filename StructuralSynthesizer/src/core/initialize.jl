@@ -35,6 +35,7 @@ function initialize!(struc::BuildingStructure;
     # 3. Create members from segments (uses updated Lb values)
     initialize_members!(struc)
     
-    @debug "Initialized BuildingStructure" cells=length(struc.cells) slabs=length(struc.slabs) segments=length(struc.segments) members=length(struc.members)
+    n_members = length(struc.beams) + length(struc.columns) + length(struc.struts)
+    @debug "Initialized BuildingStructure" cells=length(struc.cells) slabs=length(struc.slabs) segments=length(struc.segments) beams=length(struc.beams) columns=length(struc.columns) struts=length(struc.struts)
     return struc
 end

@@ -22,21 +22,40 @@ function aggregate_ec_by_material(elements)
     ec_by_mat = Dict{String, Float64}()
     for elem in elements
         for (mat, vol) in elem.volumes
-            mat_name = if mat isa StructuralSizer.Concrete
-                "Concrete (fc'=$(round(Int, Unitful.ustrip(u"MPa", mat.fc′))) MPa)"
-            elseif mat isa StructuralSizer.StructuralSteel
-                "Steel (Fy=$(round(Int, Unitful.ustrip(u"MPa", mat.Fy))) MPa)"
-            elseif mat isa StructuralSizer.RebarSteel
-                "Rebar (Fy=$(round(Int, Unitful.ustrip(u"MPa", mat.Fy))) MPa)"
-            else
-                string(typeof(mat).name.name)
-            end
+            mat_name = _material_display_name(mat)
             mass_kg = Unitful.ustrip(u"kg", vol * mat.ρ)
             ec_val = mass_kg * mat.ecc
             ec_by_mat[mat_name] = get(ec_by_mat, mat_name, 0.0) + ec_val
         end
     end
     return ec_by_mat
+end
+
+"""Aggregate EC for member types (uses volumes accessor)."""
+function aggregate_ec_by_material_members(members)
+    ec_by_mat = Dict{String, Float64}()
+    for m in members
+        for (mat, vol) in volumes(m)
+            mat_name = _material_display_name(mat)
+            mass_kg = Unitful.ustrip(u"kg", vol * mat.ρ)
+            ec_val = mass_kg * mat.ecc
+            ec_by_mat[mat_name] = get(ec_by_mat, mat_name, 0.0) + ec_val
+        end
+    end
+    return ec_by_mat
+end
+
+"""Format material name for display."""
+function _material_display_name(mat)
+    if mat isa StructuralSizer.Concrete
+        "Concrete (fc'=$(round(Int, Unitful.ustrip(u"MPa", mat.fc′))) MPa)"
+    elseif mat isa StructuralSizer.StructuralSteel
+        "Steel (Fy=$(round(Int, Unitful.ustrip(u"MPa", mat.Fy))) MPa)"
+    elseif mat isa StructuralSizer.RebarSteel
+        "Rebar (Fy=$(round(Int, Unitful.ustrip(u"MPa", mat.Fy))) MPa)"
+    else
+        string(typeof(mat).name.name)
+    end
 end
 
 """
@@ -56,7 +75,13 @@ function vis_embodied_carbon_summary(struc::BuildingStructure)
     
     # Aggregate by material for each system
     slab_by_mat = aggregate_ec_by_material(struc.slabs)
-    member_by_mat = aggregate_ec_by_material(filter(m -> !isempty(m.volumes), struc.members))
+    # Collect all members with non-empty volumes
+    all_members_with_volumes = vcat(
+        filter(m -> !isempty(volumes(m)), struc.beams),
+        filter(m -> !isempty(volumes(m)), struc.columns),
+        filter(m -> !isempty(volumes(m)), struc.struts)
+    )
+    member_by_mat = aggregate_ec_by_material_members(all_members_with_volumes)
     fdn_by_mat = aggregate_ec_by_material(filter(f -> !isempty(f.volumes), struc.foundations))
     
     # Collect all unique materials

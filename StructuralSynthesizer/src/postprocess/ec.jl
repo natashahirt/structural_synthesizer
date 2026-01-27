@@ -89,7 +89,19 @@ println("Intensity: \$(ec.ec_per_floor_area) kgCO₂e/m²")
 function compute_building_ec(struc::BuildingStructure)
     # Compute per-element EC
     slab_results = [compute_element_ec(s, :slab, i) for (i, s) in enumerate(struc.slabs)]
-    member_results = [compute_element_ec(m, :member, i) for (i, m) in enumerate(struc.members) if !isempty(m.volumes)]
+    
+    # Compute member EC for all member types (beams, columns, struts)
+    member_results = ElementECResult[]
+    for (i, m) in enumerate(struc.beams)
+        !isempty(volumes(m)) && push!(member_results, compute_element_ec_member(m, :beam, i))
+    end
+    for (i, m) in enumerate(struc.columns)
+        !isempty(volumes(m)) && push!(member_results, compute_element_ec_member(m, :column, i))
+    end
+    for (i, m) in enumerate(struc.struts)
+        !isempty(volumes(m)) && push!(member_results, compute_element_ec_member(m, :strut, i))
+    end
+    
     fdn_results = [compute_element_ec(f, :foundation, i) for (i, f) in enumerate(struc.foundations) if !isempty(f.volumes)]
     
     # Sum by system
@@ -107,6 +119,15 @@ function compute_building_ec(struc::BuildingStructure)
         slab_ec, member_ec, fdn_ec, total_ec,
         floor_area, ec_intensity
     )
+end
+
+"""Compute EC for a member (uses volumes accessor)."""
+function compute_element_ec_member(m::AbstractMember, element_type::Symbol, idx::Int)
+    vols = volumes(m)
+    ec = element_ec(vols)
+    vol_total = sum(values(vols); init=0.0u"m^3")
+    mass_total = sum(vol * mat.ρ for (mat, vol) in vols; init=0.0u"kg")
+    ElementECResult(element_type, idx, ec, vol_total, mass_total)
 end
 
 """
