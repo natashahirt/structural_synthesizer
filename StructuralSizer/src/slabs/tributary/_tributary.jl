@@ -2,6 +2,7 @@
 #
 # Edge Tributaries: Straight Skeleton (DCEL) and One-Way Directed
 # Vertex Tributaries: Voronoi Tessellation (for column sizing)
+# ACI Strip Geometry: Column/Middle strip split at half-depth
 
 include("utils.jl")
 include("dcel.jl")
@@ -9,6 +10,7 @@ include("isotropic.jl")
 include("one_way.jl")
 include("spans.jl")
 include("voronoi.jl")
+include("strips.jl")
 
 # =============================================================================
 # Main Dispatch Function

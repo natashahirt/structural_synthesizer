@@ -67,28 +67,42 @@ Only the relevant sub-options for a given floor type are used.
 - `vault::VaultOptions`: Haile vault sizing options
 - `composite::CompositeDeckOptions`: Steel composite deck options
 - `timber::TimberOptions`: Timber panel options (CLT, DLT, NLT)
-- `tributary_axis`: Tributary area analysis direction override
-  - `nothing` (default): use floor type default (one-way → span axis, two-way → isotropic)
-  - `:isotropic`: force isotropic straight skeleton (two-way behavior)
+- `tributary_axis`: Tributary area *computation* direction override
+  - `nothing` (default): use floor type default based on `spanning_behavior(ft)`
+  - `:isotropic`: force isotropic straight skeleton for edge tributaries
   - `(x, y)` tuple: custom axis direction for directed partitioning
+
+## Important: Spanning Behavior is Intrinsic
+
+The `spanning_behavior` of a floor type (OneWay, TwoWay, Beamless) is determined
+by the floor type itself and **cannot be changed** via options. Use `spanning_behavior(ft)`
+to query a floor type's intrinsic spanning behavior.
+
+The `tributary_axis` option only affects *how tributary areas are computed* for
+visualization and load application—not the underlying structural behavior.
 
 ## Examples
 
 ```julia
 using StructuralSizer, StructuralSynthesizer
 
-# Default behavior: one-way slabs use directed partitioning along span axis,
-# two-way slabs use isotropic straight skeleton
+# Default behavior: spanning behavior comes from floor type
+# OneWay → OneWaySpanning → directed tribs along span axis
+# TwoWay → TwoWaySpanning → isotropic tribs
+# FlatPlate → BeamlessSpanning → isotropic edge tribs + Voronoi vertex tribs
 opts = FloorOptions(cip=CIPOptions(support=ONE_END_CONT))
-initialize!(struc; floor_type=:one_way, floor_kwargs=(options=opts,))
+initialize!(struc; floor_type=:flat_plate, floor_kwargs=(options=opts,))
 
-# Force isotropic analysis on a one-way slab (e.g., for comparison)
+# Query spanning behavior (intrinsic, not affected by options)
+ft = floor_type(:flat_plate)
+spanning_behavior(ft)  # → BeamlessSpanning()
+is_beamless(ft)        # → true
+requires_column_tributaries(ft)  # → true
+
+# Force isotropic tributary computation on a one-way slab (for comparison only)
+# Note: This doesn't change the spanning behavior, just how tribs are computed
 opts = FloorOptions(tributary_axis=:isotropic)
 initialize!(struc; floor_type=:one_way, floor_kwargs=(options=opts,))
-
-# Composite deck with custom materials
-opts = FloorOptions(composite=CompositeDeckOptions(deck_material=A992_Steel))
-initialize!(struc; floor_type=:composite_deck, floor_kwargs=(options=opts,))
 ```
 """
 Base.@kwdef struct FloorOptions

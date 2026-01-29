@@ -2,7 +2,6 @@
 name: CIP Flat Plate EFM Design
 overview: Implement ACI 318-compliant CIP flat plate design using EFM in ASAP, with a novel tributary-polygon-based generalization for column/middle strip definitions that handles irregular bay geometries while reducing to standard ACI formulas for rectangular panels.
 ---
-
 # CIP Flat Plate Design with Generalized Strip Definitions
 
 This plan implements flat plate concrete floor design following ACI 318-14/19, using your existing tributary polygon algorithm to generalize strip definitions for irregular bay shapes.
@@ -28,12 +27,12 @@ This plan implements flat plate concrete floor design following ACI 318-14/19, u
 
 ### Key Differences Between Sources
 
-| Aspect | StructurePoint (ACI 318-14) | Supplementary Doc (ACI 318-19) |
-|--------|----------------------------|--------------------------------|
+| Aspect              | StructurePoint (ACI 318-14)                          | Supplementary Doc (ACI 318-19)               |
+| ------------------- | ---------------------------------------------------- | -------------------------------------------- |
 | Moment distribution | Full ACI tables 8.10.4.2, 8.10.5-7 with l2/l1 ratios | Simplified M-DDM coefficients (fixed values) |
-| EFM coverage | Complete treatment with Kec, Kt calculations | Not covered (DDM only) |
-| Deflection | Full Ie calculation with multiple load cases | Condensed equations |
-| Code provisions | Older but comprehensive examples | Newer code, equation-focused |
+| EFM coverage        | Complete treatment with Kec, Kt calculations         | Not covered (DDM only)                       |
+| Deflection          | Full Ie calculation with multiple load cases         | Condensed equations                          |
+| Code provisions     | Older but comprehensive examples                     | Newer code, equation-focused                 |
 
 **Recommendation**: Follow StructurePoint methodology, use Supplementary Document equations where computation-friendly.
 
@@ -121,13 +120,13 @@ end
 
 ### Files to Modify
 
-| File | Changes |
-|------|---------|
-| `StructuralSynthesizer/src/types.jl` | Add AbstractMember, Beam, Column, Strut |
-| `StructuralSynthesizer/src/types.jl` | Update BuildingStructure fields |
-| `StructuralSizer/src/members/_members.jl` | Add column_dimensions() |
-| `StructuralSynthesizer/src/analyze/members/utils.jl` | Update to use AbstractMember |
-| `StructuralSynthesizer/src/core/utils_asap.jl` | Update element creation |
+| File                                                   | Changes                                 |
+| ------------------------------------------------------ | --------------------------------------- |
+| `StructuralSynthesizer/src/types.jl`                 | Add AbstractMember, Beam, Column, Strut |
+| `StructuralSynthesizer/src/types.jl`                 | Update BuildingStructure fields         |
+| `StructuralSizer/src/members/_members.jl`            | Add column_dimensions()                 |
+| `StructuralSynthesizer/src/analyze/members/utils.jl` | Update to use AbstractMember            |
+| `StructuralSynthesizer/src/core/utils_asap.jl`       | Update element creation                 |
 
 ---
 
@@ -196,11 +195,11 @@ function compute_tributaries!(struc::BuildingStructure; opts)
         verts = get_cell_vertices(struc, cell)
         cell.tributary = get_tributary_polygons_isotropic(verts)
     end
-    
+  
     # 2. Vertex tributaries (NEW - Regular Voronoi, clipped to floor)
     floor_polygon = get_floor_boundary(struc)
     column_positions = [struc.skeleton.vertices[c.vertex_idx] for c in struc.columns]
-    
+  
     vorn = voronoi(triangulate(column_positions))
     for (col_idx, cell) in enumerate(get_polygons(vorn))
         clipped = intersect(cell, floor_polygon)  # Clip to boundary
@@ -260,7 +259,7 @@ function optimize_slab_thickness(
     prec_m = uconvert(u"m", precision)
     h_lo = uconvert(u"m", h_min)
     h_hi = isnothing(h_max) ? initial_thickness_estimate(struc) : uconvert(u"m", h_max)
-    
+  
     while (h_hi - h_lo) > prec_m
         h_mid = (h_lo + h_hi) / 2
         if all_checks_pass(struc, h_mid, material, loads)
@@ -269,7 +268,7 @@ function optimize_slab_thickness(
             h_lo = h_mid  # Need thicker
         end
     end
-    
+  
     # Round UP to precision for safety
     return ceil(h_hi / prec_m) * prec_m
 end
@@ -334,48 +333,48 @@ function size_flat_plates!(struc; opts)
     # PHASE 1: Geometry (per CellGroup)
     # ═══════════════════════════════════════════════════════════════════
     build_cell_groups!(struc)
-    
+  
     for (hash, cell_group) in struc.cell_groups
         representative = struc.cells[cell_group.cell_indices[1]]
-        
+      
         # Compute once for this geometry
         edge_tribs = compute_edge_tributaries(representative)
         vertex_tribs = compute_vertex_tributaries(representative)  # Voronoi
         strips = compute_panel_strips(edge_tribs)
-        
+      
         # Distribute to all cells with this geometry
         for c_idx in cell_group.cell_indices
             struc.cells[c_idx].tributary = edge_tribs
             struc.cells[c_idx].strips = strips
         end
-        
+      
         # Distribute vertex tribs to columns at these cell vertices
         distribute_vertex_tribs_to_columns!(struc, cell_group, vertex_tribs)
     end
-    
+  
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 2: Design (per SlabGroup)
     # ═══════════════════════════════════════════════════════════════════
     build_slab_groups!(struc)
-    
+  
     for (gid, slab_group) in struc.slab_groups
         representative = struc.slabs[slab_group.slab_indices[1]]
-        
+      
         # Get governing parameters across all cells in representative slab
         slab_cells = [struc.cells[i] for i in representative.cell_indices]
         spans_gov = governing_spans([c.spans for c in slab_cells])
-        
+      
         # Size once for this design group
         h = optimize_slab_thickness(representative, spans_gov, ...)
         moments = compute_moments(spans_gov, h)
         reinforcement = design_reinforcement(moments, h)
-        
+      
         # Apply to ALL slabs in group
         for s_idx in slab_group.slab_indices
             struc.slabs[s_idx].result = FlatPlateResult(h, reinforcement, ...)
         end
     end
-    
+  
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 3: Optional Story Unification
     # ═══════════════════════════════════════════════════════════════════
@@ -387,7 +386,7 @@ function size_flat_plates!(struc; opts)
             end
         end
     end
-    
+  
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 4: Column Sizing (after slab finalized)
     # ═══════════════════════════════════════════════════════════════════
@@ -539,17 +538,17 @@ result = size_floor(OneWay(), 16u"ft", nlt_mat; sdl=15u"psf", ll=40u"psf")
 
 ### What's Shared vs Material-Specific
 
-| Component | Shared (all materials) | Material-Specific |
-|-----------|------------------------|-------------------|
-| Voronoi tributaries | ✅ | |
-| Edge tributaries | ✅ | |
-| CellGroup/SlabGroup | ✅ | |
-| ASAP EFM model | ✅ (structure) | E, G, ρ values |
-| Thickness calc | | ✅ (ACI vs NDS) |
-| Self-weight | | ✅ (density) |
-| Reinforcement design | | ✅ (concrete only) |
-| Fire rating | | ✅ (cover vs charring) |
-| Column sizing | ✅ (workflow) | Material-specific checks |
+| Component            | Shared (all materials) | Material-Specific        |
+| -------------------- | ---------------------- | ------------------------ |
+| Voronoi tributaries  | ✅                     |                          |
+| Edge tributaries     | ✅                     |                          |
+| CellGroup/SlabGroup  | ✅                     |                          |
+| ASAP EFM model       | ✅ (structure)         | E, G, ρ values          |
+| Thickness calc       |                        | ✅ (ACI vs NDS)          |
+| Self-weight          |                        | ✅ (density)             |
+| Reinforcement design |                        | ✅ (concrete only)       |
+| Fire rating          |                        | ✅ (cover vs charring)   |
+| Column sizing        | ✅ (workflow)          | Material-specific checks |
 
 ### Shared vs Type-Specific Methods
 
@@ -652,15 +651,15 @@ SlabDesignSystem
 
 ### Implementation Priority
 
-| Type | Material | Priority | Notes |
-|------|----------|----------|-------|
-| FlatPlate | Concrete | P0 | Current focus |
-| FlatPlate | CLT | P1 | After concrete works |
-| FlatSlab | Concrete | P1 | Add drop panel logic |
-| OneWay | NLT | P2 | Simpler timber entry |
-| TwoWayBeamed | Concrete | P2 | Real beams, αf > 0 |
-| WaffleSlab | Concrete | P3 | Ribbed section |
-| PTBanded | Concrete | P4 | Separate design system |
+| Type         | Material | Priority | Notes                  |
+| ------------ | -------- | -------- | ---------------------- |
+| FlatPlate    | Concrete | P0       | Current focus          |
+| FlatPlate    | CLT      | P1       | After concrete works   |
+| FlatSlab     | Concrete | P1       | Add drop panel logic   |
+| OneWay       | NLT      | P2       | Simpler timber entry   |
+| TwoWayBeamed | Concrete | P2       | Real beams, αf > 0    |
+| WaffleSlab   | Concrete | P3       | Ribbed section         |
+| PTBanded     | Concrete | P4       | Separate design system |
 
 ---
 
@@ -818,7 +817,7 @@ Add to `StructuralSynthesizer/src/core/utils_asap.jl`:
 ```julia
 function to_asap!(struc::BuildingStructure; analysis_mode::Symbol=:auto)
     mode = determine_analysis_mode(struc, analysis_mode)
-    
+  
     if mode == :beam_frame
         # Existing implementation - tributary loads to beam elements
         return to_asap_beam_frame!(struc)
@@ -871,19 +870,19 @@ Methodology per StructurePoint flat plate example Section 3.1.3.
 function design_strip_reinforcement(Mu, strip_width, h, fc, fy; cc=0.75u"inch")
     # Effective depth (ACI 22.2)
     d = h - cc - 0.25u"inch"  # Assuming #4 bars initially
-    
+  
     # Resistance coefficient (Supplementary Doc Eq. 1.7)
     Rn = Mu / (0.9 * strip_width * d^2)
-    
+  
     # Stress block factor (ACI 22.2.2.4.3)
     β1 = max(0.65, 0.85 - 0.05 * (fc/1000 - 4))  # fc in psi
-    
+  
     # Required steel area (Supplementary Doc - derived from ACI 22.2)
     As_reqd = (β1 * fc * strip_width * d / fy) * (1 - sqrt(1 - 2*Rn/(β1*fc)))
-    
+  
     # Minimum steel (ACI 8.6.1.1)
     As_min = 0.0018 * strip_width * h
-    
+  
     return max(As_reqd, As_min)
 end
 
@@ -917,19 +916,19 @@ Vu is obtained from ASAP node reactions at column locations.
 function check_punching_shear(Vu, col_width, d, fc; β_c=1.0, αs=40)
     # Critical perimeter at d/2 from column face
     b0 = 4 * (col_width + d)
-    
+  
     # Concrete shear strength (ACI 22.6.5.2)
     # Three criteria - take minimum
     Vc1 = 4 * sqrt(fc) * b0 * d                           # ACI Eq. 22.6.5.2a
     Vc2 = (2 + 4/β_c) * sqrt(fc) * b0 * d                 # ACI Eq. 22.6.5.2b
     Vc3 = (2 + αs*d/b0) * sqrt(fc) * b0 * d               # ACI Eq. 22.6.5.2c
-    
+  
     Vc = min(Vc1, Vc2, Vc3)
     ϕVc = 0.75 * Vc
-    
+  
     # With shear reinforcement (if needed): ϕVn = ϕ(Vc + Vs)
     # Supplementary Doc uses 6√fc assuming shear reinforcement present
-    
+  
     return (ϕVc >= Vu, ϕVc, Vu)
 end
 
@@ -940,7 +939,7 @@ function moment_transfer_shear(Mub, col_width, d, fc)
     b2 = col_width + d
     γf = 1 / (1 + (2/3)*sqrt(b1/b2))
     γv = 1 - γf
-    
+  
     # Additional shear stress from unbalanced moment
     ...
 end
@@ -961,36 +960,36 @@ function check_deflection(panel, loads, reinforcement)
     # Material properties
     Ec = 57000 * sqrt(fc)  # psi
     fr = 7.5 * sqrt(fc)    # Modulus of rupture
-    
+  
     # Gross moment of inertia
     Ig = strip_width * h^3 / 12
-    
+  
     # Cracking moment
     Mcr = fr * Ig / (h/2)
-    
+  
     # Cracked moment of inertia (requires neutral axis calculation)
     # Solve: 0 = b*c²/2 + η*As*c - η*As*d  (Supplementary Doc)
     η = 29_000_000 / Ec  # Modular ratio
     c = solve_neutral_axis(strip_width, d, As, η)
     Icr = strip_width * c^3 / 3 + η * As * (d - c)^2
-    
+  
     # Effective moment of inertia (ACI 24.2.3.5)
     Ie = (Mcr/Ma)^3 * Ig + (1 - (Mcr/Ma)^3) * Icr
     Ie = clamp(Ie, Icr, Ig)
-    
+  
     # Immediate deflection
     Δi = 5 * w * l^4 / (384 * Ec * Ie)  # Simply supported approximation
-    
+  
     # Long-term deflection (ACI 24.2.4)
     ξ = 2.0  # Time-dependent factor for 5+ years
     ρ_prime = 0  # Compression steel ratio (typically 0 for slabs)
     λΔ = ξ / (1 + 50*ρ_prime)
-    
+  
     Δ_LT = Δi_DL * λΔ + Δi_LL
-    
+  
     # Limits per ACI Table 24.2.2
     Δ_limit = l / 240  # Floor supporting non-structural elements
-    
+  
     return (Δ_LT <= Δ_limit, Δ_LT, Δ_limit)
 end
 ```
@@ -1039,58 +1038,58 @@ end
 
 ### Phase 0: Member Hierarchy & Geometry
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `StructuralSynthesizer/src/types.jl` | **Modify** | Add AbstractMember, Beam, Column, Strut |
-| `StructuralSynthesizer/src/analyze/members/utils.jl` | **Modify** | Dispatch on AbstractMember |
-| `StructuralSynthesizer/src/core/utils_asap.jl` | **Modify** | Handle member types |
-| `StructuralSizer/src/members/_members.jl` | **Modify** | Add column_dimensions() |
-| `StructuralSizer/src/slabs/tributary/voronoi.jl` | **Create** | Voronoi vertex tributary algorithm |
-| `StructuralSynthesizer/src/analyze/slabs/utils.jl` | **Modify** | Extend compute_tributaries!() for vertex tribs |
-| `StructuralSizer/src/slabs/codes/concrete/flat_plate/initial_sizing.jl` | **Create** | Initial column estimate from span |
+| File                                                                      | Action           | Purpose                                        |
+| ------------------------------------------------------------------------- | ---------------- | ---------------------------------------------- |
+| `StructuralSynthesizer/src/types.jl`                                    | **Modify** | Add AbstractMember, Beam, Column, Strut        |
+| `StructuralSynthesizer/src/analyze/members/utils.jl`                    | **Modify** | Dispatch on AbstractMember                     |
+| `StructuralSynthesizer/src/core/utils_asap.jl`                          | **Modify** | Handle member types                            |
+| `StructuralSizer/src/members/_members.jl`                               | **Modify** | Add column_dimensions()                        |
+| `StructuralSizer/src/slabs/tributary/voronoi.jl`                        | **Create** | Voronoi vertex tributary algorithm             |
+| `StructuralSynthesizer/src/analyze/slabs/utils.jl`                      | **Modify** | Extend compute_tributaries!() for vertex tribs |
+| `StructuralSizer/src/slabs/codes/concrete/flat_plate/initial_sizing.jl` | **Create** | Initial column estimate from span              |
 
 ### Phase 2: Column Sizing
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `StructuralSynthesizer/src/analyze/members/column_loads.jl` | **Create** | Extract Pu, Mu from ASAP |
-| `StructuralSynthesizer/src/analyze/members/utils.jl` | **Modify** | Integration with member sizing |
+| File                                                          | Action           | Purpose                        |
+| ------------------------------------------------------------- | ---------------- | ------------------------------ |
+| `StructuralSynthesizer/src/analyze/members/column_loads.jl` | **Create** | Extract Pu, Mu from ASAP       |
+| `StructuralSynthesizer/src/analyze/members/utils.jl`        | **Modify** | Integration with member sizing |
 
 ### Source Files (Flat Plate - Phase 1)
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `slabs/codes/concrete/cip_aci.jl` | **Delete** | Conceptually wrong |
-| `slabs/codes/concrete/flat_plate/_flat_plate.jl` | **Create** | Module entry point |
-| `slabs/codes/concrete/flat_plate/thickness.jl` | **Create** | Min h per ACI 8.3.1.1 |
-| `slabs/codes/concrete/flat_plate/strips.jl` | **Create** | Generalized strip geometry |
-| `slabs/codes/concrete/flat_plate/moment_dist.jl` | **Create** | M-DDM coefficients |
-| `slabs/codes/concrete/flat_plate/reinforcement.jl` | **Create** | As design |
-| `slabs/codes/concrete/flat_plate/punching_shear.jl` | **Create** | Two-way shear |
-| `slabs/codes/concrete/flat_plate/deflection.jl` | **Create** | Serviceability |
-| `slabs/tributary/strips.jl` | **Create** | `split_tributary_at_half_depth()` |
-| `slabs/types.jl` | **Modify** | Add `FlatPlateResult`, `StripDesign` |
-| `StructuralSynthesizer/.../utils_asap.jl` | **Modify** | Add EFM path |
+| File                                                  | Action           | Purpose                                  |
+| ----------------------------------------------------- | ---------------- | ---------------------------------------- |
+| `slabs/codes/concrete/cip_aci.jl`                   | **Delete** | Conceptually wrong                       |
+| `slabs/codes/concrete/flat_plate/_flat_plate.jl`    | **Create** | Module entry point                       |
+| `slabs/codes/concrete/flat_plate/thickness.jl`      | **Create** | Min h per ACI 8.3.1.1                    |
+| `slabs/codes/concrete/flat_plate/strips.jl`         | **Create** | Generalized strip geometry               |
+| `slabs/codes/concrete/flat_plate/moment_dist.jl`    | **Create** | M-DDM coefficients                       |
+| `slabs/codes/concrete/flat_plate/reinforcement.jl`  | **Create** | As design                                |
+| `slabs/codes/concrete/flat_plate/punching_shear.jl` | **Create** | Two-way shear                            |
+| `slabs/codes/concrete/flat_plate/deflection.jl`     | **Create** | Serviceability                           |
+| `slabs/tributary/strips.jl`                         | **Create** | `split_tributary_at_half_depth()`      |
+| `slabs/types.jl`                                    | **Modify** | Add `FlatPlateResult`, `StripDesign` |
+| `StructuralSynthesizer/.../utils_asap.jl`           | **Modify** | Add EFM path                             |
 
 ### Test Files (in `StructuralSizer/test/`)
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `members/test_member_types.jl` | **Create** | Test AbstractMember hierarchy |
-| `members/test_column_dimensions.jl` | **Create** | Test column_dimensions() |
-| `tributary/test_voronoi.jl` | **Create** | Test Voronoi vertex tributaries |
-| `cip/flat_plate/test_initial_column.jl` | **Create** | Test initial column size estimate |
-| `cip/flat_plate/test_column_sizing.jl` | **Create** | Test column loads → sizing flow |
-| `runtests.jl` | **Modify** | Add includes for new test files |
-| `cip/test_cip.jl` | **Replace** | Old tests for wrong implementation |
-| `cip/flat_plate/test_structurepoint_example.jl` | **Create** | Full integration test against PDF |
-| `cip/flat_plate/test_strips.jl` | **Create** | Strip geometry verification |
-| `cip/flat_plate/test_thickness.jl` | **Create** | Min thickness tests |
-| `cip/flat_plate/test_moment_distribution.jl` | **Create** | DDM coefficient tests |
-| `cip/flat_plate/test_reinforcement.jl` | **Create** | As calculation tests |
-| `cip/flat_plate/test_punching_shear.jl` | **Create** | Two-way shear tests |
-| `cip/flat_plate/test_deflection.jl` | **Create** | Serviceability tests |
-| `tributary/test_strip_split.jl` | **Create** | `split_tributary_at_half_depth()` tests |
+| File                                              | Action            | Purpose                                   |
+| ------------------------------------------------- | ----------------- | ----------------------------------------- |
+| `members/test_member_types.jl`                  | **Create**  | Test AbstractMember hierarchy             |
+| `members/test_column_dimensions.jl`             | **Create**  | Test column_dimensions()                  |
+| `tributary/test_voronoi.jl`                     | **Create**  | Test Voronoi vertex tributaries           |
+| `cip/flat_plate/test_initial_column.jl`         | **Create**  | Test initial column size estimate         |
+| `cip/flat_plate/test_column_sizing.jl`          | **Create**  | Test column loads → sizing flow          |
+| `runtests.jl`                                   | **Modify**  | Add includes for new test files           |
+| `cip/test_cip.jl`                               | **Replace** | Old tests for wrong implementation        |
+| `cip/flat_plate/test_structurepoint_example.jl` | **Create**  | Full integration test against PDF         |
+| `cip/flat_plate/test_strips.jl`                 | **Create**  | Strip geometry verification               |
+| `cip/flat_plate/test_thickness.jl`              | **Create**  | Min thickness tests                       |
+| `cip/flat_plate/test_moment_distribution.jl`    | **Create**  | DDM coefficient tests                     |
+| `cip/flat_plate/test_reinforcement.jl`          | **Create**  | As calculation tests                      |
+| `cip/flat_plate/test_punching_shear.jl`         | **Create**  | Two-way shear tests                       |
+| `cip/flat_plate/test_deflection.jl`             | **Create**  | Serviceability tests                      |
+| `tributary/test_strip_split.jl`                 | **Create**  | `split_tributary_at_half_depth()` tests |
 
 ---
 
@@ -1131,7 +1130,7 @@ Reproduce the flat plate example from StructurePoint PDF with known expected val
     fy = 60000.0u"psi"       # Rebar
     SDL = 20.0u"psf"         # Partition load
     LL = 40.0u"psf"          # Live load
-    
+  
     # Expected results from StructurePoint Tables
     @testset "Minimum thickness" begin
         ln = l1 - col_width
@@ -1139,30 +1138,30 @@ Reproduce the flat plate example from StructurePoint PDF with known expected val
         @test h_min ≈ 7.27u"inch" atol=0.1u"inch"
         # Actual h = 7.5 in (rounded up)
     end
-    
+  
     @testset "Static moment M0" begin
         # M0 = qu * l2 * ln² / 8 (ACI 8.10.3.2)
         # From StructurePoint: M0 = 158.2 kip-ft (interior span)
         # ... verify calculation
     end
-    
+  
     @testset "Moment distribution (DDM)" begin
         # Interior span column strip negative: 0.65 * 0.75 * M0 = 77.1 kip-ft
         # Interior span middle strip positive: 0.35 * 0.40 * M0 = 22.1 kip-ft
         # ... verify against StructurePoint Table 5
     end
-    
+  
     @testset "Reinforcement" begin
         # From StructurePoint Table 7: interior column strip requires #5 @ 12" o.c.
         # ... verify As calculation matches
     end
-    
+  
     @testset "Punching shear" begin
         # From StructurePoint Section 5: ϕVc = 194.5 kips at interior column
         # Vu = 111.5 kips → utilization ≈ 57%
         # ... verify
     end
-    
+  
     @testset "Deflection" begin
         # From StructurePoint Table 16-17
         # Column strip exterior span: Δ_total = 0.254 in
@@ -1179,26 +1178,26 @@ end
         # 20ft × 24ft panel
         # Column strip should be l2/4 = 5ft on each side
         # Middle strip should be 20ft - 10ft = 10ft total
-        
+      
         vertices = rectangular_polygon(20.0, 24.0)  # meters
         tribs = get_tributary_polygons(vertices)
         strips = compute_panel_strips(tribs)
-        
+      
         # Verify areas
         @test strips.total_area ≈ 20.0 * 24.0 atol=0.01
         @test sum(strips.column_strip_areas) ≈ strips.total_area / 2 atol=0.01
         @test strips.middle_strip_area ≈ strips.total_area / 2 atol=0.01
     end
-    
+  
     @testset "L-shaped panel - areas conserved" begin
         vertices = l_shaped_polygon(...)
         tribs = get_tributary_polygons(vertices)
         strips = compute_panel_strips(tribs)
-        
+      
         total_from_strips = sum(strips.column_strip_areas) + strips.middle_strip_area
         @test total_from_strips ≈ strips.total_area atol=0.01
     end
-    
+  
     @testset "split_tributary_at_half_depth" begin
         # Unit test the splitting function
         trib = TributaryPolygon(...)  # Known simple case
@@ -1218,13 +1217,13 @@ end
         end_cs = 0.27 + 0.345 + 0.55
         end_ms = 0.00 + 0.235 + 0.18
         @test end_cs + end_ms ≈ 1.58  # Note: overlapping regions
-        
+      
         # Interior span: total should sum to 1.0
         int_cs = 0.535 + 0.186
         int_ms = 0.175 + 0.124
         @test (int_cs + int_ms) * 2 ≈ 2.04  # Two ends + midspan
     end
-    
+  
     @testset "Full ACI DDM tables" begin
         # Test interpolation for various l2/l1 ratios
         # Compare against StructurePoint Table 4
@@ -1242,15 +1241,15 @@ end
         fc = 4000.0u"psi"
         At = 480.0u"ft^2"  # Tributary area
         qu = 0.232u"ksf"   # Factored load
-        
+      
         Vu = qu * At
         result = check_punching_shear(Vu, col_width, d, fc)
-        
+      
         @test result.ϕVc ≈ 194.5u"kip" rtol=0.02
         @test result.Vu ≈ 111.5u"kip" rtol=0.02
         @test result.passes == true
     end
-    
+  
     @testset "Edge and corner columns" begin
         # Different b0 perimeters for edge/corner
         # From StructurePoint Section 5
@@ -1266,7 +1265,7 @@ end
         # Verify Ie calculation matches StructurePoint Section 6
         # Ie = (Mcr/Ma)³ * Ig + [1 - (Mcr/Ma)³] * Icr
     end
-    
+  
     @testset "Long-term deflection" begin
         # ξ = 2.0 for 5+ years
         # λΔ = ξ / (1 + 50ρ')
@@ -1279,69 +1278,87 @@ end
 
 Key values from StructurePoint Flat Plate Example for validation:
 
-| Parameter | Value | Source |
-|-----------|-------|--------|
-| Panel size | 24' × 20' | Section 1 |
-| Slab thickness h | 7.5 in | Section 2.1 |
-| Clear span ln | 22.33 ft | Section 3.1.2 |
-| M0 (interior) | 158.2 kip-ft | Eq. 8.10.3.2 |
-| ϕVc (interior col) | 194.5 kips | Section 5 |
-| Vu (interior col) | 111.5 kips | Section 5 |
-| Δ_total (ext span) | 0.254 in | Table 17 |
+| Parameter           | Value        | Source        |
+| ------------------- | ------------ | ------------- |
+| Panel size          | 24' × 20'   | Section 1     |
+| Slab thickness h    | 7.5 in       | Section 2.1   |
+| Clear span ln       | 22.33 ft     | Section 3.1.2 |
+| M0 (interior)       | 158.2 kip-ft | Eq. 8.10.3.2  |
+| ϕVc (interior col) | 194.5 kips   | Section 5     |
+| Vu (interior col)   | 111.5 kips   | Section 5     |
+| Δ_total (ext span) | 0.254 in     | Table 17      |
 
 ---
 
 ## TODO Tracking
 
 ### Phase 0: Member Hierarchy ✅ COMPLETE
-- [x] `abstract-member`: Create AbstractMember base type with MemberBase shared fields
-- [x] `beam-type`: Create Beam subtype with role field (:girder, :beam, :joist, :infill)
-- [x] `column-type`: Create Column subtype with c1, c2, vertex_idx, story, position fields
-- [x] `strut-type`: Create Strut subtype with brace_type field
-- [x] `update-building-structure`: Update BuildingStructure to use beams, columns, struts vectors
-- [x] `initialize-members`: Update initialize_members! to classify from skeleton groups
-- [x] `column-classification`: Implement classify_column_position() based on graph connectivity
+
+- [X] `abstract-member`: Create AbstractMember base type with MemberBase shared fields
+- [X] `beam-type`: Create Beam subtype with role field (:girder, :beam, :joist, :infill)
+- [X] `column-type`: Create Column subtype with c1, c2, vertex_idx, story, position fields
+- [X] `strut-type`: Create Strut subtype with brace_type field
+- [X] `update-building-structure`: Update BuildingStructure to use beams, columns, struts vectors
+- [X] `initialize-members`: Update initialize_members! to classify from skeleton groups
+- [X] `column-classification`: Implement classify_column_position() based on graph connectivity
 - [ ] `column-dimensions`: Add column_dimensions() helpers for each section type (deferred)
 
 ### Phase 0: Geometry ✅ COMPLETE
-- [x] `voronoi-tributary`: Implement Voronoi vertex tributaries (regular, clipped to boundary)
+
+- [X] `voronoi-tributary`: Implement Voronoi vertex tributaries (regular, clipped to boundary)
   - Located in `StructuralSizer/src/slabs/tributary/voronoi.jl`
   - Uses DelaunayTriangulation.jl for Voronoi + Meshes.jl for boundary clipping
   - Handles convex AND concave boundaries correctly
   - Exports: `VertexTributary`, `compute_voronoi_tributaries()`
-- [x] `column-trib-storage`: Store tributaries on Column objects
+- [X] `column-trib-storage`: Store tributaries on Column objects
   - `Column.tributary_area::Float64` - total Voronoi area (m²)
   - `Column.tributary_by_slab::Dict{Int, Float64}` - per-cell breakdown (cell_idx → area)
   - `Column.tributary_polygons::Dict{Int, Vector{NTuple{2,Float64}}}` - per-cell polygons for visualization
   - Computed in `compute_column_tributaries!(struc)` during `initialize_members!()`
   - Columns matched to cells by (x,y) position + column top elevation
-- [x] `voronoi-visualization`: Voronoi tributary visualization
+- [X] `voronoi-visualization`: Voronoi tributary visualization
   - `color_by=:tributary_vertex` in visualize()
   - Uses stored polygons on columns (no recomputation)
   - Colors by column position: corner/edge/interior
-- [x] `cell-position-classification`: Classify cells as :corner/:edge/:interior
+- [X] `cell-position-classification`: Classify cells as :corner/:edge/:interior
   - Based on boundary edge count (edges belonging to only one face)
   - 2+ boundary edges → :corner, 1 → :edge, 0 → :interior
   - Stored in `Cell.position::Symbol`
-- [x] `slab-position-classification`: Derive slab position from cells
+- [X] `slab-position-classification`: Derive slab position from cells
   - Most exterior position wins (corner > edge > interior)
   - Stored in `Slab.position::Symbol`
 - [ ] `initial-column-estimate`: Implement initial column size estimation from span table
 
 ### Phase 0: ASAP Enhancements ✅ COMPLETE (bonus)
-- [x] `shell-elements`: Added ShellElement to ASAP for diaphragm modeling
-- [x] `diaphragm-loads`: Support for distributed loads on shell elements
 
-### Phase 1: Slab Type Hierarchy
-- [ ] `slab-type-hierarchy`: Create AbstractSlabType, BeamlessSlabType, BeamedSlabType
+- [X] `shell-elements`: Added ShellElement to ASAP for diaphragm modeling
+- [X] `diaphragm-loads`: Support for distributed loads on shell elements
+
+### Phase 1: Slab Type Hierarchy ✅ ALREADY EXISTS
+
+- [X] `slab-type-hierarchy`: Floor type hierarchy already exists in `StructuralSizer/src/slabs/types.jl`
+  - `AbstractFloorSystem` → `AbstractConcreteSlab` → `FlatPlate`, `FlatSlab`, `OneWay`, `TwoWay`, etc.
+  - Material-based organization (Concrete/Steel/Timber) instead of Beamless/Beamed
+  - Dispatch works directly on `FlatPlate`, `TwoWay`, etc.
 
 ### Phase 1: Replace cip_aci.jl
-- [ ] `delete-old-cip`: Delete conceptually wrong cip_aci.jl
-- [ ] `strip-split`: Implement split_tributary_at_half_depth() for column/middle strip
-- [ ] `panel-strips`: Implement PanelStripGeometry and compute_panel_strips()
-- [ ] `verify-rectangular`: Add tests verifying strip areas match ACI for rectangles
+
+- [X] `delete-old-cip`: Delete conceptually wrong cip_aci.jl
+- [X] `strip-split`: Implement split_tributary_at_half_depth() for column/middle strip
+  - Located in `StructuralSizer/src/slabs/tributary/strips.jl`
+  - Splits tributary at d_max/2 (matches ACI column strip WIDTH = l2/4)
+  - Column strip = inner half, Middle strip = outer half
+  - Note: For triangular tributaries, area split is ~75/25 (correct geometrically)
+- [X] `panel-strips`: Implement PanelStripGeometry and compute_panel_strips()
+  - `ColumnStripPolygon`, `MiddleStripPolygon` types
+  - `compute_panel_strips(tributaries)` → PanelStripGeometry
+  - Exports: strip types, split function, panel computation
+- [X] `verify-rectangular`: Add tests verifying strip areas
+  - Test file: `StructuralSizer/test/tributary/test_strip_geometry.jl`
+  - Tests: rectangular, square, L-shaped panels, individual tributary split
 
 ### Phase 1: Core Calculations
+
 - [ ] `thickness-calc`: Implement correct ACI 8.3.1.1 thickness (h = ln/33, min 5 in)
 - [ ] `static-moment`: Implement M0 = qu*l*ln²/8 calculation
 - [ ] `mddm-dist`: Implement moment distribution (M-DDM simplified + full ACI tables)
@@ -1350,23 +1367,27 @@ Key values from StructurePoint Flat Plate Example for validation:
 - [ ] `deflection`: Implement deflection check with Ie calculation
 
 ### Phase 1: EFM Integration
+
 - [ ] `efm-asap`: Add EFM analysis path to to_asap!()
 - [ ] `result-types`: Add FlatPlateResult and StripDesign types
 
 ### Phase 1: Optimization
+
 - [ ] `thickness-optimization`: Implement binary search for optimal h with precision
 - [ ] `story-unification`: Implement unify_by_story and unify_groups options
 - [ ] `grouped-computation`: Leverage CellGroup for geometry, SlabGroup for design
 
 ### Phase 2: Column Sizing
+
 - [ ] `column-loads-extraction`: Extract Pu, Mu from ASAP reactions for column sizing
 - [ ] `column-sizing-integration`: Integrate column loads into StructuralSizer workflow
 - [ ] `reanalysis-warning`: Implement warning if final column < initial estimate
 
 ### Testing
-- [x] `test-member-types`: Write test_member_types.jl for AbstractMember hierarchy
+
+- [X] `test-member-types`: Write test_member_types.jl for AbstractMember hierarchy
 - [ ] `test-column-dimensions`: Write test_column_dimensions.jl
-- [x] `test-voronoi`: Write test_voronoi.jl for Voronoi vertex tributaries
+- [X] `test-voronoi`: Write test_voronoi.jl for Voronoi vertex tributaries
   - Tests: `StructuralSizer/test/tributary/test_voronoi_tributaries.jl`
   - Covers: rectangular, with interior point, trapezoid, L-shaped (concave)
 - [ ] `test-initial-column`: Write test_initial_column.jl for span table estimates

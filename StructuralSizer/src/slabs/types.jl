@@ -6,6 +6,35 @@
 
 abstract type AbstractFloorSystem end
 
+# =============================================================================
+# Spanning Behavior Traits
+# =============================================================================
+
+"""
+Spanning behavior trait - determines how a floor system transfers load.
+
+This is an intrinsic property of the floor type and cannot be overridden
+by user options. It determines:
+- Load distribution pattern (to edges vs columns)
+- Which design code provisions apply  
+- Default tributary area computation method
+
+## Subtypes
+- `OneWaySpanning`: Loads span primarily in one direction to edges
+- `TwoWaySpanning`: Loads distribute to all edges (two-way action)
+- `BeamlessSpanning`: Loads transfer directly to columns (no beams)
+"""
+abstract type SpanningBehavior end
+
+"""One-way spanning: loads distributed to edges perpendicular to span direction."""
+struct OneWaySpanning <: SpanningBehavior end
+
+"""Two-way spanning: loads distributed to all edges (isotropic behavior)."""
+struct TwoWaySpanning <: SpanningBehavior end
+
+"""Beamless: loads transfer directly to columns (flat plate, flat slab)."""
+struct BeamlessSpanning <: SpanningBehavior end
+
 # --- Concrete floors ---
 abstract type AbstractConcreteSlab <: AbstractFloorSystem end
 
@@ -42,6 +71,55 @@ struct MassTimberJoist <: AbstractTimberFloor end
 struct ShapedSlab <: AbstractConcreteSlab
     sizing_fn::Function  # (span_x, span_y, load, material) → ShapedSlabResult
 end
+
+# =============================================================================
+# Spanning Behavior Trait Implementations
+# =============================================================================
+
+"""
+    spanning_behavior(ft::AbstractFloorSystem) -> SpanningBehavior
+
+Return the spanning behavior trait for a floor type.
+This is intrinsic to the floor type and cannot be overridden by options.
+"""
+spanning_behavior(::AbstractFloorSystem) = OneWaySpanning()  # Conservative default
+
+# --- One-way spanning ---
+spanning_behavior(::OneWay) = OneWaySpanning()
+spanning_behavior(::CompositeDeck) = OneWaySpanning()
+spanning_behavior(::NonCompositeDeck) = OneWaySpanning()
+spanning_behavior(::JoistRoofDeck) = OneWaySpanning()
+spanning_behavior(::HollowCore) = OneWaySpanning()
+spanning_behavior(::CLT) = OneWaySpanning()
+spanning_behavior(::DLT) = OneWaySpanning()
+spanning_behavior(::NLT) = OneWaySpanning()
+spanning_behavior(::MassTimberJoist) = OneWaySpanning()
+spanning_behavior(::Vault) = OneWaySpanning()
+
+# --- Two-way spanning ---
+spanning_behavior(::TwoWay) = TwoWaySpanning()
+spanning_behavior(::Waffle) = TwoWaySpanning()
+spanning_behavior(::PTBanded) = TwoWaySpanning()
+
+# --- Beamless (columns only) ---
+spanning_behavior(::FlatPlate) = BeamlessSpanning()
+spanning_behavior(::FlatSlab) = BeamlessSpanning()
+
+# --- Shaped follows inner function ---
+spanning_behavior(::ShapedSlab) = TwoWaySpanning()  # Most shaped slabs are 2-way
+
+# Convenience query functions
+"""Is this floor type one-way spanning?"""
+is_one_way(ft::AbstractFloorSystem) = spanning_behavior(ft) isa OneWaySpanning
+
+"""Is this floor type two-way spanning (to edges)?"""
+is_two_way(ft::AbstractFloorSystem) = spanning_behavior(ft) isa TwoWaySpanning
+
+"""Is this floor type beamless (loads to columns)?"""
+is_beamless(ft::AbstractFloorSystem) = spanning_behavior(ft) isa BeamlessSpanning
+
+"""Does this floor type require column tributary areas (Voronoi)?"""
+requires_column_tributaries(ft::AbstractFloorSystem) = is_beamless(ft)
 
 # =============================================================================
 # Support Conditions
@@ -232,24 +310,29 @@ apply_effects!(::AbstractFloorSystem, struc, slab) = nothing
 # =============================================================================
 
 """
-Described how a floor system transfers loads to its boundary.
+Describes how a floor system transfers loads to its boundary.
 """
 @enum LoadDistributionType begin
-    DISTRIBUTION_ONE_WAY    # Distribute to edges parallel to span axis
+    DISTRIBUTION_ONE_WAY    # Distribute to edges perpendicular to span axis
     DISTRIBUTION_TWO_WAY    # Distribute to all surrounding edges
     DISTRIBUTION_POINT      # Distribute to specific support points (e.g. columns)
     DISTRIBUTION_CUSTOM     # User defined
 end
 
 """
+    load_distribution(ft::AbstractFloorSystem) -> LoadDistributionType
+
 Get the load distribution behavior of the floor system.
+Dispatches on the spanning behavior trait.
 """
-load_distribution(::AbstractFloorSystem) = DISTRIBUTION_ONE_WAY # Default
-load_distribution(::TwoWay) = DISTRIBUTION_TWO_WAY
-load_distribution(::FlatPlate) = DISTRIBUTION_POINT
-load_distribution(::FlatSlab) = DISTRIBUTION_POINT
-load_distribution(::PTBanded) = DISTRIBUTION_TWO_WAY # Often modeled as equivalent frame but physically 2-way
-load_distribution(::Waffle) = DISTRIBUTION_TWO_WAY
+load_distribution(ft::AbstractFloorSystem) = load_distribution(spanning_behavior(ft))
+
+# Trait-based dispatch
+load_distribution(::OneWaySpanning) = DISTRIBUTION_ONE_WAY
+load_distribution(::TwoWaySpanning) = DISTRIBUTION_TWO_WAY
+load_distribution(::BeamlessSpanning) = DISTRIBUTION_POINT
+
+# Override for custom types
 load_distribution(::ShapedSlab) = DISTRIBUTION_CUSTOM
 
 """
@@ -270,23 +353,18 @@ end
 """
     default_tributary_axis(ft, spans) -> Union{NTuple{2,Float64}, Nothing}
 
-Default tributary axis for a floor type.
-- One-way systems: use span direction (loads span perpendicular to beams)
-- Two-way systems: isotropic (returns `nothing` → straight skeleton)
-"""
-default_tributary_axis(::AbstractFloorSystem, spans) = nothing
+Default tributary axis for a floor type, based on its spanning behavior trait.
 
-# One-way systems default to span direction
-default_tributary_axis(::OneWay, spans) = spans.axis
-default_tributary_axis(::CompositeDeck, spans) = spans.axis
-default_tributary_axis(::NonCompositeDeck, spans) = spans.axis
-default_tributary_axis(::JoistRoofDeck, spans) = spans.axis
-default_tributary_axis(::HollowCore, spans) = spans.axis
-default_tributary_axis(::CLT, spans) = spans.axis
-default_tributary_axis(::DLT, spans) = spans.axis
-default_tributary_axis(::NLT, spans) = spans.axis
-default_tributary_axis(::MassTimberJoist, spans) = spans.axis
-default_tributary_axis(::Vault, spans) = spans.axis
+Returns:
+- `(x, y)` tuple for one-way systems: directed partitioning along span axis
+- `nothing` for two-way/beamless: isotropic straight skeleton
+"""
+default_tributary_axis(ft::AbstractFloorSystem, spans) = default_tributary_axis(spanning_behavior(ft), spans)
+
+# Trait-based dispatch
+default_tributary_axis(::OneWaySpanning, spans) = spans.axis     # Use span direction
+default_tributary_axis(::TwoWaySpanning, spans) = nothing        # Isotropic
+default_tributary_axis(::BeamlessSpanning, spans) = nothing      # Isotropic (for edge tribs)
 
 # Convenience: no options → use floor type default
 resolve_tributary_axis(ft::AbstractFloorSystem, spans) = default_tributary_axis(ft, spans)

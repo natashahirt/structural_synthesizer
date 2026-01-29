@@ -115,6 +115,10 @@ export CLT, DLT, NLT, MassTimberJoist
 # Custom
 export ShapedSlab
 
+# Spanning behavior traits
+export SpanningBehavior, OneWaySpanning, TwoWaySpanning, BeamlessSpanning
+export spanning_behavior, is_one_way, is_two_way, is_beamless, requires_column_tributaries
+
 # Support conditions
 export SupportCondition, SIMPLE, ONE_END_CONT, BOTH_ENDS_CONT, CANTILEVER
 
@@ -176,6 +180,14 @@ export get_tributary_polygons_isotropic
 
 export VertexTributary
 export compute_voronoi_tributaries
+
+# =============================================================================
+# ACI Strip Geometry (Column/Middle Strip Split)
+# =============================================================================
+
+export ColumnStripPolygon, MiddleStripPolygon, PanelStripGeometry
+export split_tributary_at_half_depth, compute_panel_strips
+export verify_rectangular_strips
 
 # Span calculations
 export SpanInfo, governing_spans
