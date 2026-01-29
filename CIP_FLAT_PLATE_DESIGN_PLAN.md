@@ -1306,19 +1306,31 @@ Key values from StructurePoint Flat Plate Example for validation:
 ### Phase 0: Geometry ✅ COMPLETE
 - [x] `voronoi-tributary`: Implement Voronoi vertex tributaries (regular, clipped to boundary)
   - Located in `StructuralSizer/src/slabs/tributary/voronoi.jl`
-  - Uses DelaunayTriangulation.jl with perturbation for degenerate cases
+  - Uses DelaunayTriangulation.jl for Voronoi + Meshes.jl for boundary clipping
+  - Handles convex AND concave boundaries correctly
   - Exports: `VertexTributary`, `compute_voronoi_tributaries()`
 - [x] `column-trib-storage`: Store tributaries on Column objects
   - `Column.tributary_area::Float64` - total Voronoi area (m²)
   - `Column.tributary_by_slab::Dict{Int, Float64}` - per-cell breakdown (cell_idx → area)
-  - Computed in `compute_column_tributaries!(struc)` during `initialize!`
-  - Each cell's Voronoi is computed separately and accumulated on columns
-  - Visualization: `visualize_vertex_tributaries()`, `visualize_tributaries_combined()`
-- [x] `voronoi-column-storage`: Store Voronoi tributary areas on Column objects
-  - Computed automatically in `initialize_members!()` via `compute_column_tributaries!()`
-  - Stored as `col.tributary_area::Float64` (always in m²)
-  - Validated: corner ~20m², edge ~40m², interior ~80m² for 2×2 bay building
+  - `Column.tributary_polygons::Dict{Int, Vector{NTuple{2,Float64}}}` - per-cell polygons for visualization
+  - Computed in `compute_column_tributaries!(struc)` during `initialize_members!()`
+  - Columns matched to cells by (x,y) position + column top elevation
+- [x] `voronoi-visualization`: Voronoi tributary visualization
+  - `color_by=:tributary_vertex` in visualize()
+  - Uses stored polygons on columns (no recomputation)
+  - Colors by column position: corner/edge/interior
+- [x] `cell-position-classification`: Classify cells as :corner/:edge/:interior
+  - Based on boundary edge count (edges belonging to only one face)
+  - 2+ boundary edges → :corner, 1 → :edge, 0 → :interior
+  - Stored in `Cell.position::Symbol`
+- [x] `slab-position-classification`: Derive slab position from cells
+  - Most exterior position wins (corner > edge > interior)
+  - Stored in `Slab.position::Symbol`
 - [ ] `initial-column-estimate`: Implement initial column size estimation from span table
+
+### Phase 0: ASAP Enhancements ✅ COMPLETE (bonus)
+- [x] `shell-elements`: Added ShellElement to ASAP for diaphragm modeling
+- [x] `diaphragm-loads`: Support for distributed loads on shell elements
 
 ### Phase 1: Slab Type Hierarchy
 - [ ] `slab-type-hierarchy`: Create AbstractSlabType, BeamlessSlabType, BeamedSlabType
@@ -1355,8 +1367,8 @@ Key values from StructurePoint Flat Plate Example for validation:
 - [x] `test-member-types`: Write test_member_types.jl for AbstractMember hierarchy
 - [ ] `test-column-dimensions`: Write test_column_dimensions.jl
 - [x] `test-voronoi`: Write test_voronoi.jl for Voronoi vertex tributaries
-  - Tests: `StructuralSynthesizer/test/test_voronoi_tributaries.jl`
-  - Visualization test: `StructuralSynthesizer/test/test_voronoi_vis.jl`
+  - Tests: `StructuralSizer/test/tributary/test_voronoi_tributaries.jl`
+  - Covers: rectangular, with interior point, trapezoid, L-shaped (concave)
 - [ ] `test-initial-column`: Write test_initial_column.jl for span table estimates
 - [ ] `test-strip-split`: Write test_strip_split.jl for split_tributary_at_half_depth()
 - [ ] `test-strips`: Write test_strips.jl for rectangular/irregular strip geometry

@@ -14,7 +14,7 @@ using Asap
 # =============================================================================
 # Generate building geometry
 # =============================================================================
-skel = gen_medium_office(160.0u"ft", 120.0u"ft", 13.0u"ft", 6, 4, 4, offset=1.0u"m");
+skel = gen_medium_office(160.0u"ft", 120.0u"ft", 13.0u"ft", 6, 4, 4, irregular=:shift_x, offset=1.0u"m");
 visualize(skel)
 
 struc = BuildingStructure(skel);
@@ -29,7 +29,7 @@ opts = FloorOptions(
         has_edge_beam=false,
         has_drop_panels=false,
     ),
-    tributary_axis=(0,1)
+    tributary_axis=:nothing # (0,1)
 );
 
 initialize!(struc; floor_type=:two_way, floor_kwargs=(options=opts,));
@@ -106,7 +106,7 @@ foundation_group_summary(struc)
 # Visualize
 # =============================================================================
 visualize(struc, mode=:deflected, color_by=:tributary_edge, show_original_geometry=true)
-visualize(struc, mode=:deflected, color_by=:displacement_local, show_original_geometry=false, show_foundations=true)
+visualize(struc, mode=:deflected, color_by=:displacement_local, show_original_geometry=true, show_foundations=true)
 visualize_cell_tributaries(struc)
 visualize_vertex_tributaries(struc)
 

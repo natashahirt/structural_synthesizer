@@ -45,8 +45,9 @@ export visualize
 export visualize_cell_groups, visualize_cell_tributary, visualize_cell_tributaries
 export visualize_vertex_tributaries, visualize_tributaries_combined
 export vis_embodied_carbon_summary
-export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
+export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!, to_asap_with_diaphragms!
 export initialize!
+export create_slab_diaphragm_shells
 
 # Lookup utilities (O(1) vertex/edge/face lookups)
 export SkeletonLookup, enable_lookup!, build_lookup!, disable_lookup!
@@ -67,6 +68,11 @@ export group_foundations_by_reaction!, size_foundations_grouped!, foundation_gro
 
 # Internal toolkit
 export AsapToolkit
+
+# Meshing for shell elements
+export ElementSpec, is_quad_suitable
+export mesh_face, mesh_faces
+export create_shell_elements, create_diaphragm_elements
 
 # Postprocessing (Embodied Carbon)
 export element_ec, compute_building_ec, ec_summary

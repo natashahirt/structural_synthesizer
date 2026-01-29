@@ -1,11 +1,41 @@
 """
-    to_asap!(struc)
+    to_asap!(struc; diaphragms=:none, shell_props=nothing)
 
 Converts a BuildingStructure into an Asap.Model.
 Uses TributaryLoads for accurate load distribution based on tributary polygons.
-All quantities are passed as Unitful and converted to base SI units internally by Asap.
+
+# Arguments
+- `struc`: BuildingStructure to convert
+- `diaphragms::Symbol=:none`: Diaphragm modeling approach
+  - `:none` — No diaphragm modeling (default)
+  - `:rigid` — Rigid diaphragm (very stiff shell elements, E=1e15 Pa)
+  - `:shell` — Semi-rigid shell elements from slab geometry
+- `shell_props::Union{Nothing, NamedTuple}=nothing`: Custom shell properties for `:shell` or `:rigid`
+  - `E`: Young's modulus (default: 30 GPa for `:shell`, 1e15 Pa for `:rigid`)
+  - `ν`: Poisson's ratio (default: 0.2)
+  - `t_factor`: Thickness multiplier (default: 1.0)
+
+# Examples
+```julia
+# No diaphragm (fastest, for gravity-only)
+to_asap!(struc)
+
+# Rigid diaphragm (typical for lateral analysis)
+to_asap!(struc; diaphragms=:rigid)
+
+# Shell diaphragm with custom properties
+to_asap!(struc; diaphragms=:shell, shell_props=(E=25e9u"Pa", ν=0.15))
+
+# Override rigid diaphragm stiffness
+to_asap!(struc; diaphragms=:rigid, shell_props=(E=1e12u"Pa",))
+```
 """
-function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
+function to_asap!(struc::BuildingStructure{T, A, P}; 
+                  diaphragms::Symbol=:none,
+                  shell_props::Union{Nothing, NamedTuple}=nothing) where {T, A, P}
+    
+    diaphragms in (:none, :rigid, :shell) || error("diaphragms must be :none, :rigid, or :shell")
+    
     skel = struc.skeleton
     
     # 1. Nodes
@@ -22,42 +52,95 @@ function to_asap!(struc::BuildingStructure{T, A, P}) where {T, A, P}
         return Asap.Node([x, y, z], dofs)
     end
 
-    # 2. Elements
+    # 2. Frame Elements
     default_section = AsapToolkit.toASAPframe("W10x22", unit=u"m")
-    elements = map(skel.edge_indices) do (v1, v2)
+    frame_elements = map(skel.edge_indices) do (v1, v2)
         return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed)
     end
     
-    # 3. Compute tributaries if not done
+    # 3. Shell Diaphragm elements (for both :rigid and :shell)
+    shell_elements = Asap.ShellElement[]
+    
+    if diaphragms in (:rigid, :shell) && !isempty(struc.slabs)
+        shell_elements = _create_shell_diaphragms(struc, nodes; 
+                                                   mode=diaphragms, props=shell_props)
+        @debug "Created diaphragm shells" mode=diaphragms n_shells=length(shell_elements)
+    end
+    
+    # 4. Compute tributaries if not done
     isempty(struc.cell_groups) && build_cell_groups!(struc)
     any(isnothing(c.tributary) for c in struc.cells) && compute_cell_tributaries!(struc)
     
-    # 4. Create loads using TributaryLoad
+    # 5. Create loads using TributaryLoad
     loads = Asap.AbstractLoad[]
     empty!(struc.cell_tributary_loads)
     
     for (cell_idx, cell) in enumerate(struc.cells)
-        cell_loads = _create_cell_tributary_loads!(loads, elements, skel, cell, cell_idx)
+        cell_loads = _create_cell_tributary_loads!(loads, frame_elements, skel, cell, cell_idx)
         struc.cell_tributary_loads[cell_idx] = cell_loads
     end
     
-    # 5. Add structural effects (e.g., vault thrust)
+    # 6. Add structural effects (e.g., vault thrust)
     for slab in struc.slabs
         for spec in slab_edge_line_loads(struc, slab)
-            el = elements[spec.edge_idx]
+            el = frame_elements[spec.edge_idx]
             push_asap_loads!(loads, el, spec)
         end
     end
 
-    # 6. Build and solve model
-    struc.asap_model = Asap.Model(nodes, elements, loads)
+    # 7. Build model (frame elements only for now - shells contribute to K separately)
+    struc.asap_model = Asap.Model(nodes, frame_elements, loads)
     
-    @debug "Converted to Asap.Model" nodes=length(nodes) elements=length(elements) loads=length(loads) tributary_loads=sum(length, values(struc.cell_tributary_loads))
+    @debug "Converted to Asap.Model" nodes=length(nodes) frame_elements=length(frame_elements) shell_elements=length(shell_elements) loads=length(loads)
 
     Asap.process!(struc.asap_model)
     Asap.solve!(struc.asap_model)
 
     return struc.asap_model
+end
+
+# =============================================================================
+# Shell Diaphragm Implementation
+# =============================================================================
+
+"""
+Create shell diaphragms for all slabs.
+
+For `:rigid` mode: uses very high E (1e15 Pa) for effectively infinite in-plane stiffness.
+For `:shell` mode: uses actual slab properties or custom overrides.
+"""
+function _create_shell_diaphragms(struc::BuildingStructure, nodes::Vector{Asap.Node};
+                                   mode::Symbol=:shell,
+                                   props::Union{Nothing, NamedTuple}=nothing)
+    shells = Asap.ShellElement[]
+    
+    # Default properties based on mode
+    if mode == :rigid
+        # Rigid diaphragm: very high stiffness (effectively infinite)
+        E_default = 1e15u"Pa"
+        ν_default = 0.0  # No Poisson effect for rigid
+        t_factor = 1.0
+    else  # :shell
+        # Semi-rigid: actual concrete properties
+        E_default = 30e9u"Pa"
+        ν_default = 0.2
+        t_factor = 1.0
+    end
+    
+    # Override with custom properties if provided
+    if props !== nothing
+        E_default = get(props, :E, E_default)
+        ν_default = get(props, :ν, ν_default)
+        t_factor = get(props, :t_factor, t_factor)
+    end
+    
+    for slab in struc.slabs
+        slab_shells = create_slab_diaphragm_shells(struc, slab, nodes; 
+                                                    E=E_default, ν=ν_default, t_factor=t_factor)
+        append!(shells, slab_shells)
+    end
+    
+    return shells
 end
 
 """Create TributaryLoads for a single cell from its tributary polygons."""
@@ -307,4 +390,61 @@ function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, eff::Stru
     end
 
     return out
+end
+
+# =============================================================================
+# Diaphragm Shell Creation
+# =============================================================================
+
+"""
+    create_slab_diaphragm_shells(struc, slab, nodes; E, ν, t_factor) -> Vector{<:Asap.ShellElement}
+
+Create shell elements for a slab's diaphragm action from its cell faces.
+
+# Arguments
+- `struc`: BuildingStructure containing the slab
+- `slab`: Slab object with sizing result
+- `nodes`: Vector of Asap.Node (indexed same as skeleton vertices)
+- `E`: Young's modulus (default uses slab concrete or 30 GPa)
+- `ν`: Poisson's ratio (default 0.2)
+- `t_factor`: Thickness multiplier (default 1.0)
+
+# Returns
+Vector of ShellTri3 or ShellQuad4 elements.
+"""
+function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, nodes::Vector{Asap.Node};
+                                       E=nothing, ν::Float64=0.2, t_factor::Float64=1.0)
+    skel = struc.skeleton
+    
+    # Get slab thickness (with optional scaling)
+    t = thickness(slab) * t_factor
+    
+    # Determine E: use provided, or try slab concrete, or default
+    if E === nothing
+        E = 30e9u"Pa"  # default concrete
+        if hasfield(typeof(slab.result), :concrete) && slab.result.concrete !== nothing
+            if hasfield(typeof(slab.result.concrete), :E)
+                E = slab.result.concrete.E
+            end
+        end
+    end
+    
+    # Collect face indices for this slab
+    face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
+    
+    # Create shells from face meshes
+    shells = create_diaphragm_elements(skel, face_indices, nodes, t, E, ν; prefer_quad=true)
+    
+    # Assign global DOFs to each shell
+    for shell in shells
+        Asap.populate_globalID!(shell)
+    end
+    
+    return shells
+end
+
+# Deprecated: use to_asap!(struc; diaphragms=:shell) instead
+function to_asap_with_diaphragms!(struc::BuildingStructure; include_diaphragms::Bool=true)
+    @warn "to_asap_with_diaphragms! is deprecated. Use to_asap!(struc; diaphragms=:shell) instead." maxlog=1
+    return to_asap!(struc; diaphragms=include_diaphragms ? :shell : :none)
 end
