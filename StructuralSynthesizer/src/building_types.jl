@@ -1,40 +1,211 @@
-# Core types for StructuralSynthesizer
+# =============================================================================
+# Building Types for StructuralSynthesizer
+# =============================================================================
+#
+# Core data structures for representing buildings:
+# - BuildingSkeleton: geometry (vertices, edges, faces)
+# - BuildingStructure: analytical layer (cells, members, tributaries)
+# - TributaryCache: cached tributary computations
 #
 # =============================================================================
 # Data Hierarchy
 # =============================================================================
 #
 # BuildingStructure
-# ├── site::SiteConditions              # Site-level (soil, wind, seismic, snow)
 # ├── skeleton::BuildingSkeleton        # Geometry (vertices, edges, faces)
+# ├── site::SiteConditions              # Environment (soil, wind, seismic, snow)
 # │
-# ├── cells[]                           # Per-face load data
-# ├── slabs[]
-# │   ├── result::AbstractFloorResult   # Sizing result (thickness, etc.)
-# │   └── volumes: {Material → Volume}  # For EC calculation
+# ├── cells[]::Cell                     # Per-face load data (loads, floor_type)
+# ├── slabs[]::Slab                     # Slab groupings + sizing results
 # │
-# ├── segments[]                        # Per-edge geometry data
-# ├── beams[]::Beam                     # Horizontal members (gravity framing)
-# │   ├── base::MemberBase              # Shared: L, Lb, section, volumes
-# │   ├── role::Symbol                  # :girder, :beam, :joist, :infill
-# │   └── tributary_width
-# ├── columns[]::Column                 # Vertical members
-# │   ├── base::MemberBase
-# │   ├── vertex_idx, story, position   # :interior, :edge, :corner
-# │   └── c1, c2, tributary_area        # For punching shear / sizing
-# ├── struts[]::Strut                   # Diagonal members (lateral)
-# │   ├── base::MemberBase
-# │   └── brace_type                    # :tension_only, :compression_only, :both
+# ├── segments[]::Segment               # Per-edge geometry data
+# ├── beams[]::Beam                     # Horizontal members
+# ├── columns[]::Column                 # Vertical members (vertex_idx, c1, c2)
+# ├── struts[]::Strut                   # Diagonal members
 # │
-# ├── supports[]                        # Per-node reactions
-# ├── foundations[]
-# │   ├── result::AbstractFoundationResult
-# │   └── volumes: {Material → Volume}
+# ├── supports[]::Support               # Per-node reactions
+# ├── foundations[]::Foundation         # Foundation elements + results
 # │
-# └── *_groups                          # Pure grouping logic (hash + indices)
+# ├── tributaries::TributaryCache       # All tributary data (single source of truth)
+# │   ├── edge[key][cell_idx]           # Edge tributaries (keyed by axis/behavior)
+# │   └── vertex[story][vertex_idx]     # Column Voronoi tributaries
+# │
+# ├── *_groups                          # Optimization groupings (hash → indices)
+# └── asap_model                        # Analysis backend (ASAP)
 #
-# EC Calculation: Σ(volume × ρ × ecc) for each material in element.volumes
+# Tributary Access (use accessor functions in core/tributary_accessors.jl):
+#   column_tributary_area(struc, col)     → total area (m²)
+#   column_tributary_by_cell(struc, col)  → Dict{cell_idx → area}
+#   cell_edge_tributaries(struc, cell_idx)
+#
 # =============================================================================
+
+using Dates
+
+# =============================================================================
+# Re-exports from StructuralSizer
+# =============================================================================
+
+const TributaryPolygon = StructuralSizer.TributaryPolygon
+const PanelStripGeometry = StructuralSizer.PanelStripGeometry
+const SpanInfo = StructuralSizer.SpanInfo
+const vertices = StructuralSizer.vertices
+
+# Spanning behavior traits
+const SpanningBehavior = StructuralSizer.SpanningBehavior
+const OneWaySpanning = StructuralSizer.OneWaySpanning
+const TwoWaySpanning = StructuralSizer.TwoWaySpanning
+const BeamlessSpanning = StructuralSizer.BeamlessSpanning
+
+# =============================================================================
+# Tributary Cache Types
+# =============================================================================
+
+"""
+Key for tributary cache lookups.
+
+Tributaries depend on:
+- `behavior`: Spanning behavior (:one_way, :two_way, :beamless)
+- `axis_hash`: Hash of axis direction (or 0 for isotropic)
+
+This allows caching multiple tributary configurations without recalculation.
+"""
+struct TributaryCacheKey
+    behavior::Symbol           # :one_way, :two_way, :beamless
+    axis_hash::UInt64          # hash of axis vector (0 for isotropic)
+end
+
+TributaryCacheKey(behavior::Symbol) = TributaryCacheKey(behavior, UInt64(0))
+
+# Accept AbstractVector, Tuple, or Nothing for axis
+function TributaryCacheKey(behavior::SpanningBehavior, axis::Union{Nothing, AbstractVector, Tuple})
+    bsym = if behavior isa OneWaySpanning
+        :one_way
+    elseif behavior isa TwoWaySpanning
+        :two_way
+    else
+        :beamless
+    end
+    
+    axis_h = if isnothing(axis) || (behavior isa TwoWaySpanning)
+        UInt64(0)  # Isotropic - no axis
+    else
+        # Normalize axis and hash (convert to mutable vector first)
+        ax = [Float64(axis[1]), Float64(axis[2])]
+        norm = hypot(ax[1], ax[2])
+        if norm > 1e-12
+            ax[1] /= norm
+            ax[2] /= norm
+            # Ensure consistent direction (positive x, or positive y if x≈0)
+            if ax[1] < -1e-9 || (abs(ax[1]) < 1e-9 && ax[2] < 0)
+                ax[1] = -ax[1]
+                ax[2] = -ax[2]
+            end
+        end
+        hash((round(ax[1], digits=6), round(ax[2], digits=6)))
+    end
+    
+    return TributaryCacheKey(bsym, axis_h)
+end
+
+Base.hash(k::TributaryCacheKey, h::UInt) = hash((k.behavior, k.axis_hash), h)
+Base.:(==)(a::TributaryCacheKey, b::TributaryCacheKey) = 
+    a.behavior == b.behavior && a.axis_hash == b.axis_hash
+
+"""Cached tributary results for a single cell."""
+struct CellTributaryResult
+    edge_tributaries::Vector{TributaryPolygon}    # One per edge
+    strip_geometry::Union{PanelStripGeometry, Nothing}  # Column/middle strip split
+end
+
+"""Cached Voronoi tributary for a column."""
+struct ColumnTributaryResult
+    total_area::Float64                          # m²
+    by_cell::Dict{Int, Float64}                  # cell_idx → area (m²)
+    polygons::Dict{Int, Vector{NTuple{2,Float64}}}  # cell_idx → vertices (m)
+end
+
+"""
+Cache of all tributary computations for a BuildingStructure.
+
+Keyed by (behavior, axis) so multiple configurations can coexist.
+Computing tributaries for a new configuration adds to the cache without
+discarding previous results.
+"""
+mutable struct TributaryCache
+    # Edge tributaries (for beam loading)
+    # key → (cell_idx → CellTributaryResult)
+    edge::Dict{TributaryCacheKey, Dict{Int, CellTributaryResult}}
+    
+    # Vertex/column tributaries (for punching shear)
+    # story_idx → Dict(vertex_idx → ColumnTributaryResult)
+    vertex::Dict{Int, Dict{Int, ColumnTributaryResult}}
+    
+    # Timestamps for cache management
+    edge_computed::Dict{TributaryCacheKey, DateTime}
+    vertex_computed::Dict{Int, DateTime}
+end
+
+TributaryCache() = TributaryCache(
+    Dict{TributaryCacheKey, Dict{Int, CellTributaryResult}}(),
+    Dict{Int, Dict{Int, ColumnTributaryResult}}(),
+    Dict{TributaryCacheKey, DateTime}(),
+    Dict{Int, DateTime}()
+)
+
+# -----------------------------------------------------------------------------
+# TributaryCache Direct Methods (low-level)
+# -----------------------------------------------------------------------------
+
+"""Check if edge tributaries are cached for the given key."""
+has_edge_tributaries(cache::TributaryCache, key::TributaryCacheKey) = 
+    haskey(cache.edge, key)
+
+"""Check if vertex tributaries are cached for the given story."""
+has_vertex_tributaries(cache::TributaryCache, story::Int) = 
+    haskey(cache.vertex, story)
+
+"""Get cached edge tributaries, or nothing if not cached."""
+function get_edge_tributaries(cache::TributaryCache, key::TributaryCacheKey, cell_idx::Int)
+    haskey(cache.edge, key) || return nothing
+    haskey(cache.edge[key], cell_idx) || return nothing
+    return cache.edge[key][cell_idx]
+end
+
+"""Store edge tributaries in cache."""
+function set_edge_tributaries!(cache::TributaryCache, key::TributaryCacheKey, 
+                               cell_idx::Int, result::CellTributaryResult)
+    if !haskey(cache.edge, key)
+        cache.edge[key] = Dict{Int, CellTributaryResult}()
+        cache.edge_computed[key] = now()
+    end
+    cache.edge[key][cell_idx] = result
+end
+
+"""Get cached vertex tributaries for a column, or nothing."""
+function get_vertex_tributary(cache::TributaryCache, story::Int, vertex_idx::Int)
+    haskey(cache.vertex, story) || return nothing
+    haskey(cache.vertex[story], vertex_idx) || return nothing
+    return cache.vertex[story][vertex_idx]
+end
+
+"""Store vertex tributary in cache."""
+function set_vertex_tributary!(cache::TributaryCache, story::Int, 
+                               vertex_idx::Int, result::ColumnTributaryResult)
+    if !haskey(cache.vertex, story)
+        cache.vertex[story] = Dict{Int, ColumnTributaryResult}()
+        cache.vertex_computed[story] = now()
+    end
+    cache.vertex[story][vertex_idx] = result
+end
+
+"""Clear all cached tributaries."""
+function clear!(cache::TributaryCache)
+    empty!(cache.edge)
+    empty!(cache.vertex)
+    empty!(cache.edge_computed)
+    empty!(cache.vertex_computed)
+end
 
 # =============================================================================
 # Site Conditions
@@ -78,11 +249,6 @@ end
 
 Story{T}(elev::T) where T = Story{T}(elev, Int[], Int[], Int[])
 
-# Re-export from StructuralSizer
-const TributaryPolygon = StructuralSizer.TributaryPolygon
-const SpanInfo = StructuralSizer.SpanInfo
-const vertices = StructuralSizer.vertices
-
 """Grouping of geometrically identical cells (for slab sizing optimization)."""
 mutable struct CellGroup
     hash::UInt64
@@ -95,7 +261,15 @@ CellGroup(hash::UInt64) = CellGroup(hash, Int[])
 # Cell
 # =============================================================================
 
-"""Per-face analysis data (one bay)."""
+"""
+Per-face analysis data (one bay).
+
+# Tributary Access
+Edge tributaries are stored in `BuildingStructure.tributaries` (TributaryCache).
+Use accessor functions:
+- `cell_edge_tributaries(struc, cell_idx)` → Vector{TributaryPolygon}
+- `cache_edge_tributaries!(struc, behavior, axis, cell_idx, tribs)`
+"""
 mutable struct Cell{T, A, P}
     face_idx::Int
     area::A
@@ -105,13 +279,11 @@ mutable struct Cell{T, A, P}
     self_weight::P
     floor_type::Symbol
     position::Symbol          # :corner, :edge, or :interior
-    # Tributary results (one polygon per edge)
-    tributary::Union{Vector{TributaryPolygon}, Nothing}
 end
 
 function Cell(face_idx::Int, area::A, spans::SpanInfo{T}, 
               sdl::P, live_load::P; position::Symbol=:interior) where {T, A, P}
-    Cell{T, A, P}(face_idx, area, spans, sdl, live_load, zero(P), :unknown, position, nothing)
+    Cell{T, A, P}(face_idx, area, spans, sdl, live_load, zero(P), :unknown, position)
 end
 
 """Total factored pressure (SDL + LL + SW)."""
@@ -232,20 +404,21 @@ Vertical member (columns).
 - `base::MemberBase{T}`: Shared member properties
 - `vertex_idx::Int`: Skeleton vertex index (column location)
 - `c1`, `c2`: Cross-section dimensions (for punching shear, etc.)
-- `tributary_area::Union{Float64, Nothing}`: Total Voronoi tributary area (m²)
-- `tributary_by_slab::Dict{Int, Float64}`: Per-cell area breakdown (cell_idx → area in m²)
-- `tributary_polygons::Dict{Int, Vector{NTuple{2,Float64}}}`: Per-cell polygon vertices for visualization
 - `story::Int`: Story index (0 = ground level)
 - `position::Symbol`: `:interior`, `:edge`, `:corner` (for punching shear coefficients)
+
+# Tributary Access
+Tributary areas are stored in `BuildingStructure.tributaries` (TributaryCache).
+Use accessor functions:
+- `column_tributary_area(struc, col)` → total area (m²)
+- `column_tributary_by_cell(struc, col)` → Dict{Int, Float64}
+- `column_tributary_polygons(struc, col)` → Dict{Int, Vector{NTuple{2,Float64}}}
 """
 @kwdef mutable struct Column{T} <: AbstractMember{T}
     base::MemberBase{T}
     vertex_idx::Int = 0
     c1::Union{T, Nothing} = nothing
     c2::Union{T, Nothing} = nothing
-    tributary_area::Union{Float64, Nothing} = nothing  # Total tributary area (m²)
-    tributary_by_slab::Dict{Int, Float64} = Dict{Int, Float64}()  # cell_idx → area (m²)
-    tributary_polygons::Dict{Int, Vector{NTuple{2,Float64}}} = Dict{Int, Vector{NTuple{2,Float64}}}()  # cell_idx → polygon vertices (m)
     story::Int = 0
     position::Symbol = :interior
 end
@@ -282,8 +455,6 @@ Beam(seg_idx::Int, L::T; kwargs...) where T = Beam([seg_idx], L; kwargs...)
 
 function Column(seg_indices::Vector{Int}, L::T; Lb=L, Kx=1.0, Ky=1.0, Cb=1.0,
                 group_id=nothing, vertex_idx=0, c1=nothing, c2=nothing,
-                tributary_area=nothing, tributary_by_slab=Dict{Int,Float64}(),
-                tributary_polygons=Dict{Int,Vector{NTuple{2,Float64}}}(),
                 story=0, position=:interior) where T
     base = MemberBase{T}(
         segment_indices=seg_indices, L=L, Lb=Lb,
@@ -291,8 +462,7 @@ function Column(seg_indices::Vector{Int}, L::T; Lb=L, Kx=1.0, Ky=1.0, Cb=1.0,
         group_id=group_id, section=nothing, volumes=MaterialVolumes()
     )
     Column{T}(base=base, vertex_idx=vertex_idx, c1=c1, c2=c2,
-              tributary_area=tributary_area, tributary_by_slab=tributary_by_slab,
-              tributary_polygons=tributary_polygons, story=story, position=position)
+              story=story, position=position)
 end
 
 Column(seg_idx::Int, L::T; kwargs...) where T = Column([seg_idx], L; kwargs...)
@@ -454,29 +624,58 @@ mutable struct BuildingSkeleton{T} <: AbstractBuildingSkeleton
     end
 end
 
-"""Analytical layer wrapping a BuildingSkeleton."""
+"""
+Analytical layer wrapping a BuildingSkeleton.
+
+# Architecture
+- `skeleton`: Geometric representation (vertices, edges, faces)
+- `cells/slabs`: Floor system definitions and sizing
+- `segments/beams/columns/struts`: Member definitions
+- `supports/foundations`: Boundary conditions and foundations
+- `tributaries`: Cached tributary computations (keyed by axis/behavior)
+- `asap_model`: Analysis model (ASAP backend)
+
+# Tributary Caching
+Tributary computations are stored in `tributaries::TributaryCache`, keyed by
+(spanning_behavior, axis_direction). This allows multiple tributary configurations
+to coexist without recalculation:
+- One-way along X, one-way along Y, two-way isotropic, etc.
+- Voronoi (column) tributaries are per-story
+
+# Design Generation
+Use `design_building(struc, params)` to generate a `BuildingDesign` from this
+structure. Multiple designs can be generated with different parameters.
+"""
 mutable struct BuildingStructure{T, A, P} <: AbstractBuildingStructure
     skeleton::BuildingSkeleton{T}
-    # Slabs
+    
+    # ─── Floor Systems ───
     cells::Vector{Cell{T, A, P}}
     cell_groups::Dict{UInt64, CellGroup}
     slabs::Vector{Slab{T, <:AbstractFloorResult}}
     slab_groups::Dict{UInt64, SlabGroup}
-    # Framing (segments + typed members)
+    
+    # ─── Framing Members ───
     segments::Vector{Segment{T}}
     beams::Vector{Beam{T}}
     columns::Vector{Column{T}}
     struts::Vector{Strut{T}}
-    member_groups::Dict{UInt64, MemberGroup}  # Groups can span beam/column/strut
-    # Foundations
+    member_groups::Dict{UInt64, MemberGroup}
+    
+    # ─── Foundations ───
     supports::Vector{Support{T, typeof(1.0u"kN"), typeof(1.0u"kN*m")}}
     foundations::Vector{Foundation{T, <:AbstractFoundationResult}}
     foundation_groups::Dict{UInt64, FoundationGroup}
-    # Site conditions
+    
+    # ─── Environment ───
     site::SiteConditions
-    # Analysis
+    
+    # ─── Cached Tributaries ───
+    tributaries::TributaryCache
+    
+    # ─── Analysis Backend ───
     asap_model::Asap.Model
-    cell_tributary_loads::Dict{Int, Vector{Asap.TributaryLoad}}  # cell_idx → loads for updates
+    cell_tributary_loads::Dict{Int, Vector{Asap.TributaryLoad}}
 end
 
 function BuildingStructure(skel::BuildingSkeleton{T}) where T
@@ -491,6 +690,7 @@ function BuildingStructure(skel::BuildingSkeleton{T}) where T
         Segment{T}[], Beam{T}[], Column{T}[], Strut{T}[], Dict{UInt64, MemberGroup}(),
         Support{T, F, M}[], Foundation{T, AbstractFoundationResult}[], Dict{UInt64, FoundationGroup}(),
         SiteConditions(),
+        TributaryCache(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[]),
         Dict{Int, Vector{Asap.TributaryLoad}}()
     )
@@ -506,6 +706,7 @@ function BuildingStructure{T, A, P}(skel::BuildingSkeleton{T}) where {T, A, P}
         Segment{T}[], Beam{T}[], Column{T}[], Strut{T}[], Dict{UInt64, MemberGroup}(),
         Support{T, F, M}[], Foundation{T, AbstractFoundationResult}[], Dict{UInt64, FoundationGroup}(),
         SiteConditions(),
+        TributaryCache(),
         Asap.Model(Asap.Node[], Asap.Element[], Asap.AbstractLoad[]),
         Dict{Int, Vector{Asap.TributaryLoad}}()
     )

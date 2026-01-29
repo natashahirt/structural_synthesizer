@@ -69,7 +69,7 @@ function tapered_slab_fn(span_x::Real, span_y::Real, load::Real, material::Concr
     end
     
     # self_weight = volume * density * g
-    g = ustrip(u"m/s^2", Constants.GRAVITY)
+    g = ustrip(u"m/s^2", StructuralUnits.GRAVITY)
     density = ustrip(u"kg/m^3", material.ρ) 
     # Force result to kPa/kN/m^2 if input units are standard, otherwise rely on caller
     # Here we assume standard SI input scaling: [m] * [kg/m^3] * [m/s^2] = [Pa] = [N/m^2]
@@ -102,7 +102,7 @@ function coffered_slab_fn(span_x::Real, span_y::Real, load::Real, material::Conc
     
     volume_per_area = h_topping + rib_vol * 0.9  # ~10% reduction for overlap
     
-    g = ustrip(u"m/s^2", Constants.GRAVITY)
+    g = ustrip(u"m/s^2", StructuralUnits.GRAVITY)
     density = ustrip(u"kg/m^3", material.ρ)
     self_weight_Pa = volume_per_area * density * g
     self_weight = self_weight_Pa / 1000.0

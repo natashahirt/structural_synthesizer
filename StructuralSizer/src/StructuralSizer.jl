@@ -13,10 +13,7 @@ function __init__()
     Unitful.register(StructuralUnits)
 end
 
-# Types (Metal, etc.)
-include("types.jl")
-
-# Materials
+# Materials (includes material types: Metal, Concrete, Timber)
 include("materials/_materials.jl")
 
 # Members (sections, codes, optimization)
@@ -71,7 +68,14 @@ export area, depth, width, weight_per_length
 export W, W_names, all_W, preferred_W
 export Rebar, rebar, rebar_sizes, all_rebar
 export update!, update, geometry, get_coords
-export HSSSection  # (stub)
+
+# HSS sections (rectangular and round)
+export AbstractHollowSection, AbstractRectHollowSection, AbstractRoundHollowSection
+export HSSRectSection, is_square, governing_slenderness
+export HSSRoundSection, PipeSection, slenderness  # PipeSection is alias for HSSRoundSection
+export HSS, HSS_names, all_HSS
+export HSSRound, HSSRound_names, all_HSSRound
+export PIPE, PIPE_names, all_PIPE  # Aliases for HSSRound
 
 # =============================================================================
 # Sections - Timber (stubs)
@@ -140,6 +144,19 @@ export CompositeDeckResult, JoistDeckResult
 export TimberPanelResult, TimberJoistResult
 export VaultResult, ShapedSlabResult
 export total_thrust
+
+# Flat plate design results
+export StripReinforcement, FlatPlatePanelResult
+
+# Flat plate calculations (ACI 318)
+export Ec, β1, fr
+export min_thickness_flat_plate, clear_span
+export total_static_moment, distribute_moments_mddm, distribute_moments_aci
+export required_reinforcement, minimum_reinforcement, effective_depth, max_bar_spacing
+export punching_perimeter, punching_capacity_interior, punching_demand, check_punching_shear
+export cracked_moment_of_inertia, effective_moment_of_inertia, cracking_moment
+export immediate_deflection, long_term_deflection_factor, deflection_limit
+export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
 
 # Common interface
 export self_weight, total_depth, volume_per_area

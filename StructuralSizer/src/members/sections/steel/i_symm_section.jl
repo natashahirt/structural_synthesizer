@@ -1,13 +1,14 @@
 """Doubly-symmetric I-section with computed properties."""
 
-# -----------------------------------------------------------------------------
-# Unitful dimension-typed aliases (units may vary: inch, m, etc.)
-# -----------------------------------------------------------------------------
-const LengthQ = Unitful.Quantity{T, Unitful.𝐋, U} where {T<:Real, U}
-const AreaQ   = Unitful.Quantity{T, Unitful.𝐋^2, U} where {T<:Real, U}
-const ModQ    = Unitful.Quantity{T, Unitful.𝐋^3, U} where {T<:Real, U}  # Sx, Zx, etc.
-const InertQ  = Unitful.Quantity{T, Unitful.𝐋^4, U} where {T<:Real, U}  # Ix, Iy, J, etc.
-const WarpQ   = Unitful.Quantity{T, Unitful.𝐋^6, U} where {T<:Real, U}  # Cw
+# Import type aliases from StructuralBase
+using StructuralBase.StructuralUnits: Length, Area, Volume, Inertia, WarpingConstant
+
+# Local aliases for consistency with existing code (Length, Area, etc. match struct field types)
+const LengthQ = Length
+const AreaQ   = Area
+const ModQ    = Volume   # Section modulus has L³ dimension (same as Volume)
+const InertQ  = Inertia  # Moment of inertia L⁴
+const WarpQ   = WarpingConstant  # Warping constant L⁶
 
 mutable struct ISymmSection <: AbstractSection
     name::Union{String, Nothing}

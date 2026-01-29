@@ -69,14 +69,14 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     
     # 4. Compute tributaries if not done
     isempty(struc.cell_groups) && build_cell_groups!(struc)
-    any(isnothing(c.tributary) for c in struc.cells) && compute_cell_tributaries!(struc)
+    compute_cell_tributaries!(struc)  # Cache handles deduplication
     
     # 5. Create loads using TributaryLoad
     loads = Asap.AbstractLoad[]
     empty!(struc.cell_tributary_loads)
     
     for (cell_idx, cell) in enumerate(struc.cells)
-        cell_loads = _create_cell_tributary_loads!(loads, frame_elements, skel, cell, cell_idx)
+        cell_loads = _create_cell_tributary_loads!(loads, frame_elements, skel, struc, cell, cell_idx)
         struc.cell_tributary_loads[cell_idx] = cell_loads
     end
     
@@ -148,19 +148,22 @@ function _create_cell_tributary_loads!(
     loads::Vector{Asap.AbstractLoad},
     elements::Vector{<:Asap.Element},
     skel::BuildingSkeleton,
+    struc::BuildingStructure,
     cell::Cell,
     cell_idx::Int
 )::Vector{Asap.TributaryLoad}
     cell_loads = Asap.TributaryLoad[]
     
-    isnothing(cell.tributary) && return cell_loads
+    # Get tributaries from cache
+    tribs = cell_edge_tributaries(struc, cell_idx)
+    isnothing(tribs) && return cell_loads
     
     face_edges = skel.face_edge_indices[cell.face_idx]
     face_verts = skel.face_vertex_indices[cell.face_idx]
     pressure = uconvert(u"Pa", total_factored_pressure(cell))
     n_verts = length(face_verts)
     
-    for trib in cell.tributary
+    for trib in tribs
         # Skip empty tributaries
         trib.area < 1e-12 && continue
         length(trib.s) < 2 && continue

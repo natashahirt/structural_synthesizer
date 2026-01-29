@@ -58,28 +58,11 @@ end
 # Stub Implementations
 # ==============================================================================
 
-# Timber material type (stub)
-abstract type AbstractTimber <: AbstractMaterial end
-
-struct Timber <: AbstractTimber
-    species::Symbol      # :douglas_fir, :southern_pine, etc.
-    grade::Symbol        # :select_structural, :no1, :no2, etc.
-    E::Float64           # Modulus of elasticity [Pa]
-    Emin::Float64        # Minimum E for stability calculations [Pa]
-    Fb::Float64          # Reference bending stress [Pa]
-    Ft::Float64          # Reference tension stress [Pa]
-    Fv::Float64          # Reference shear stress [Pa]
-    Fc::Float64          # Reference compression parallel [Pa]
-    Fc_perp::Float64     # Reference compression perpendicular [Pa]
-    ρ::Float64           # Density [kg/m³]
-    ecc::Float64         # Embodied carbon [kgCO2e/kg]
-end
-
 # Placeholder: feasibility check (not implemented)
 function is_feasible(
     checker::NDSChecker,
     section::GlulamSection,
-    material::AbstractTimber,
+    material::Timber,
     demand::AbstractDemand,
     geometry::TimberMemberGeometry
 )::Bool
@@ -91,7 +74,7 @@ function precompute_capacities!(
     checker::NDSChecker,
     cache,
     catalogue,
-    material::AbstractTimber,
+    material::Timber,
     objective::AbstractObjective
 )
     error("NDSChecker.precompute_capacities! not yet implemented")

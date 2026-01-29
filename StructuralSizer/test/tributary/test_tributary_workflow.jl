@@ -13,10 +13,10 @@ using Asap
     skel = gen_medium_office(80.0u"ft", 60.0u"ft", 13.0u"ft", 2, 2, 2)
     struc = BuildingStructure(skel)
     
-    # Initialize with floor options
+    # Initialize with floor options - use vault as it has a working size_floor implementation
     println("Initializing...")
-    opts = FloorOptions(cip=CIPOptions(support=ONE_END_CONT, rebar_material=Rebar_60))
-    initialize!(struc; floor_type=:two_way, floor_kwargs=(options=opts,))
+    initialize!(struc; floor_type=:vault, material=NWC_4000,
+                floor_kwargs=(rise=1.0u"m", thickness=0.05u"m"))
     
     @test length(struc.cells) > 0
     @test length(struc.slabs) > 0
@@ -82,10 +82,11 @@ using Asap
                 println("      v$i: ($x_m, $y_m, $z_m)")
             end
             
-            # Print tributary polygon info
-            if !isnothing(cell.tributary)
+            # Print tributary polygon info (from cache)
+            cell_tribs = cell_edge_tributaries(struc, cell_idx)
+            if !isnothing(cell_tribs)
                 println("    Tributary polygons:")
-                for (j, trib) in enumerate(cell.tributary)
+                for (j, trib) in enumerate(cell_tribs)
                     println("      Edge $(trib.local_edge_idx): s=$(round.(trib.s, digits=3)), d=$(round.(trib.d, digits=3)) m")
                     println("        area=$(round(trib.area, digits=3)) m², frac=$(round(trib.fraction*100, digits=1))%")
                     

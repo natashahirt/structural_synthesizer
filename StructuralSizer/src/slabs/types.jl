@@ -220,6 +220,50 @@ end
 
 ShapedSlabResult(vol::L, sw::F) where {L, F} = ShapedSlabResult{L, F}(vol, sw, nothing, Dict{Symbol,Any}())
 
+"""
+Strip reinforcement design result (flat plate/slab design).
+"""
+struct StripReinforcement{L<:StructuralUnits.Length, A<:StructuralUnits.Area, M<:StructuralUnits.Moment}
+    location::Symbol          # :ext_neg, :pos, :int_neg
+    Mu::M                     # Design moment
+    As_reqd::A                # Required steel area
+    As_min::A                 # Minimum steel area
+    As_provided::A            # Provided steel area
+    bar_size::Int             # Bar designation (#4, #5, etc.)
+    spacing::L                # Bar spacing
+    n_bars::Int               # Number of bars
+end
+
+"""
+Panel design result for flat plate per ACI 318 DDM/EFM.
+"""
+struct FlatPlatePanelResult{L<:StructuralUnits.Length, M<:StructuralUnits.Moment} <: AbstractFloorResult
+    # Geometry
+    l1::L                     # Span in direction 1
+    l2::L                     # Span in direction 2
+    h::L                      # Slab thickness
+    
+    # Analysis
+    M0::M                     # Total static moment
+    
+    # Column strip design
+    column_strip_width::L
+    column_strip_reinf::Vector{<:StripReinforcement}
+    
+    # Middle strip design  
+    middle_strip_width::L
+    middle_strip_reinf::Vector{<:StripReinforcement}
+    
+    # Checks
+    punching_check::NamedTuple
+    deflection_check::NamedTuple
+end
+
+# Interface for FlatPlatePanelResult
+self_weight(::FlatPlatePanelResult) = error("Use get_gravity_loads for FlatPlatePanelResult")
+total_depth(r::FlatPlatePanelResult) = r.h
+materials(::FlatPlatePanelResult) = (:concrete,)
+
 # =============================================================================
 # Common Interface
 # =============================================================================

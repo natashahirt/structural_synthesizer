@@ -119,11 +119,9 @@ function initialize_slabs!(struc::BuildingStructure{T};
                            slab_group_ids::Union{Nothing, AbstractVector}=nothing) where T
     empty!(struc.slabs)
     
-    # Clear stale cell groups and tributary data (floor type may have changed)
+    # Clear stale cell groups and tributary cache (floor type may have changed)
     empty!(struc.cell_groups)
-    for cell in struc.cells
-        cell.tributary = nothing
-    end
+    clear_tributary_cache!(struc)
     
     # 1. Build per-slab "specs"
     slab_specs = _build_slab_specs(struc, floor_type, cell_groupings, slab_group_ids)
@@ -563,25 +561,35 @@ end
 """
     compute_cell_tributaries!(struc; opts=FloorOptions())
 
-Compute parametric tributary polygons for each cell individually.
-Results stored in `cell.tributary`.
+Compute parametric tributary polygons for each cell and store in TributaryCache.
 
 Uses one-way directed partitioning for one-way floor types (along span axis),
 isotropic straight skeleton for two-way systems. The `tributary_axis` option
 in `FloorOptions` can override the default behavior.
+
+Results stored in `struc.tributaries.edge[key][cell_idx]` where key is derived
+from (spanning_behavior, axis). Access via:
+- `cell_edge_tributaries(struc, cell_idx)` → Vector{TributaryPolygon}
+- `get_cached_edge_tributaries(struc, behavior, axis, cell_idx)` → CellTributaryResult
 
 Note: Tributaries are computed per-cell (not shared via groups) because the
 parametric `local_edge_idx` must match each cell's specific vertex order.
 """
 function compute_cell_tributaries!(struc::BuildingStructure; 
                                     opts::StructuralSizer.FloorOptions=StructuralSizer.FloorOptions())
-    for cell in struc.cells
+    for (cell_idx, cell) in enumerate(struc.cells)
         # Get this cell's vertices (will be CCW ordered internally by tributary computation)
         verts = [struc.skeleton.vertices[i] for i in struc.skeleton.face_vertex_indices[cell.face_idx]]
         
         # Resolve tributary axis based on floor type and options
         ft = StructuralSizer.floor_type(cell.floor_type)
+        behavior = StructuralSizer.spanning_behavior(ft)
         axis = StructuralSizer.resolve_tributary_axis(ft, cell.spans, opts)
+        
+        # Check if already cached for this configuration
+        if has_cell_tributaries(struc, cell_idx, behavior, axis)
+            continue  # Already computed
+        end
         
         trib = if isnothing(axis)
             # Isotropic: straight skeleton
@@ -591,7 +599,14 @@ function compute_cell_tributaries!(struc::BuildingStructure;
             StructuralSizer.get_tributary_polygons(verts; axis=collect(axis))
         end
         
-        cell.tributary = trib
+        # Compute strip geometry for two-way/beamless floors
+        strips = nothing
+        if behavior isa TwoWaySpanning || behavior isa BeamlessSpanning
+            strips = StructuralSizer.compute_panel_strips(trib)
+        end
+        
+        # Store in cache
+        cache_edge_tributaries!(struc, behavior, axis, cell_idx, trib; strip_geometry=strips)
     end
 end
 

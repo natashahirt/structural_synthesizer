@@ -7,12 +7,13 @@ using StructuralSizer
 using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
 
 @testset "StructuralSizer Tests" begin
-    include("cip/test_cip.jl")
     include("haile_vault/test_vault.jl")
     include("structs/test_member_hierarchy.jl")
     include("steel_member/test_aisc_beam_examples.jl")
     include("steel_member/test_handcalc_beam.jl")
     include("steel_member/test_aisc_column_examples.jl")
+    include("steel_member/test_hss_sections.jl")
+    include("steel_member/test_aisc_companion_manual_1.jl")
     include("tributary/test_spans.jl")
     include("tributary/test_tributary_workflow.jl")
     include("tributary/test_voronoi_tributaries.jl")

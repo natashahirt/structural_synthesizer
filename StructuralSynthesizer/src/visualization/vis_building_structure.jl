@@ -363,16 +363,18 @@ end
 function _draw_tributary_areas!(ax, struc::BuildingStructure, leg_elems, leg_labels)
     skel = struc.skeleton
     
-    # Compute tributaries if needed
-    any(isnothing(c.tributary) for c in struc.cells) && compute_cell_tributaries!(struc)
+    # Ensure tributaries are computed
+    compute_cell_tributaries!(struc)  # Cache handles deduplication
     
     # Use StructuralPlots harmonic palette (main colors, no accents)
     colors = StructuralPlots.harmonic
     
     drawn_edges = Set{Int}()
     
-    for cell in struc.cells
-        isnothing(cell.tributary) && continue
+    for (cell_idx, cell) in enumerate(struc.cells)
+        # Get tributaries from cache
+        tribs = cell_edge_tributaries(struc, cell_idx)
+        isnothing(tribs) && continue
         
         # Use same vertex source as tributary computation (face_vertex_indices)
         v_indices = skel.face_vertex_indices[cell.face_idx]
@@ -392,7 +394,7 @@ function _draw_tributary_areas!(ax, struc::BuildingStructure, leg_elems, leg_lab
         verts_2d = StructuralSizer._ensure_ccw(verts_2d)
         n_verts = length(verts_2d)
         
-        for trib in cell.tributary
+        for trib in tribs
             isempty(trib.s) && continue
             
             # Get beam endpoints from CCW-ordered vertices (in meters, matching trib.d)
@@ -443,7 +445,8 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
     
     # Draw stored polygons for each column
     for col in struc.columns
-        isempty(col.tributary_polygons) && continue  # Skip columns without tributaries
+        trib_polygons = column_tributary_polygons(struc, col)
+        isempty(trib_polygons) && continue  # Skip columns without tributaries
         
         # Color by column position
         color = if col.position == :corner
@@ -455,7 +458,7 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
         end
         
         # Draw each per-cell polygon
-        for (cell_idx, polygon) in col.tributary_polygons
+        for (cell_idx, polygon) in trib_polygons
             isempty(polygon) && continue
             
             # Get z-coordinate from the cell's face

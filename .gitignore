@@ -1,1 +1,8 @@
+# Ignore vendored/external code
 external/
+
+# Ignore reference documents (e.g., PDFs) anywhere in the repo
+**/reference/
+
+# Ignore plain text files
+*.txt

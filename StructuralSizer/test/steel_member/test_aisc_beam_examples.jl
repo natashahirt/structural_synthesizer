@@ -228,8 +228,8 @@ using Test
         
         # Assign same group_id to all members → single member group (continuous beam)
         beam_group_id = UInt64(hash(:continuous_beam))
-        for m in struc.members
-            m.group_id = beam_group_id
+        for m in struc.beams
+            set_group_id!(m, beam_group_id)
         end
         
         # 3. Analysis model

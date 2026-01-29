@@ -152,10 +152,7 @@ function visualize_cell_tributaries(struc::BuildingStructure;
 )
     # Ensure cell groups and tributaries exist
     isempty(struc.cell_groups) && build_cell_groups!(struc)
-    
-    # Compute tributaries if any cell is missing them
-    needs_compute = any(isnothing(c.tributary) for c in struc.cells)
-    needs_compute && compute_cell_tributaries!(struc)
+    compute_cell_tributaries!(struc)  # Cache handles deduplication
     
     groups = collect(values(struc.cell_groups))
     n_groups = length(groups)
@@ -198,9 +195,10 @@ function visualize_cell_tributaries(struc::BuildingStructure;
         verts = [(v[1] - offset[1], v[2] - offset[2]) for v in verts_raw]
         
         # Plot tributary polygons
-        if !isnothing(cell.tributary)
+        tribs = cell_edge_tributaries(struc, canonical_idx)
+        if !isnothing(tribs)
             n_verts = length(verts_raw)
-            for (j, trib) in enumerate(cell.tributary)
+            for (j, trib) in enumerate(tribs)
                 if !isempty(trib.s)
                     # Get beam endpoints for this tributary (in meters)
                     local_idx = trib.local_edge_idx
@@ -255,11 +253,8 @@ Plot a single cell with its tributary polygons (one per edge). All coordinates i
 function visualize_cell_tributary(struc::BuildingStructure, cell_idx::Int)
     cell = struc.cells[cell_idx]
     
-    # Compute if needed
-    if isnothing(cell.tributary)
-        compute_cell_tributaries!(struc)
-        cell = struc.cells[cell_idx]  # refresh
-    end
+    # Ensure tributaries are computed
+    compute_cell_tributaries!(struc)  # Cache handles deduplication
     
     fig = GLMakie.Figure(size = (600, 600))
     ax = GLMakie.Axis(fig[1, 1],
@@ -276,10 +271,13 @@ function visualize_cell_tributary(struc::BuildingStructure, cell_idx::Int)
     # Use StructuralPlots harmonic palette (main colors, no accents)
     colors = StructuralPlots.harmonic
     
+    # Get tributaries from cache
+    tribs = cell_edge_tributaries(struc, cell_idx)
+    
     # Plot tributary polygons
-    if !isnothing(cell.tributary)
+    if !isnothing(tribs)
         n_verts = length(verts_raw)
-        for (i, trib) in enumerate(cell.tributary)
+        for (i, trib) in enumerate(tribs)
             if !isempty(trib.s)
                 # Get beam endpoints for this tributary (in meters)
                 local_idx = trib.local_edge_idx
@@ -334,7 +332,7 @@ end
     visualize_vertex_tributaries(struc::BuildingStructure; story=0, kwargs...)
 
 Visualize stored Voronoi vertex tributary polygons for columns at a given story.
-Uses pre-computed polygons from `col.tributary_polygons` (no recomputation).
+Uses pre-computed polygons from `struc.tributaries` cache.
 
 # Arguments
 - `story::Int=0`: Which story to visualize (0 = ground level columns)
@@ -351,7 +349,7 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
 )
     skel = struc.skeleton
     
-    # Get columns at this story with their stored polygons
+    # Get columns at this story
     story_cols = filter(c -> c.story == story, struc.columns)
     
     if isempty(story_cols)
@@ -363,7 +361,8 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
     all_xs = Float64[]
     all_ys = Float64[]
     for col in story_cols
-        for (_, polygon) in col.tributary_polygons
+        trib_polygons = column_tributary_polygons(struc, col)
+        for (_, polygon) in trib_polygons
             for v in polygon
                 push!(all_xs, v[1])
                 push!(all_ys, v[2])
@@ -398,9 +397,10 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
     # Plot stored polygons for each column
     for (col_idx, col) in enumerate(story_cols)
         color = colors[mod1(col_idx, length(colors))]
+        trib_polygons = column_tributary_polygons(struc, col)
         
         # Draw each per-cell polygon
-        for (cell_idx, polygon) in col.tributary_polygons
+        for (cell_idx, polygon) in trib_polygons
             isempty(polygon) && continue
             
             xs = [v[1] - cx for v in polygon]
@@ -415,12 +415,13 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
         end
         
         # Label at column position
-        if show_labels && !isnothing(col.tributary_area)
+        trib_area = column_tributary_area(struc, col)
+        if show_labels && !isnothing(trib_area)
             v = skel.vertices[col.vertex_idx]
             c = Meshes.coords(v)
             mx = Float64(ustrip(u"m", c.x)) - cx
             my = Float64(ustrip(u"m", c.y)) - cy
-            label = "$(round(col.tributary_area, digits=1)) m²"
+            label = "$(round(trib_area, digits=1)) m²"
             GLMakie.text!(ax, mx, my + 0.5, text=label, fontsize=10,
                          align=(:center, :bottom), color=:black)
         end

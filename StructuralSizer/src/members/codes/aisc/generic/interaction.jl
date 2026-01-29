@@ -10,7 +10,7 @@ function check_PM_interaction(Pu, Mu, ϕPn, ϕMn; Pr=Pu, Mr=Mu)
 end
 
 """P-M interaction with computed capacities."""
-function check_PM_interaction(s::ISymmSection, mat::Metal, Pu, Mu, Lb, Lc; 
+function check_PM_interaction(s::AbstractSection, mat::Metal, Pu, Mu, Lb, Lc; 
                               axis=:weak, Cb=1.0, ϕ=0.90)
     ϕPn = get_ϕPn(s, mat, Lc; axis=axis, ϕ=ϕ)
     # Default to strong axis flexure for the simple P-M check unless context implies otherwise.
@@ -30,7 +30,7 @@ function check_PMxMy_interaction(Pu, Mux, Muy, ϕPn, ϕMnx, ϕMny; Pr=Pu, Mrx=Mu
 end
 
 """Biaxial interaction with computed capacities."""
-function check_PMxMy_interaction(s::ISymmSection, mat::Metal, Pu, Mux, Muy, Lbx, Lby, Lc;
+function check_PMxMy_interaction(s::AbstractSection, mat::Metal, Pu, Mux, Muy, Lbx, Lby, Lc;
                                  axis=:weak, Cb=1.0, ϕ=0.90)
     ϕMnx = get_ϕMn(s, mat; Lb=Lbx, Cb=Cb, axis=:strong, ϕ=ϕ)
     ϕMny = get_ϕMn(s, mat; Lb=Lby, axis=:weak, ϕ=ϕ)

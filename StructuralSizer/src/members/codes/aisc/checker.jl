@@ -97,6 +97,23 @@ create_cache(::AISCChecker, n_sections::Int) = AISCCapacityCache(n_sections)
 """Round length to nearest mm for cache key."""
 @inline _length_key(L_m::Float64)::Int = round(Int, L_m * 1000)
 
+"""
+Get the strong-axis moment of inertia used for deflection scaling.
+
+Not all steel section types store this with the same field name:
+- `ISymmSection` / `HSSRectSection`: `Ix`
+- `HSSRoundSection`: `I` (since Ix=Iy)
+"""
+@inline function _Ix_for_deflection(s::AbstractSection)
+    if hasproperty(s, :Ix)
+        return getproperty(s, :Ix)
+    elseif hasproperty(s, :I)
+        return getproperty(s, :I)
+    else
+        error("Section $(typeof(s)) does not define `Ix` or `I` for deflection scaling.")
+    end
+end
+
 # ==============================================================================
 # Interface Implementation
 # ==============================================================================
@@ -109,7 +126,7 @@ Precompute length-independent capacities for all sections.
 function precompute_capacities!(
     checker::AISCChecker,
     cache::AISCCapacityCache,
-    catalogue::AbstractVector{<:ISymmSection},
+    catalogue::AbstractVector{<:AbstractSection},
     material::StructuralSteel,
     objective::AbstractObjective
 )
@@ -133,7 +150,7 @@ function precompute_capacities!(
         cache.ϕPn_tension[j] = ustrip(uconvert(u"N", get_ϕPn_tension(s, material)))
         
         # Geometric properties
-        cache.Ix[j] = ustrip(uconvert(u"m^4", s.Ix))
+        cache.Ix[j] = ustrip(uconvert(u"m^4", _Ix_for_deflection(s)))
         cache.depths[j] = ustrip(uconvert(u"m", depth(s)))
         
         # Objective coefficient (value per meter)
@@ -161,7 +178,7 @@ function _get_ϕPn_cached!(
     axis::Symbol,
     j::Int,
     Lc_m::Float64,
-    section::ISymmSection,
+    section::AbstractSection,
     material::StructuralSteel
 )::Float64
     Lc_key = _length_key(Lc_m)
@@ -193,7 +210,7 @@ function _get_ϕMnx_cached!(
     j::Int,
     Lb_m::Float64,
     Cb::Float64,
-    section::ISymmSection,
+    section::AbstractSection,
     material::StructuralSteel,
     ϕ_b::Float64
 )::Float64
@@ -220,7 +237,7 @@ function is_feasible(
     checker::AISCChecker,
     cache::AISCCapacityCache,
     j::Int,  # Section index in catalogue
-    section::ISymmSection,
+    section::AbstractSection,
     material::StructuralSteel,
     demand::MemberDemand,
     geometry::SteelMemberGeometry

@@ -1,14 +1,8 @@
-# ==============================================================================
-# AISC 360 Steel Design Checks
-# ==============================================================================
-# Organized by chapter
-
-include("slenderness.jl")  # Table B4.1b - must come first (used by flexure)
-include("flexure.jl")      # Chapter F
-include("shear.jl")        # Chapter G
-include("compression.jl")  # Chapter E
-include("tension.jl")      # Chapter D
-include("interaction.jl")  # Chapter H
+include("utils.jl")
+include("i_symm/_i_symm.jl")
+include("hss_rect/_hss_rect.jl")
+include("hss_round/_hss_round.jl")
+include("generic/_generic.jl")
 
 # Capacity Checker (implements AbstractCapacityChecker interface)
 include("checker.jl")

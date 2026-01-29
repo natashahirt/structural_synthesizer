@@ -10,7 +10,8 @@
 # - Extrados is intrados shifted vertically by shell thickness
 # - Optional ribs modeled as flat-topped extensions above extrados
 
-const GRAVITY = ustrip(u"m/s^2", StructuralUnits.GRAVITY)  # m/s²
+# Use GRAVITY from StructuralUnits (stripped for internal calculations)
+const _GRAVITY_MS2 = ustrip(u"m/s^2", StructuralUnits.GRAVITY)
 
 # =============================================================================
 # Geometry Utilities
@@ -138,7 +139,7 @@ function vault_stress_symmetric(
     total_mass = props.total_vol * density
     
     # --- Self-weight ---
-    total_self_weight_N = total_mass * GRAVITY
+    total_self_weight_N = total_mass * _GRAVITY_MS2
     # Convert N -> kN
     total_self_weight_kN = ustrip(u"kN", total_self_weight_N * u"N")
     

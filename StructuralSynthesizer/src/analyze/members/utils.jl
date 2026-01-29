@@ -111,14 +111,17 @@ end
 """
     compute_column_tributaries!(struc::BuildingStructure)
 
-Compute and store Voronoi vertex tributary areas on each Column.
+Compute and store Voronoi vertex tributary areas in the TributaryCache.
 
 For each cell:
 1. Get the cell's corner vertices (column positions)
 2. Compute Voronoi clipped to the cell boundary
-3. Store per-cell area in `col.tributary_by_slab[cell_idx]`
-4. Store per-cell polygon in `col.tributary_polygons[cell_idx]` (for visualization)
-5. Sum contributions to get total `col.tributary_area`
+3. Store in `struc.tributaries.vertex[story][vertex_idx]`
+
+Access via:
+- `column_tributary_area(struc, col)` → total area (m²)
+- `column_tributary_by_cell(struc, col)` → Dict{Int, Float64}
+- `column_tributary_polygons(struc, col)` → Dict{Int, Vector{NTuple{2,Float64}}}
 
 Note: Columns use their bottom vertex_idx, but floor cells have vertices at the floor 
 elevation. We match by (x,y) position to link columns to their supported floor areas.
@@ -129,19 +132,19 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     skel = struc.skeleton
     
     # Build (x,y) → Column lookup (rounded to avoid FP precision issues)
-    # We use the column's vertex position (bottom of column) to get x,y
     col_by_xy = Dict{Tuple{Float64, Float64}, Vector{Column{T}}}()
     for col in struc.columns
         c = Meshes.coords(skel.vertices[col.vertex_idx])
         xy = (round(Float64(ustrip(u"m", c.x)), digits=6), 
               round(Float64(ustrip(u"m", c.y)), digits=6))
         push!(get!(col_by_xy, xy, Column{T}[]), col)
-        
-        # Reset tributary data
-        col.tributary_area = 0.0
-        empty!(col.tributary_by_slab)
-        empty!(col.tributary_polygons)
     end
+    
+    # Temporary storage: (story, vertex_idx) → accumulated data
+    col_tribs = Dict{Tuple{Int, Int}, ColumnTributaryResult}()
+    col_by_cell = Dict{Tuple{Int, Int}, Dict{Int, Float64}}()
+    col_polygons = Dict{Tuple{Int, Int}, Dict{Int, Vector{NTuple{2,Float64}}}}()
+    col_totals = Dict{Tuple{Int, Int}, Float64}()
     
     # Process each cell
     for (cell_idx, cell) in enumerate(struc.cells)
@@ -165,20 +168,17 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
         # Compute Voronoi within cell boundary (boundary = cell vertices)
         tribs = StructuralSizer.compute_voronoi_tributaries(col_positions; floor_boundary=col_positions)
         
-        # Store results on columns (matching by x,y position)
+        # Store results (matching by x,y position)
         for (i, trib) in enumerate(tribs)
             xy = cell_xys[i]
             cols = get(col_by_xy, xy, nothing)
             isnothing(cols) && continue
             
-            # Find the column whose TOP is at or below this floor level
-            # (column that supports this floor)
+            # Find the column whose TOP is at this floor level
             matched_col = nothing
             for col in cols
                 v_c = Meshes.coords(skel.vertices[col.vertex_idx])
                 col_bottom_z = Float64(ustrip(u"m", v_c.z))
-                # This column supports the floor if its top is at the floor elevation
-                # Column top = col_bottom_z + column height (L)
                 col_top_z = col_bottom_z + Float64(ustrip(u"m", col.base.L))
                 if abs(col_top_z - cell_z) < 0.1  # Within 10cm tolerance
                     matched_col = col
@@ -187,16 +187,30 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
             end
             isnothing(matched_col) && continue
             
-            # Store area and polygon
-            matched_col.tributary_by_slab[cell_idx] = trib.area
-            matched_col.tributary_polygons[cell_idx] = trib.polygon
-            matched_col.tributary_area += trib.area
+            # Accumulate in temp storage
+            key = (matched_col.story, matched_col.vertex_idx)
+            if !haskey(col_by_cell, key)
+                col_by_cell[key] = Dict{Int, Float64}()
+                col_polygons[key] = Dict{Int, Vector{NTuple{2,Float64}}}()
+                col_totals[key] = 0.0
+            end
+            col_by_cell[key][cell_idx] = trib.area
+            col_polygons[key][cell_idx] = trib.polygon
+            col_totals[key] += trib.area
         end
     end
     
-    n_with_trib = count(c.tributary_area > 0 for c in struc.columns)
-    n_with_breakdown = count(!isempty(c.tributary_by_slab) for c in struc.columns)
-    @debug "Computed Voronoi tributary areas" total=n_with_trib per_cell=n_with_breakdown columns=length(struc.columns)
+    # Store in cache
+    for (key, total_area) in col_totals
+        story, vertex_idx = key
+        cache_column_tributary!(struc, story, vertex_idx,
+            total_area,
+            col_by_cell[key],
+            col_polygons[key])
+    end
+    
+    n_cached = length(col_totals)
+    @debug "Computed Voronoi tributary areas" columns_with_tribs=n_cached total_columns=length(struc.columns)
     
     return struc
 end
@@ -369,8 +383,16 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
     skel = struc.skeleton
     beam_edge_ids = Set(get(skel.groups_edges, member_edge_group, Int[]))
 
-    # Build member groups for beams if needed
-    isempty(struc.member_groups) && build_member_groups!(struc; member_type=:beams)
+    # Determine member type from edge group name
+    member_type = member_edge_group == :columns ? :columns : 
+                  member_edge_group == :struts ? :struts : :beams
+    
+    # Get the appropriate member array
+    member_array = member_type == :columns ? struc.columns :
+                   member_type == :struts ? struc.struts : struc.beams
+
+    # Build member groups if needed
+    isempty(struc.member_groups) && build_member_groups!(struc; member_type=member_type)
 
     # Only include groups that actually contain at least one segment in `beam_edge_ids`.
     all_group_ids = sort!(collect(keys(struc.member_groups)))  # deterministic ordering
@@ -411,7 +433,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         I_ref = 0.0
 
         for m_idx in mg.member_indices
-            m = struc.beams[m_idx]  # member_groups for beams index into struc.beams
+            m = member_array[m_idx]  # Index into appropriate member array
             
             # Group geometry governance (take worst case K across members in group)
             Kx_gov = max(Kx_gov, m.base.Kx)
@@ -560,6 +582,10 @@ function size_members_discrete!(
     group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
         member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
 
+    # Determine member array from edge group name (must match member_group_demands logic)
+    member_array = member_edge_group == :columns ? struc.columns :
+                   member_edge_group == :struts ? struc.struts : struc.beams
+
     # Convert to SteelMemberGeometry objects for new API
     geometries = [StructuralSizer.SteelMemberGeometry(L; Lb=Lb, Cb=Cb, Kx=Kx, Ky=Ky)
                   for (L, Lb, Cb, Kx, Ky) in zip(L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs)]
@@ -594,7 +620,7 @@ function size_members_discrete!(
         asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
 
         for m_idx in mg.member_indices
-            m = struc.beams[m_idx]  # member_groups for beams index into struc.beams
+            m = member_array[m_idx]  # Index into appropriate member array
             
             # Compute total length and store section/volume on member
             # Ensure L_total has units (skeleton may use plain Float64)

@@ -509,73 +509,44 @@ requires_column_tributaries(ft) = is_beamless(ft)
 3. **No options override**: Spanning behavior is intrinsic, not user-configurable
 4. **Future traits**: Can add `AnalysisMethod`, `ReinforcementType`, etc. independently
 
-### Double Dispatch: Type × Material
+### How Dispatch Works
+
+The system uses **three levels of dispatch**:
+
+| Level | Dispatches On | Purpose | Example |
+|-------|---------------|---------|---------|
+| **Material family** | Abstract type (`AbstractConcreteSlab`) | Density, E, design code | `density(::AbstractConcreteSlab) = 150 pcf` |
+| **Spanning behavior** | Trait (`BeamlessSpanning`) | Load path, tributary method | `load_distribution(::BeamlessSpanning) = POINT` |
+| **Specific type** | Concrete type (`FlatPlate`) | Code-specific rules | `min_thickness(::FlatPlate, ln) = ln/33` |
 
 ```julia
-# Sizing dispatches on BOTH floor type AND material
-function size_floor(floor_type::AbstractFloorSystem, span, material::AbstractMaterial; kwargs...)
+# Material is IMPLICIT in the type hierarchy - no separate material argument needed
+ft = FlatPlate()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Thickness rules - dispatch on type AND material
-# ═══════════════════════════════════════════════════════════════════════════
-min_thickness(::FlatPlate, ln, ::ConcreteMaterial) = ln / 33          # ACI 8.3.1.1
-min_thickness(::FlatPlate, ln, ::CLT) = lookup_clt_thickness(ln)       # NDS/PRG-320
-min_thickness(::OneWay, ln, ::NLT) = lookup_nlt_thickness(ln)          # NDS
+# Material properties come from parent type
+ft isa AbstractConcreteSlab  # true → use concrete density, ACI code
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Self-weight - material-specific
-# ═══════════════════════════════════════════════════════════════════════════
-self_weight(h, ::ConcreteMaterial) = h * 150u"pcf"    # ~2400 kg/m³
-self_weight(h, ::CLT) = h * 35u"pcf"                  # ~560 kg/m³
-self_weight(h, ::NLT) = h * 35u"pcf"
+# Spanning behavior comes from trait
+spanning_behavior(ft)  # BeamlessSpanning() → column tributaries, DDM
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Reinforcement - concrete has rebar, timber doesn't
-# ═══════════════════════════════════════════════════════════════════════════
-design_reinforcement(M, h, ::ConcreteMaterial) = As_calculation(M, h)
-design_reinforcement(M, h, ::TimberMaterial) = nothing  # No rebar!
-
-# ═══════════════════════════════════════════════════════════════════════════
-# EFM section properties - different E, different calcs
-# ═══════════════════════════════════════════════════════════════════════════
-efm_section(width, h, ::ConcreteMaterial) = Section(A, Ec, G, I...)
-efm_section(width, h, ::CLT) = Section(A, E_eff_clt, G, I...)  # Effective E
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Design code reference
-# ═══════════════════════════════════════════════════════════════════════════
-design_code(::ConcreteMaterial) = :ACI_318
-design_code(::TimberMaterial) = :NDS
+# Type-specific rules dispatch directly
+min_thickness(ft, ln)  # ACI 8.3.1.1: ln/33 for flat plates specifically
 ```
 
-### Usage Examples
+### What's Shared vs Type-Specific
 
-```julia
-# Concrete flat plate (current focus)
-result = size_floor(FlatPlate(), 24u"ft", NWC_4000; sdl=20u"psf", ll=50u"psf")
-
-# CLT flat plate (same workflow, different material dispatch!)
-clt_mat = CLT(:5ply, :E1, "Nordic")
-result = size_floor(FlatPlate(), 24u"ft", clt_mat; sdl=20u"psf", ll=50u"psf")
-
-# NLT one-way slab
-nlt_mat = NLT(:2x10, :SPF)
-result = size_floor(OneWay(), 16u"ft", nlt_mat; sdl=15u"psf", ll=40u"psf")
-```
-
-### What's Shared vs Material-Specific
-
-| Component            | Shared (all materials) | Material-Specific        |
-| -------------------- | ---------------------- | ------------------------ |
-| Voronoi tributaries  | ✅                     |                          |
-| Edge tributaries     | ✅                     |                          |
-| CellGroup/SlabGroup  | ✅                     |                          |
-| ASAP EFM model       | ✅ (structure)         | E, G, ρ values          |
-| Thickness calc       |                        | ✅ (ACI vs NDS)          |
-| Self-weight          |                        | ✅ (density)             |
-| Reinforcement design |                        | ✅ (concrete only)       |
-| Fire rating          |                        | ✅ (cover vs charring)   |
-| Column sizing        | ✅ (workflow)          | Material-specific checks |
+| Component            | Shared (AbstractFloorSystem) | Material-Specific (parent type) | Type-Specific |
+| -------------------- | ---------------------------- | ------------------------------- | ------------- |
+| Edge tributaries     | ✅ straight skeleton          |                                 |               |
+| Voronoi tributaries  | ✅ (if beamless trait)        |                                 |               |
+| CellGroup/SlabGroup  | ✅                            |                                 |               |
+| ASAP frame structure | ✅                            |                                 |               |
+| Density/self-weight  |                              | ✅ concrete vs timber           |               |
+| Elastic modulus E    |                              | ✅ Ec vs E_clt                  |               |
+| Design code          |                              | ✅ ACI vs NDS                   |               |
+| Min thickness rule   |                              |                                 | ✅ ln/33 vs ln/36 |
+| Punching shear       |                              |                                 | ✅ concrete only |
+| Reinforcement design |                              |                                 | ✅ concrete only |
 
 ### Shared vs Trait-Dispatched vs Type-Specific Methods
 
