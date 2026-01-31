@@ -31,3 +31,25 @@ const Rebar_40 = RebarSteel(200.0u"GPa", 77.2u"GPa", 276.0u"MPa", 414.0u"MPa", 7
 const Rebar_60 = RebarSteel(200.0u"GPa", 77.2u"GPa", 414.0u"MPa", 620.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=60ksi, Fu=90ksi
 const Rebar_75 = RebarSteel(200.0u"GPa", 77.2u"GPa", 517.0u"MPa", 689.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=75ksi, Fu=100ksi
 const Rebar_80 = RebarSteel(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=80ksi, Fu=105ksi
+
+# ==============================================================================
+# Display Names
+# ==============================================================================
+
+"""Get short display name for a steel material."""
+function material_name(mat::StructuralSteel)
+    mat === A992_Steel && return "A992"
+    mat === S355_Steel && return "S355"
+    # Fallback: show Fy
+    Fy_ksi = round(ustrip(ksi, mat.Fy), digits=0)
+    return "Steel (Fy=$(Int(Fy_ksi)) ksi)"
+end
+
+function material_name(mat::RebarSteel)
+    mat === Rebar_40 && return "Gr40"
+    mat === Rebar_60 && return "Gr60"
+    mat === Rebar_75 && return "Gr75"
+    mat === Rebar_80 && return "Gr80"
+    Fy_ksi = round(ustrip(ksi, mat.Fy), digits=0)
+    return "Rebar (Fy=$(Int(Fy_ksi)) ksi)"
+end

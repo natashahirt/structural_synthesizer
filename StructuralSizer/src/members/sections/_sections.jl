@@ -12,8 +12,8 @@ function depth end
 """Section width."""
 function width end
 
-"""Weight per unit length. Default: area(s) * mat.ρ"""
-weight_per_length(s::AbstractSection, mat::AbstractMaterial) = area(s) * mat.ρ
+"""Weight per unit length. Default: section_area(s) * mat.ρ"""
+weight_per_length(s::AbstractSection, mat::AbstractMaterial) = section_area(s) * mat.ρ
 
 # ==============================================================================
 # Material-Organized Sections

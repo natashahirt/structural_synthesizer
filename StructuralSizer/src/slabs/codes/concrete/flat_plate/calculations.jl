@@ -5,13 +5,36 @@
 # Methodology: StructurePoint Design Examples (ACI 318-14)
 # Equations: Broyles, Solnosky, Brown (2024) - Supplementary Document
 #
-# Reference example: 24 ft × 20 ft panel, 16" columns, f'c=4000 psi, fy=60 ksi
+# Reference: DE-Two-Way-Flat-Plate-Concrete-Floor-System-Analysis-and-Design-ACI-318-14-spSlab-v1000.pdf
+# Example: 18 ft × 14 ft panel, 16" columns, f'c=4000 psi (slab), fy=60 ksi
+#
+# =============================================================================
+# UNIT CONVENTION
+# =============================================================================
+#
+# All public functions use Unitful type signatures for type safety:
+#   - Lengths:   Length   (accepts m, ft, inch, etc.)
+#   - Areas:     Area     (accepts m², ft², inch², etc.)
+#   - Pressures: Pressure (accepts Pa, psi, ksi, psf, etc.)
+#   - Moments:   Moment   (accepts N·m, kip·ft, lb·in, etc.)
+#
+# Internal calculations convert to a consistent system (typically US customary
+# for ACI compatibility) and return results with explicit units.
+#
+# Example:
+#   h = min_thickness_flat_plate(16.67u"ft")  # Returns Quantity in inches
+#   fc = 4000u"psi"
+#   Ec_val = Ec(fc)  # Returns Quantity in psi
+#
 # =============================================================================
 
 using Unitful
 using Unitful: @u_str
 using StructuralBase.StructuralUnits: kip, ksi, ksf, psf, pcf
 using StructuralBase.StructuralUnits: Length, Area, Volume, Inertia, Pressure, Force, Moment, LinearLoad
+
+# Register custom units so u"psf", u"ksi" etc. work in docstrings and code
+Unitful.register(StructuralBase.StructuralUnits)
 
 # =============================================================================
 # Material Properties
@@ -65,7 +88,7 @@ Minimum flat plate thickness per ACI 318-14 Table 8.3.1.1.
 
 # Reference
 - ACI 318-14 Table 8.3.1.1, Row 1 (flat plates)
-- StructurePoint Example: ln = 22.67 ft → h_min = 8.23 in → use 8.5 in
+- StructurePoint Example: ln = 16.67 ft → h_min = 6.06 in → use 7 in
 """
 function min_thickness_flat_plate(ln::Length; discontinuous_edge::Bool=false)
     ln_in = ustrip(u"inch", ln)
@@ -115,7 +138,7 @@ Total factored static moment per ACI 318-14 Eq. 8.10.3.2.
 
 # Reference
 - ACI 318-14 Section 8.10.3.2
-- StructurePoint Example: qu=0.214 ksf, l2=20 ft, ln=22.67 ft → M₀ = 275.4 k-ft
+- StructurePoint Example: qu=0.193 ksf, l2=14 ft, ln=16.67 ft → M₀ = 93.82 k-ft
 """
 function total_static_moment(qu::Pressure, l2::Length, ln::Length)
     return qu * l2 * ln^2 / 8
@@ -702,6 +725,121 @@ function deflection_limit(l::Length, limit_type::Symbol)
 end
 
 # =============================================================================
+# Initial Column Estimate (Phase 2)
+# =============================================================================
+
+"""
+    estimate_column_size(At, qu, n_stories_above, fc; fy=60000u"psi", shape=:square)
+
+Estimate initial column size from tributary area before full column design.
+
+This provides an initial estimate needed for slab clear span calculation (ln = l - c).
+The estimate is intentionally conservative (tends to undersize) so that:
+- Slab clear span is slightly overestimated → thicker slab (safe)
+- Proper column sizing will give larger columns → shorter clear span (safe)
+
+# Arguments
+- `At`: Tributary area per floor (from Voronoi, m²)
+- `qu`: Factored floor load (kPa or psf)
+- `n_stories_above`: Number of stories supported by column
+- `fc`: Concrete compressive strength (f'c)
+- `fy`: Reinforcement yield strength (default 60 ksi)
+- `shape`: :square (default) or :rectangular
+
+# Returns
+- Column dimension c (for square) as Length
+- For rectangular, returns (c1, c2) tuple with c2 = 1.5 × c1
+
+# Method
+Uses simplified capacity formula:
+    Pu ≈ At × qu × n_stories_above
+    Ag_required ≈ Pu / (φ × 0.80 × [0.85 f'c (1-ρg) + ρg × fy])
+    
+Assumes ρg ≈ 2% (typical), φ = 0.65 (compression-controlled)
+Simplifies to: Ag ≈ Pu / (0.40 × f'c)  for f'c ≤ 6000 psi
+
+# Reference
+- ACI 318-14 Section 22.4.2 (nominal axial strength)
+- Rule of thumb: c ≈ √(Ag)
+
+# Example
+```julia
+At = 100u"m^2"      # 100 m² tributary
+qu = 10u"kPa"       # ~200 psf factored
+n = 5               # 5 stories above
+fc = 4000u"psi"
+c = estimate_column_size(At, qu, n, fc)  # ≈ 16-18 inches
+```
+"""
+function estimate_column_size(
+    At::Area,
+    qu::Pressure,
+    n_stories_above::Int,
+    fc::Pressure;
+    fy::Pressure = 60000u"psi",
+    shape::Symbol = :square
+)
+    # Convert to consistent units
+    At_ft2 = ustrip(u"ft^2", At)
+    qu_psf = ustrip(u"psf", qu)
+    fc_psi = ustrip(u"psi", fc)
+    
+    # Estimated factored axial load
+    Pu_lb = At_ft2 * qu_psf * n_stories_above
+    
+    # Required gross area (simplified for typical reinforcement)
+    # Full formula: φPn = φ × 0.80 × [0.85f'c(Ag - As) + fy×As]
+    # Simplified with ρg ≈ 2%, φ = 0.65:
+    # Ag ≈ Pu / (0.65 × 0.80 × [0.85×f'c×0.98 + fy×0.02])
+    # For fc=4ksi, fy=60ksi: ≈ Pu / (0.40 × f'c)
+    
+    # Use conservative formula (will give smaller column → safe for slab design)
+    Ag_in2 = Pu_lb / (0.40 * fc_psi)
+    
+    # Apply minimum column size (ACI practical minimum ~10")
+    Ag_min = 100.0  # 10" × 10" = 100 in²
+    Ag_in2 = max(Ag_in2, Ag_min)
+    
+    if shape == :square
+        c_in = sqrt(Ag_in2)
+        # Round up to nearest inch
+        c_in = ceil(c_in)
+        return c_in * u"inch"
+    else
+        # Rectangular: c2 = 1.5 × c1 (typical aspect ratio)
+        # Ag = c1 × c2 = c1 × 1.5c1 = 1.5c1²
+        c1_in = sqrt(Ag_in2 / 1.5)
+        c2_in = 1.5 * c1_in
+        return (ceil(c1_in) * u"inch", ceil(c2_in) * u"inch")
+    end
+end
+
+"""
+    estimate_column_size_from_span(span; ratio=15)
+
+Alternative column estimate from span using rule of thumb.
+
+# Arguments
+- `span`: Center-to-center span
+- `ratio`: Span-to-column ratio (default 15, typical range 12-18)
+
+# Returns
+Column dimension c = span / ratio
+
+# Reference
+Common practice for preliminary design:
+- High-rise: c ≈ L/12 to L/14
+- Mid-rise: c ≈ L/15 to L/18
+- Low-rise: c ≈ L/18 to L/20
+"""
+function estimate_column_size_from_span(span::Length; ratio::Float64=15.0)
+    c = span / ratio
+    # Round up to nearest inch
+    c_in = ceil(ustrip(u"inch", c))
+    return c_in * u"inch"
+end
+
+# =============================================================================
 # Design Result Types
 # =============================================================================
 # Note: StripReinforcement and FlatPlatePanelResult are defined in 
@@ -719,4 +857,5 @@ export punching_perimeter, punching_capacity_interior, punching_demand, check_pu
 export cracked_moment_of_inertia, effective_moment_of_inertia, cracking_moment
 export immediate_deflection, long_term_deflection_factor, deflection_limit
 export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
+export estimate_column_size, estimate_column_size_from_span
 # StripReinforcement, FlatPlatePanelResult exported from slabs/types.jl

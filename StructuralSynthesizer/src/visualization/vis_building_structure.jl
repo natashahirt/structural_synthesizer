@@ -457,7 +457,7 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
             colors[3]
         end
         
-        # Draw each per-cell polygon
+        # Draw each per-cell polygon (polygon vertices are Unitful)
         for (cell_idx, polygon) in trib_polygons
             isempty(polygon) && continue
             
@@ -472,8 +472,9 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
                 end
             end
             
-            # Convert to 3D points
-            pts_3d = [GLMakie.Point3f(v[1], v[2], z_coord) for v in polygon]
+            # Convert to 3D points (strip units from Unitful polygon vertices)
+            pts_3d = [GLMakie.Point3f(ustrip(u"m", vx), ustrip(u"m", vy), z_coord) 
+                      for (vx, vy) in polygon]
             length(pts_3d) < 3 && continue
             
             # Create triangulated mesh

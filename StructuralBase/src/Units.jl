@@ -99,6 +99,33 @@ export Length, Area, Volume, Inertia, WarpingConstant
 export Pressure, Force, Moment, LinearLoad, AreaLoad, Density
 
 # =============================================================================
+# Concrete Type Aliases (for struct fields with Float64 precision)
+# =============================================================================
+# Use these when you need concrete types for struct fields.
+# The abstract types above (Length, Area, etc.) are for function signatures.
+
+"""Concrete Length type in meters (Float64 precision)."""
+const LengthQuantity = typeof(1.0u"m")
+
+"""Concrete Area type in square meters (Float64 precision)."""
+const AreaQuantity = typeof(1.0u"m^2")
+
+"""Concrete Volume type in cubic meters (Float64 precision)."""
+const VolumeQuantity = typeof(1.0u"m^3")
+
+"""Concrete Pressure type in Pascals (Float64 precision)."""
+const PressureQuantity = typeof(1.0u"Pa")
+
+"""Concrete Force type in Newtons (Float64 precision)."""
+const ForceQuantity = typeof(1.0u"N")
+
+"""Concrete Moment type in Newton-meters (Float64 precision)."""
+const MomentQuantity = typeof(1.0u"N*m")
+
+export LengthQuantity, AreaQuantity, VolumeQuantity
+export PressureQuantity, ForceQuantity, MomentQuantity
+
+# =============================================================================
 # Physical Constants
 # =============================================================================
 

@@ -100,9 +100,9 @@ geometry(s::ISymmSection) = (s.d, s.bf, s.tw, s.tf)
 get_coords(s::ISymmSection) = get_coords(s.d, s.bf, s.tw, s.tf)
 
 # Interface
-area(s::ISymmSection) = s.A
-depth(s::ISymmSection) = s.d
-width(s::ISymmSection) = s.bf
+section_area(s::ISymmSection) = s.A
+section_depth(s::ISymmSection) = s.d
+section_width(s::ISymmSection) = s.bf
 
 # Geometry computation functions
 compute_A(d, bf, tw, tf) = 2 * bf * tf + (d - 2 * tf) * tw

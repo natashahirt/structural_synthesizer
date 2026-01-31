@@ -50,9 +50,9 @@ function GlulamSection(b, d; name=nothing, stress_class="24F-V4")
 end
 
 # Interface
-area(s::GlulamSection) = s.A
-depth(s::GlulamSection) = s.d
-width(s::GlulamSection) = s.b
+section_area(s::GlulamSection) = s.A
+section_depth(s::GlulamSection) = s.d
+section_width(s::GlulamSection) = s.b
 
 """
 Standard glulam widths (inches) per AITC.

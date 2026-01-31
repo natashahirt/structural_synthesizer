@@ -1,0 +1,319 @@
+# =============================================================================
+# Visualization for BuildingDesign
+# =============================================================================
+#
+# visualize(design::BuildingDesign) - Display sized members with capacity ratios
+#
+# Coloring modes:
+#   :utilization  - capacity ratio gradient (green → yellow → red)
+#   :pass_fail    - binary green (ok) / red (not ok)
+#   :member_type  - color by beam/column/strut
+#   :section_type - categorical by section name
+#
+# Section visualization:
+#   :none   - just centerlines (fastest)
+#   :ends   - 2D section silhouettes at member endpoints
+#   :solid  - 3D extruded sections as composed primitives
+# =============================================================================
+
+"""
+    _build_element_design_map(design::BuildingDesign)
+
+Build lookup tables mapping edge indices to design results.
+
+Returns (ratios, ok_flags, section_names, types, section_objects) as Dicts keyed by edge_idx.
+"""
+function _build_element_design_map(design::BuildingDesign)
+    struc = design.structure
+    
+    element_ratios = Dict{Int, Float64}()
+    element_ok = Dict{Int, Bool}()
+    element_section = Dict{Int, String}()
+    element_type = Dict{Int, Symbol}()
+    element_section_obj = Dict{Int, StructuralSizer.AbstractSection}()
+    
+    # Map columns
+    for (col_idx, result) in design.columns
+        col_idx > length(struc.columns) && continue
+        col = struc.columns[col_idx]
+        ratio = max(result.axial_ratio, result.interaction_ratio)
+        sec_obj = section(col)  # Get actual section object from member
+        for seg_idx in segment_indices(col)
+            seg_idx > length(struc.segments) && continue
+            edge_idx = struc.segments[seg_idx].edge_idx
+            element_ratios[edge_idx] = ratio
+            element_ok[edge_idx] = result.ok
+            element_section[edge_idx] = result.section_size
+            element_type[edge_idx] = :column
+            !isnothing(sec_obj) && (element_section_obj[edge_idx] = sec_obj)
+        end
+    end
+    
+    # Map beams
+    for (beam_idx, result) in design.beams
+        beam_idx > length(struc.beams) && continue
+        beam = struc.beams[beam_idx]
+        ratio = max(result.flexure_ratio, result.shear_ratio)
+        sec_obj = section(beam)
+        for seg_idx in segment_indices(beam)
+            seg_idx > length(struc.segments) && continue
+            edge_idx = struc.segments[seg_idx].edge_idx
+            element_ratios[edge_idx] = ratio
+            element_ok[edge_idx] = result.ok
+            element_section[edge_idx] = result.section_size
+            element_type[edge_idx] = :beam
+            !isnothing(sec_obj) && (element_section_obj[edge_idx] = sec_obj)
+        end
+    end
+    
+    # Map struts
+    for (strut_idx, strut) in enumerate(struc.struts)
+        sec_obj = section(strut)
+        for seg_idx in segment_indices(strut)
+            seg_idx > length(struc.segments) && continue
+            edge_idx = struc.segments[seg_idx].edge_idx
+            element_type[edge_idx] = :strut
+            !isnothing(sec_obj) && (element_section_obj[edge_idx] = sec_obj)
+        end
+    end
+    
+    return element_ratios, element_ok, element_section, element_type, element_section_obj
+end
+
+"""
+    _utilization_color(ratio::Float64, limits::Tuple{Float64, Float64})
+
+Map a utilization ratio to a color on the RdYlGn_r (red-yellow-green reversed) colormap.
+"""
+function _utilization_color(ratio::Float64, limits::Tuple{Float64, Float64})
+    t = clamp((ratio - limits[1]) / (limits[2] - limits[1]), 0.0, 1.0)
+    # Use GLMakie's colormap interpolation
+    cmap = GLMakie.cgrad(:RdYlGn_r)
+    return GLMakie.Makie.interpolated_getindex(cmap, t)
+end
+
+"""
+    visualize(design::BuildingDesign; kwargs...)
+
+Visualize a building design with sized members and capacity ratios.
+
+# Arguments
+- `color_by::Symbol=:utilization`: Coloring mode:
+  - `:utilization` - capacity ratio gradient (green → yellow → red at 1.0)
+  - `:pass_fail` - binary green (ok) / red (not ok)
+  - `:member_type` - color by beam/column/strut
+  - `:section_type` - categorical by section name
+- `show_sections::Symbol=:none`: Section visualization mode:
+  - `:none` - just centerlines (fastest)
+  - `:ends` - 2D section silhouettes at member endpoints
+  - `:solid` - 3D extruded sections as composed primitives
+- `section_scale::Float64=1.0`: Scale factor for section geometry (1.0 = actual size)
+- `section_alpha::Float64=0.7`: Transparency for section geometry
+- `utilization_limits::Tuple=(0.0, 1.0)`: Color range for utilization mode
+- `show_labels::Bool=false`: Show section size labels on elements
+- `show_nodes::Bool=true`: Show node markers
+- `show_supports::Bool=true`: Show support markers
+- `linewidth::Float64=2.0`: Line width for elements (when show_sections=:none)
+- `markersize::Float64=10.0`: Marker size for nodes/supports
+- `theme::Union{Nothing,Symbol}=nothing`: `:light`, `:dark`, or `nothing`
+
+# Example
+```julia
+design = BuildingDesign(struc, params)
+# ... run design ...
+visualize(design)                              # Centerlines with utilization colors
+visualize(design, show_sections=:ends)         # Section silhouettes at ends
+visualize(design, show_sections=:solid)        # Full 3D sections
+visualize(design, color_by=:pass_fail)         # Quick pass/fail check
+```
+"""
+function visualize(design::BuildingDesign;
+    color_by::Symbol = :utilization,
+    show_sections::Symbol = :none,
+    section_scale::Float64 = 1.0,
+    section_alpha::Float64 = 0.7,
+    utilization_limits::Tuple{Float64, Float64} = (0.0, 1.0),
+    show_labels::Bool = false,
+    show_nodes::Bool = true,
+    show_supports::Bool = true,
+    linewidth::Float64 = 2.0,
+    markersize::Float64 = 10.0,
+    theme::Union{Nothing, Symbol} = nothing
+)
+    struc = design.structure
+    skel = struc.skeleton
+    model = struc.asap_model
+    
+    # Apply theme if specified
+    if theme == :light
+        GLMakie.set_theme!(StructuralPlots.sp_light)
+    elseif theme == :dark
+        GLMakie.set_theme!(StructuralPlots.sp_dark)
+    end
+    
+    # Build element → design data mapping
+    element_ratios, element_ok, element_section, element_type, element_section_obj = _build_element_design_map(design)
+    
+    # Collect unique sections for categorical coloring
+    unique_sections = unique(values(element_section))
+    section_colors_map = Dict(s => StructuralPlots.harmonic[mod1(i, length(StructuralPlots.harmonic))] 
+                              for (i, s) in enumerate(unique_sections))
+    
+    # Member type colors
+    type_colors = Dict(
+        :column => :steelblue,
+        :beam => :coral,
+        :strut => :mediumpurple,
+        :other => :gray60
+    )
+    
+    # Create figure
+    title_str = "Design: $(design.params.name)"
+    if !design.summary.all_checks_pass
+        title_str *= " [FAILS]"
+    end
+    
+    fig = GLMakie.Figure(size = (1200, 800))
+    ax = GLMakie.Axis3(fig[1, 1], 
+        aspect = :data,
+        title = title_str,
+        xlabel = "x [m]",
+        ylabel = "y [m]",
+        zlabel = "z [m]"
+    )
+    
+    # Legend collectors
+    leg_elems = []
+    leg_labels = String[]
+    
+    # Track label positions for later
+    label_positions = GLMakie.Point3f[]
+    label_texts = String[]
+    
+    # Draw elements with design-based coloring and optional section geometry
+    for (i, element) in enumerate(model.elements)
+        p1_raw, p2_raw = get_drawing_pts(element, 0.0)
+        p1 = GLMakie.Point3f(p1_raw...)
+        p2 = GLMakie.Point3f(p2_raw...)
+        
+        # Determine color based on mode
+        c = if color_by == :utilization
+            ratio = get(element_ratios, i, 0.0)
+            _utilization_color(ratio, utilization_limits)
+        elseif color_by == :pass_fail
+            get(element_ok, i, true) ? :green : :red
+        elseif color_by == :member_type
+            typ = get(element_type, i, :other)
+            get(type_colors, typ, :gray60)
+        elseif color_by == :section_type
+            sec_name = get(element_section, i, "")
+            get(section_colors_map, sec_name, :gray60)
+        else
+            :black
+        end
+        
+        # Get section object for this element (if available)
+        sec_obj = get(element_section_obj, i, nothing)
+        has_section = !isnothing(sec_obj)
+        
+        # Draw based on show_sections mode
+        if show_sections == :solid && has_section
+            # Draw 3D extruded section
+            draw_section_solid!(ax, sec_obj, p1, p2; 
+                color = c, alpha = section_alpha)
+        elseif show_sections == :ends && has_section
+            # Draw 2D section silhouettes at ends + centerline
+            draw_section_ends!(ax, sec_obj, p1, p2;
+                color = c, alpha = section_alpha, scale = section_scale)
+            # Also draw thin centerline for context
+            GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]],
+                color = (c, 0.5), linewidth = 0.5, linestyle = :dash)
+        else
+            # Default: just draw centerline
+            lw = haskey(element_ratios, i) ? linewidth : linewidth * 0.5
+            GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]],
+                color = c, linewidth = lw)
+        end
+        
+        # Collect label position (midpoint) if requested
+        if show_labels && haskey(element_section, i) && !isempty(element_section[i])
+            mid = (p1 .+ p2) ./ 2
+            push!(label_positions, mid)
+            push!(label_texts, element_section[i])
+        end
+    end
+    
+    # Draw nodes
+    if show_nodes && !isempty(model.nodes)
+        nodes_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in model.nodes]
+        GLMakie.scatter!(ax, nodes_pos, color = :black, markersize = markersize / 2)
+        push!(leg_elems, GLMakie.MarkerElement(marker = :circle, color = :black, markersize = 8))
+        push!(leg_labels, "Nodes")
+    end
+    
+    # Draw supports
+    if show_supports
+        support_indices = get(skel.groups_vertices, :support, Int[])
+        if !isempty(support_indices) && !isempty(model.nodes)
+            valid_indices = filter(i -> i <= length(model.nodes), support_indices)
+            if !isempty(valid_indices)
+                supports = model.nodes[valid_indices]
+                supp_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in supports]
+                GLMakie.scatter!(ax, supp_pos, color = :red, marker = :utriangle, markersize = markersize)
+                push!(leg_elems, GLMakie.MarkerElement(marker = :utriangle, color = :red, markersize = 12))
+                push!(leg_labels, "Supports")
+            end
+        end
+    end
+    
+    # Draw labels
+    if show_labels && !isempty(label_positions)
+        GLMakie.text!(ax, label_positions, text = label_texts,
+            fontsize = 10, color = :black, align = (:center, :bottom))
+    end
+    
+    # Sidebar with legend and colorbar
+    sidebar = fig[1, 2] = GLMakie.GridLayout()
+    row_idx = 1
+    
+    # Colorbar for utilization mode
+    if color_by == :utilization
+        GLMakie.Colorbar(sidebar[row_idx, 1], 
+            limits = utilization_limits, 
+            colormap = :RdYlGn_r,
+            label = "Capacity Ratio")
+        row_idx += 1
+    elseif color_by == :pass_fail
+        # Simple legend for pass/fail
+        push!(leg_elems, GLMakie.LineElement(color = :green, linewidth = 3))
+        push!(leg_labels, "OK (ratio ≤ 1.0)")
+        push!(leg_elems, GLMakie.LineElement(color = :red, linewidth = 3))
+        push!(leg_labels, "FAIL (ratio > 1.0)")
+    elseif color_by == :member_type
+        push!(leg_elems, GLMakie.LineElement(color = :steelblue, linewidth = 3))
+        push!(leg_labels, "Columns")
+        push!(leg_elems, GLMakie.LineElement(color = :coral, linewidth = 3))
+        push!(leg_labels, "Beams")
+        push!(leg_elems, GLMakie.LineElement(color = :mediumpurple, linewidth = 3))
+        push!(leg_labels, "Struts")
+    end
+    
+    # Add legend
+    if !isempty(leg_elems)
+        GLMakie.Legend(sidebar[row_idx, 1], leg_elems, leg_labels, "Design")
+    end
+    
+    # Add summary text
+    row_idx += 1
+    summary = design.summary
+    summary_text = """
+    Critical: $(summary.critical_element)
+    Max ratio: $(round(summary.critical_ratio, digits=3))
+    All pass: $(summary.all_checks_pass ? "✓" : "✗")
+    """
+    GLMakie.Label(sidebar[row_idx, 1], summary_text, 
+        fontsize = 12, halign = :left, valign = :top)
+    
+    display(fig)
+    return fig
+end

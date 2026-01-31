@@ -1,10 +1,10 @@
 """Standard deformed reinforcing bar per ASTM A615."""
-struct Rebar{T} <: AbstractSection
+struct Rebar{L, W, A} <: AbstractSection
     size::Int
     material::Metal
-    diameter::T
-    weight::T
-    A::T
+    diameter::L     # Length (e.g., inch)
+    weight::W       # Linear mass (e.g., lb/ft)
+    A::A            # Area (e.g., inch²)
 end
 
 # Derived properties
@@ -17,17 +17,17 @@ geometry(r::Rebar) = (r.diameter,)
 get_coords(r::Rebar) = get_circle_coords(r.diameter / 2)
 
 # Interface
-area(r::Rebar) = r.A
-depth(r::Rebar) = r.diameter
-width(r::Rebar) = r.diameter
+section_area(r::Rebar) = r.A
+section_depth(r::Rebar) = r.diameter
+section_width(r::Rebar) = r.diameter
 
 function get_circle_coords(radius, n=32)
     θ = range(0, 2π, length=n+1)
     return [[radius * cos(t), radius * sin(t)] for t in θ]
 end
 
-# Catalog
-const REBAR_CATALOG = Dict{Int, Rebar}()
+# Catalog - use Any since Rebar has multiple type parameters
+const REBAR_CATALOG = Dict{Int, Any}()
 
 function load_rebar_catalog!()
     data = [

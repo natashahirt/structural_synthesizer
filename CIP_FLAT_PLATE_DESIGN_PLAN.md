@@ -1342,7 +1342,17 @@ Key values from StructurePoint Flat Plate Example for validation:
 
 ## TODO Tracking
 
-### Phase 0: Member Hierarchy ✅ COMPLETE
+This section tracks implementation progress using a phased approach that handles the
+interdependency between slab and column design:
+
+```
+GEOMETRY → DDM SIZING → COLUMN SIZING → EFM ANALYSIS → FINAL CHECKS
+   ✅          ✅            🔲              🔲             🔲
+```
+
+---
+
+### Foundation: Member Hierarchy & Geometry ✅ COMPLETE
 
 - [X] `abstract-member`: Create AbstractMember base type with MemberBase shared fields
 - [X] `beam-type`: Create Beam subtype with role field (:girder, :beam, :joist, :infill)
@@ -1351,111 +1361,189 @@ Key values from StructurePoint Flat Plate Example for validation:
 - [X] `update-building-structure`: Update BuildingStructure to use beams, columns, struts vectors
 - [X] `initialize-members`: Update initialize_members! to classify from skeleton groups
 - [X] `column-classification`: Implement classify_column_position() based on graph connectivity
-- [ ] `column-dimensions`: Add column_dimensions() helpers for each section type (deferred)
-
-### Phase 0: Geometry ✅ COMPLETE
-
 - [X] `voronoi-tributary`: Implement Voronoi vertex tributaries (regular, clipped to boundary)
-  - Located in `StructuralSizer/src/slabs/tributary/voronoi.jl`
-  - Uses DelaunayTriangulation.jl for Voronoi + Meshes.jl for boundary clipping
-  - Handles convex AND concave boundaries correctly
-  - Exports: `VertexTributary`, `compute_voronoi_tributaries()`
-- [X] `column-trib-storage`: Store tributaries on Column objects
-  - `Column.tributary_area::Float64` - total Voronoi area (m²)
-  - `Column.tributary_by_slab::Dict{Int, Float64}` - per-cell breakdown (cell_idx → area)
-  - `Column.tributary_polygons::Dict{Int, Vector{NTuple{2,Float64}}}` - per-cell polygons for visualization
-  - Computed in `compute_column_tributaries!(struc)` during `initialize_members!()`
-  - Columns matched to cells by (x,y) position + column top elevation
-- [X] `voronoi-visualization`: Voronoi tributary visualization
-  - `color_by=:tributary_vertex` in visualize()
-  - Uses stored polygons on columns (no recomputation)
-  - Colors by column position: corner/edge/interior
+- [X] `column-trib-storage`: Store tributaries in TributaryCache (keyed by behavior/axis)
+- [X] `voronoi-visualization`: Voronoi tributary visualization with `color_by=:tributary_vertex`
 - [X] `cell-position-classification`: Classify cells as :corner/:edge/:interior
-  - Based on boundary edge count (edges belonging to only one face)
-  - 2+ boundary edges → :corner, 1 → :edge, 0 → :interior
-  - Stored in `Cell.position::Symbol`
 - [X] `slab-position-classification`: Derive slab position from cells
-  - Most exterior position wins (corner > edge > interior)
-  - Stored in `Slab.position::Symbol`
-- [ ] `initial-column-estimate`: Implement initial column size estimation from span table
-
-### Phase 0: ASAP Enhancements ✅ COMPLETE (bonus)
-
 - [X] `shell-elements`: Added ShellElement to ASAP for diaphragm modeling
-- [X] `diaphragm-loads`: Support for distributed loads on shell elements
-
-### Phase 1: Slab Type Hierarchy ✅ COMPLETE
-
-- [X] `slab-type-hierarchy`: Floor type hierarchy exists in `StructuralSizer/src/slabs/types.jl`
-  - `AbstractFloorSystem` → `AbstractConcreteSlab` → `FlatPlate`, `FlatSlab`, `OneWay`, `TwoWay`, etc.
-  - Material-based organization (Concrete/Steel/Timber) instead of Beamless/Beamed
-  - Dispatch works directly on `FlatPlate`, `TwoWay`, etc.
 - [X] `spanning-behavior-trait`: Implemented `SpanningBehavior` trait system
-  - `SpanningBehavior` abstract type with `OneWaySpanning`, `TwoWaySpanning`, `BeamlessSpanning` subtypes
-  - `spanning_behavior(ft)` returns intrinsic behavior (cannot be overridden by options)
-  - `is_one_way(ft)`, `is_two_way(ft)`, `is_beamless(ft)`, `requires_column_tributaries(ft)` helpers
-  - `load_distribution()` and `default_tributary_axis()` now dispatch on traits
-  - Test file: `StructuralSizer/test/slabs/test_spanning_behavior.jl` (107 tests)
 
-### Phase 1: Replace cip_aci.jl
+---
 
-- [X] `delete-old-cip`: Delete conceptually wrong cip_aci.jl
-- [X] `strip-split`: Implement split_tributary_at_half_depth() for column/middle strip
-  - Located in `StructuralSizer/src/slabs/tributary/strips.jl`
-  - Splits tributary at d_max/2 (matches ACI column strip WIDTH = l2/4)
-  - Column strip = inner half, Middle strip = outer half
-  - Note: For triangular tributaries, area split is ~75/25 (correct geometrically)
-- [X] `panel-strips`: Implement PanelStripGeometry and compute_panel_strips()
-  - `ColumnStripPolygon`, `MiddleStripPolygon` types
-  - `compute_panel_strips(tributaries)` → PanelStripGeometry
-  - Exports: strip types, split function, panel computation
-- [X] `verify-rectangular`: Add tests verifying strip areas
-  - Test file: `StructuralSizer/test/tributary/test_strip_geometry.jl`
-  - Tests: rectangular, square, L-shaped panels, individual tributary split
+### Phase 1: DDM Slab Calculations ✅ COMPLETE
 
-### Phase 1: Core Calculations
+**Location**: `StructuralSizer/src/slabs/codes/concrete/flat_plate/calculations.jl`
+**Tests**: `StructuralSizer/test/slabs/test_flat_plate.jl` (validated against StructurePoint)
 
-- [ ] `thickness-calc`: Implement correct ACI 8.3.1.1 thickness (h = ln/33, min 5 in)
-- [ ] `static-moment`: Implement M0 = qu*l*ln²/8 calculation
-- [ ] `mddm-dist`: Implement moment distribution (M-DDM simplified + full ACI tables)
-- [ ] `reinforcement`: Implement strip reinforcement design (As from Rn)
-- [ ] `punching-shear`: Implement punching shear check at columns
-- [ ] `deflection`: Implement deflection check with Ie calculation
+- [X] `material-props`: `Ec()`, `β1()`, `fr()` - ACI 19.2.2.1, 22.2.2.4.3, 19.2.3.1
+- [X] `thickness-calc`: `min_thickness_flat_plate()` - ACI 8.3.1.1 (h = ln/33 or ln/30)
+- [X] `clear-span`: `clear_span()` - ln = l - c
+- [X] `static-moment`: `total_static_moment()` - ACI 8.10.3.2 (M₀ = qu×l₂×ln²/8)
+- [X] `mddm-coefficients`: `MDDM_COEFFICIENTS` - Supplementary Doc Table S-1
+- [X] `aci-ddm-coefficients`: `ACI_DDM_LONGITUDINAL` - ACI Tables 8.10.4.2, 8.10.5
+- [X] `mddm-dist`: `distribute_moments_mddm()` - Simplified M-DDM distribution
+- [X] `aci-dist`: `distribute_moments_aci()` - Full ACI DDM with l₂/l₁ ratio
+- [X] `reinforcement`: `required_reinforcement()` - Supplementary Doc Eq. 1.7
+- [X] `min-reinforcement`: `minimum_reinforcement()` - ACI 8.6.1.1 (0.0018×b×h)
+- [X] `effective-depth`: `effective_depth()` - d = h - cover - db/2
+- [X] `max-spacing`: `max_bar_spacing()` - ACI 8.7.2.2 (min(2h, 18"))
+- [X] `punching-perimeter`: `punching_perimeter()` - ACI 22.6.4
+- [X] `punching-capacity`: `punching_capacity_interior()` - ACI 22.6.5.2 (a,b,c criteria)
+- [X] `punching-demand`: `punching_demand()` - Vu from tributary
+- [X] `punching-check`: `check_punching_shear()` - φVc vs Vu
+- [X] `cracked-inertia`: `cracked_moment_of_inertia()` - Transformed section Icr
+- [X] `effective-inertia`: `effective_moment_of_inertia()` - ACI 24.2.3.5 (Ie)
+- [X] `cracking-moment`: `cracking_moment()` - Mcr = fr×Ig/yt
+- [X] `deflection-limits`: `deflection_limit()` - ACI Table 24.2.2
+- [X] `long-term-factor`: `long_term_deflection_factor()` - ACI 24.2.4.1 (λΔ)
 
-### Phase 1: EFM Integration
+---
 
-- [ ] `efm-asap`: Add EFM analysis path to to_asap!()
-- [ ] `result-types`: Add FlatPlateResult and StripDesign types
+### Phase 2: Initial Column Estimate 🔲 NEXT
 
-### Phase 1: Optimization
+**Purpose**: Estimate column size before full design (needed for clear span ln)
 
-- [ ] `thickness-optimization`: Implement binary search for optimal h with precision
-- [ ] `story-unification`: Implement unify_by_story and unify_groups options
-- [ ] `grouped-computation`: Leverage CellGroup for geometry, SlabGroup for design
+**The Problem**: Slab design needs column width for clear span, but we haven't sized columns yet.
 
-### Phase 2: Column Sizing
+**Solution**: Estimate from tributary area and number of stories.
 
-- [ ] `column-loads-extraction`: Extract Pu, Mu from ASAP reactions for column sizing
-- [ ] `column-sizing-integration`: Integrate column loads into StructuralSizer workflow
-- [ ] `reanalysis-warning`: Implement warning if final column < initial estimate
+- [ ] `estimate-column-from-tributary`: Rule of thumb: c ≈ √(At × qu × n_stories / (0.4 × f'c))
+  - Uses Voronoi tributary area (already computed)
+  - Conservative estimate (tends to undersize → safe for slab clear span)
+- [ ] `span-table-lookup`: Alternative: lookup from span tables (ACI-endorsed approach)
+- [ ] `initial-column-storage`: Store c_initial on Column.c1, Column.c2
+- [ ] `test-initial-estimate`: Verify estimates against typical values
 
-### Testing
+---
 
-- [X] `test-member-types`: Write test_member_types.jl for AbstractMember hierarchy
-- [ ] `test-column-dimensions`: Write test_column_dimensions.jl
-- [X] `test-voronoi`: Write test_voronoi.jl for Voronoi vertex tributaries
-  - Tests: `StructuralSizer/test/tributary/test_voronoi_tributaries.jl`
-  - Covers: rectangular, with interior point, trapezoid, L-shaped (concave)
-- [ ] `test-initial-column`: Write test_initial_column.jl for span table estimates
-- [ ] `test-strip-split`: Write test_strip_split.jl for split_tributary_at_half_depth()
-- [ ] `test-strips`: Write test_strips.jl for rectangular/irregular strip geometry
-- [ ] `test-thickness`: Write test_thickness.jl for ACI 8.3.1.1 min thickness
-- [ ] `test-thickness-optimization`: Write test for binary search optimization
-- [ ] `test-moment-dist`: Write test_moment_distribution.jl for DDM/M-DDM
-- [ ] `test-reinforcement`: Write test_reinforcement.jl for As calculation
-- [ ] `test-punching-shear`: Write test_punching_shear.jl with StructurePoint values
-- [ ] `test-deflection`: Write test_deflection.jl for Ie and long-term deflection
-- [ ] `test-column-sizing`: Write test_column_sizing.jl for ASAP loads → sizing
-- [ ] `test-structurepoint-full`: Write test_structurepoint_example.jl full integration
-- [ ] `update-runtests`: Update runtests.jl includes
-- [ ] `structurepoint-validation`: Validate against StructurePoint 24x20 ft example
+### Phase 3: Concrete Column Sizing (ACI 318 Chapter 22) 🔲
+
+**Purpose**: Size RC columns for Pu, Mu from tributary loads (before EFM refinement)
+
+**New File**: `StructuralSizer/src/members/codes/aci/concrete_column.jl`
+
+**Inputs**:
+- Pu from tributary: Σ(At × qu) for floors above
+- Mu estimated from unbalanced loads or DDM support moments
+- Lu = unbraced length (story height)
+- f'c, fy material properties
+
+**ACI Procedure**:
+1. Slenderness check (ACI 6.2.5): kLu/r < 22 for short column
+2. Moment magnification (ACI 6.6) if slender
+3. Interaction diagram check: (Pu, Mu) inside P-M envelope
+4. Select (c1, c2, As) satisfying all requirements
+
+- [ ] `concrete-column-section`: Define `ConcreteRectColumn` section type
+  - c1, c2 dimensions
+  - As_total, bar arrangement
+  - Cover, tie spacing
+- [ ] `column-interaction-diagram`: P-M interaction capacity (ACI 22.4)
+  - φPn vs φMn envelope
+  - Tension-controlled vs compression-controlled
+- [ ] `slenderness-check`: kLu/r classification (ACI 6.2.5)
+  - Non-sway vs sway frame
+  - Short column exemption (kLu/r < 22)
+- [ ] `moment-magnification`: δ factor for slender columns (ACI 6.6)
+  - δns for non-sway
+  - δs for sway frames
+- [ ] `size-concrete-column`: Main sizing function
+  - Input: Pu, Mu, Lu, f'c, fy
+  - Output: ConcreteColumnResult (c1, c2, As, bars, utilization)
+- [ ] `column-min-requirements`: ACI minimums
+  - c_min ≥ 10" (ACI 10.3.1)
+  - ρ_min = 1% (ACI 10.6.1.1)
+  - ρ_max = 8% (ACI 10.6.1.1)
+- [ ] `result-type`: `ConcreteColumnResult` struct
+- [ ] `test-column-sizing`: Validate against hand calculations / examples
+
+---
+
+### Phase 4: EFM Analysis in ASAP 🔲
+
+**Purpose**: Refine slab design with actual frame analysis (more accurate than DDM)
+
+**New Function**: `to_asap_efm!(struc)` in `StructuralSynthesizer/src/analyze/asap/`
+
+**The EFM Model**:
+```
+      Column Lines (N-S)
+           │   │   │
+    ───────●───●───●───────  ← Slab-beam elements (I_slab = l₂h³/12)
+           │   │   │
+    ───────●───●───●───────
+           │   │   │
+           ▼   ▼   ▼
+        Column elements (reduced stiffness K_ec)
+```
+
+- [ ] `efm-nodes`: Create nodes at column intersections (from Column positions)
+- [ ] `slab-beam-section`: Slab-beam section with I_slab = l₂ × h³/12
+  - Width = transverse span l₂
+  - Use h from Phase 1 DDM sizing
+- [ ] `torsional-stiffness`: Kt per ACI 8.11.5.2(b)
+  - C = (1 - 0.63x/y) × x³y/3
+  - Kt = 9EcsC / (l₂(1 - c₂/l₂)³)
+- [ ] `equivalent-column`: Kec per ACI 8.11.5
+  - 1/Kec = 1/ΣKc + 1/Kt
+  - Accounts for torsional flexibility of slab-column connection
+- [ ] `efm-elements`: Create slab-beam and column elements in ASAP
+- [ ] `efm-loads`: Apply uniform qu to slab-beams
+- [ ] `solve-efm`: Solve frame in ASAP
+- [ ] `extract-moments`: Get moments at face of support (not centerline)
+  - M_face = M_centerline - V × c/2
+- [ ] `extract-reactions`: Get column reactions (Pu, Mu) for column verification
+- [ ] `compare-ddm-efm`: Check if M_efm > M_ddm (may need to increase rebar)
+- [ ] `test-efm`: Validate against StructurePoint EFM example
+
+---
+
+### Phase 5: Final Checks & Iteration 🔲
+
+**Purpose**: Verify design and handle cases requiring re-iteration
+
+- [ ] `punching-with-efm-vu`: Re-check punching with actual Vu from EFM reactions
+  - May differ from tributary-based estimate
+- [ ] `deflection-with-efm`: Extract deflections from EFM analysis
+  - Compare to limits (L/240, L/360)
+- [ ] `column-verification`: Re-check columns with EFM moments
+  - If M_efm > M_estimated, verify column still adequate
+- [ ] `iteration-trigger`: Detect when re-iteration is needed
+  - c_designed << c_initial (rare but possible)
+  - M_efm >> M_ddm (irregular layouts)
+  - Punching fails with actual Vu
+- [ ] `reanalysis-warning`: Emit warning/error if re-iteration required
+- [ ] `convergence-check`: Optional full iteration loop
+
+---
+
+### Phase 6: Integration & Workflow 🔲
+
+**Purpose**: Wire everything into `size_floor(::FlatPlate, ...)` and building workflow
+
+- [ ] `size-floor-flatplate`: `size_floor(::FlatPlate, span, sdl, live; ...)`
+  - Orchestrate Phases 1-5
+  - Return `FlatPlatePanelResult`
+- [ ] `result-types`: `FlatPlatePanelResult`, `StripReinforcementDesign`
+  - Already partially defined in `slabs/types.jl`
+- [ ] `thickness-optimization`: Binary search for optimal h
+  - Start at h_min, increase until all checks pass
+  - Precision parameter (default 0.5")
+- [ ] `story-unification`: Option to use max(h) across story
+- [ ] `grouped-computation`: Leverage SlabGroup for efficiency
+- [ ] `test-full-workflow`: End-to-end test with StructurePoint example
+- [ ] `test-irregular-layout`: Test non-rectangular building
+
+---
+
+### Testing Summary
+
+| Phase | Test File | Status |
+|-------|-----------|--------|
+| 1. DDM Calcs | `test_flat_plate.jl` | ✅ Complete |
+| 2. Initial Column | `test_initial_column_estimate.jl` | 🔲 TODO |
+| 3. Column Sizing | `test_concrete_column.jl` | 🔲 TODO |
+| 4. EFM Analysis | `test_efm_analysis.jl` | 🔲 TODO |
+| 5. Final Checks | `test_design_iteration.jl` | 🔲 TODO |
+| 6. Full Workflow | `test_structurepoint_full.jl` | 🔲 TODO |

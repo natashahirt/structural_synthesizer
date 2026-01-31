@@ -98,9 +98,9 @@ function Base.copy(s::HSSRoundSection)
 end
 
 # --- Section interface ---
-area(s::HSSRoundSection) = s.A
-depth(s::HSSRoundSection) = s.OD
-width(s::HSSRoundSection) = s.OD
+section_area(s::HSSRoundSection) = s.A
+section_depth(s::HSSRoundSection) = s.OD
+section_width(s::HSSRoundSection) = s.OD
 
 # Symmetric properties aliases
 Ix(s::HSSRoundSection) = s.I

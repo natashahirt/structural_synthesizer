@@ -57,6 +57,8 @@ export Segment, MemberGroup
 # --- Tributary cache types ---
 export TributaryCache, TributaryCacheKey
 export CellTributaryResult, ColumnTributaryResult
+# Re-export Unitful type aliases from StructuralBase for convenience
+export AreaQuantity, LengthQuantity
 export has_edge_tributaries, has_vertex_tributaries
 export get_edge_tributaries, set_edge_tributaries!
 export get_vertex_tributary, set_vertex_tributary!
@@ -73,6 +75,7 @@ export clear_tributary_cache!, list_cached_tributary_keys
 export DesignParameters
 export BuildingDesign, SlabDesignResult, ColumnDesignResult, BeamDesignResult
 export PunchingCheckResult, StripReinforcementDesign, DesignSummary
+export structure, skeleton  # BuildingDesign accessors
 export slab_design, column_design, beam_design, all_ok, critical_ratio
 
 # --- Design workflow ---
@@ -92,7 +95,7 @@ export vis_embodied_carbon_summary
 
 # --- Building operations ---
 export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!, to_asap_with_diaphragms!
-export initialize!
+export initialize!, size!
 export create_slab_diaphragm_shells
 
 # --- Lookup utilities ---
@@ -105,6 +108,9 @@ export update_slab_loads!, update_all_slab_loads!
 
 # --- Member sizing ---
 export build_member_groups!, member_group_demands, size_members_discrete!
+export size_columns!
+export rc_section_to_asap
+export estimate_column_sizes!
 
 # --- Foundation sizing ---
 export initialize_supports!, initialize_foundations!, size_foundations!

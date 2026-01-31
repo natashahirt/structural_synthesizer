@@ -7,15 +7,31 @@ using StructuralSizer
 using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
 
 @testset "StructuralSizer Tests" begin
+    # Nebyu's vault tests (based on MATLAB output)
     include("haile_vault/test_vault.jl")
-    include("structs/test_member_hierarchy.jl")
+    # Steel beam tests (W section)
     include("steel_member/test_aisc_beam_examples.jl")
     include("steel_member/test_handcalc_beam.jl")
+    # Steel column tests (W section)
     include("steel_member/test_aisc_column_examples.jl")
+    # Steel HSS tests
     include("steel_member/test_hss_sections.jl")
+    # AISC companion manual tests for steel elements
     include("steel_member/test_aisc_companion_manual_1.jl")
+    include("steel_member/test_aisc_360_reference.jl")
+    # Tributary area tests (edge and voronoi)
     include("tributary/test_spans.jl")
     include("tributary/test_tributary_workflow.jl")
     include("tributary/test_voronoi_tributaries.jl")
     include("foundations/test_spread_footing.jl")
+    # Concrete column tests (rectangular)
+    include("concrete_column/test_data/tied_column_16x16.jl")
+    include("concrete_column/test_rc_column_section.jl")
+    include("concrete_column/test_column_pm.jl")
+    # Concrete column tests (circular)
+    include("concrete_column/test_circular_column_pm.jl")
+    
+    # Full column optimization tests
+    include("optimize/test_column_optimization.jl")
+    include("optimize/test_column_full.jl")
 end

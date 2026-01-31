@@ -108,9 +108,9 @@ function Base.copy(s::HSSRectSection)
 end
 
 # --- Section interface ---
-area(s::HSSRectSection) = s.A
-depth(s::HSSRectSection) = s.H
-width(s::HSSRectSection) = s.B
+section_area(s::HSSRectSection) = s.A
+section_depth(s::HSSRectSection) = s.H
+section_width(s::HSSRectSection) = s.B
 
 # --- Geometry computation ---
 

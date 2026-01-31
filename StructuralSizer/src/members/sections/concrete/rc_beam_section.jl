@@ -60,9 +60,9 @@ function RCBeamSection(b, h;
 end
 
 # Interface
-area(s::RCBeamSection) = s.b * s.h  # Gross section area
-depth(s::RCBeamSection) = s.h
-width(s::RCBeamSection) = s.b
+section_area(s::RCBeamSection) = s.b * s.h  # Gross section area
+section_depth(s::RCBeamSection) = s.h
+section_width(s::RCBeamSection) = s.b
 
 """Reinforcement ratio ρ = As / (b × d)"""
 rho(s::RCBeamSection) = s.As / (s.b * s.d)

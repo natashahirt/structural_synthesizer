@@ -4,7 +4,7 @@
 function get_Pn_tension(s::AbstractSection, mat::Metal; Ae_ratio=0.75)
     # D2-1: Tensile Yielding
     # Pn = Fy * Ag
-    Pn_yield = mat.Fy * area(s)
+    Pn_yield = mat.Fy * section_area(s)
 
     # D2-2: Tensile Rupture
     # Pn = Fu * Ae
@@ -14,7 +14,7 @@ function get_Pn_tension(s::AbstractSection, mat::Metal; Ae_ratio=0.75)
     # 0.75 is a conservative placeholder for Ae/Ag.
     # Note: Optimization of members usually controlled by gross yielding.
     # Connection design handles rupture locally.
-    Pn_rupture = mat.Fu * (area(s) * Ae_ratio)
+    Pn_rupture = mat.Fu * (section_area(s) * Ae_ratio)
 
     return min(Pn_yield, Pn_rupture)
 end
@@ -23,11 +23,11 @@ end
 function get_ϕPn_tension(s::AbstractSection, mat::Metal; Ae_ratio=0.75)
     # ϕ = 0.90 for yielding
     ϕ_yield = 0.90
-    ϕPn_yield = ϕ_yield * (mat.Fy * area(s))
+    ϕPn_yield = ϕ_yield * (mat.Fy * section_area(s))
 
     # ϕ = 0.75 for rupture
     ϕ_rupture = 0.75
-    ϕPn_rupture = ϕ_rupture * (mat.Fu * (area(s) * Ae_ratio))
+    ϕPn_rupture = ϕ_rupture * (mat.Fu * (section_area(s) * Ae_ratio))
 
     return min(ϕPn_yield, ϕPn_rupture)
 end

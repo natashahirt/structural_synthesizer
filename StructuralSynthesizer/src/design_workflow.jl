@@ -53,8 +53,7 @@ design = design_building(struc, DesignParameters(
 function design_building(struc::BuildingStructure, params::DesignParameters)
     t_start = time()
     
-    design = BuildingDesign(params)
-    design.building_id = hash(struc)
+    design = BuildingDesign(struc, params)
     
     # 1. Ensure tributaries are computed
     _ensure_tributaries_computed!(struc, params)

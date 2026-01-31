@@ -129,7 +129,8 @@ function optimize_discrete(
     m = JuMP.Model(opt_factory)
     
     if solver === :highs
-        JuMP.set_optimizer_attribute(m, "output_flag", output_flag)
+        # HiGHS expects Bool for output_flag
+        JuMP.set_optimizer_attribute(m, "output_flag", output_flag > 0)
         JuMP.set_optimizer_attribute(m, "mip_rel_gap", mip_gap)
     else
         JuMP.set_optimizer_attribute(m, "OutputFlag", output_flag)

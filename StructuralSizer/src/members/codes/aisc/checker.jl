@@ -151,7 +151,7 @@ function precompute_capacities!(
         
         # Geometric properties
         cache.Ix[j] = ustrip(uconvert(u"m^4", _Ix_for_deflection(s)))
-        cache.depths[j] = ustrip(uconvert(u"m", depth(s)))
+        cache.depths[j] = ustrip(uconvert(u"m", section_depth(s)))
         
         # Objective coefficient (value per meter)
         val = objective_value(objective, s, material, 1.0u"m")

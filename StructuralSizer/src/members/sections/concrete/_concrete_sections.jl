@@ -3,10 +3,14 @@
 # ==============================================================================
 # Section types for reinforced concrete members.
 
-# Reinforced concrete rectangular section
+# Reinforced concrete rectangular beam section
 include("rc_beam_section.jl")
 
-# Future:
-# include("rc_column_section.jl")   # Square/rectangular columns
-# include("rc_circular_section.jl") # Circular columns
-# include("prestressed_section.jl") # Prestressed concrete
+# Reinforced concrete column section (rectangular/square)
+include("rc_rect_column_section.jl")
+
+# Reinforced concrete circular column section
+include("rc_circular_column_section.jl")
+
+# RC column catalog (standard sizes and presets)
+include("catalogs/rc_columns.jl")

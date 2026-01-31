@@ -118,11 +118,28 @@ struct CellTributaryResult
     strip_geometry::Union{PanelStripGeometry, Nothing}  # Column/middle strip split
 end
 
-"""Cached Voronoi tributary for a column."""
+# Import concrete Unitful type aliases from StructuralBase
+# (defined in StructuralBase.StructuralUnits for shared use)
+using StructuralBase.StructuralUnits: AreaQuantity, LengthQuantity
+
+"""
+Cached Voronoi tributary for a column.
+
+All values are Unitful quantities - no ambiguity about units:
+- `total_area`: Area (m²)
+- `by_cell`: Dict mapping cell_idx → Area (m²)
+- `polygons`: Dict mapping cell_idx → vertices as (Length, Length) tuples
+
+Example:
+```julia
+result = struc.tributaries.vertex[story][vertex_idx]
+At = result.total_area  # → 45.2 m²
+```
+"""
 struct ColumnTributaryResult
-    total_area::Float64                          # m²
-    by_cell::Dict{Int, Float64}                  # cell_idx → area (m²)
-    polygons::Dict{Int, Vector{NTuple{2,Float64}}}  # cell_idx → vertices (m)
+    total_area::AreaQuantity                                      # e.g., 45.2 m²
+    by_cell::Dict{Int, AreaQuantity}                              # cell_idx → area
+    polygons::Dict{Int, Vector{NTuple{2, LengthQuantity}}}        # cell_idx → [(x,y), ...]
 end
 
 """
@@ -131,6 +148,15 @@ Cache of all tributary computations for a BuildingStructure.
 Keyed by (behavior, axis) so multiple configurations can coexist.
 Computing tributaries for a new configuration adds to the cache without
 discarding previous results.
+
+All values are stored as explicit Unitful quantities (no ambiguity):
+- Areas as `AreaQuantity` (e.g., `45.2u"m^2"`)
+- Coordinates as `LengthQuantity` (e.g., `3.5u"m"`)
+
+Use accessor functions in `tributary_accessors.jl`:
+```julia
+At = column_tributary_area(struc, col)  # → 45.2 m²
+```
 """
 mutable struct TributaryCache
     # Edge tributaries (for beam loading)

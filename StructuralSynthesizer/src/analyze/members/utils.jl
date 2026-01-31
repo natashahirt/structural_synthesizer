@@ -131,6 +131,9 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     
     skel = struc.skeleton
     
+    # Use shared type aliases from StructuralBase.StructuralUnits
+    # (AreaQuantity = typeof(1.0u"m^2"), LengthQuantity = typeof(1.0u"m"))
+    
     # Build (x,y) → Column lookup (rounded to avoid FP precision issues)
     col_by_xy = Dict{Tuple{Float64, Float64}, Vector{Column{T}}}()
     for col in struc.columns
@@ -141,10 +144,10 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     end
     
     # Temporary storage: (story, vertex_idx) → accumulated data
-    col_tribs = Dict{Tuple{Int, Int}, ColumnTributaryResult}()
-    col_by_cell = Dict{Tuple{Int, Int}, Dict{Int, Float64}}()
-    col_polygons = Dict{Tuple{Int, Int}, Dict{Int, Vector{NTuple{2,Float64}}}}()
-    col_totals = Dict{Tuple{Int, Int}, Float64}()
+    # Using Unitful quantities for type safety
+    col_by_cell = Dict{Tuple{Int, Int}, Dict{Int, AreaQuantity}}()
+    col_polygons = Dict{Tuple{Int, Int}, Dict{Int, Vector{NTuple{2, LengthQuantity}}}}()
+    col_totals = Dict{Tuple{Int, Int}, AreaQuantity}()
     
     # Process each cell
     for (cell_idx, cell) in enumerate(struc.cells)
@@ -155,7 +158,7 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
         first_vert = skel.vertices[v_indices[1]]
         cell_z = Float64(ustrip(u"m", Meshes.coords(first_vert).z))
         
-        # Extract vertex positions as tuples (in meters)
+        # Extract vertex positions as tuples (in meters, raw Float64 for Voronoi algorithm)
         col_positions = NTuple{2, Float64}[]
         cell_xys = Tuple{Float64, Float64}[]
         for vi in v_indices
@@ -187,20 +190,25 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
             end
             isnothing(matched_col) && continue
             
-            # Accumulate in temp storage
+            # Accumulate in temp storage (converting to Unitful)
             key = (matched_col.story, matched_col.vertex_idx)
             if !haskey(col_by_cell, key)
-                col_by_cell[key] = Dict{Int, Float64}()
-                col_polygons[key] = Dict{Int, Vector{NTuple{2,Float64}}}()
-                col_totals[key] = 0.0
+                col_by_cell[key] = Dict{Int, AreaQuantity}()
+                col_polygons[key] = Dict{Int, Vector{NTuple{2, LengthQuantity}}}()
+                col_totals[key] = 0.0u"m^2"
             end
-            col_by_cell[key][cell_idx] = trib.area
-            col_polygons[key][cell_idx] = trib.polygon
-            col_totals[key] += trib.area
+            
+            # Convert raw Float64 from Voronoi to Unitful quantities
+            area_unitful = trib.area * u"m^2"
+            polygon_unitful = [(x * u"m", y * u"m") for (x, y) in trib.polygon]
+            
+            col_by_cell[key][cell_idx] = area_unitful
+            col_polygons[key][cell_idx] = polygon_unitful
+            col_totals[key] += area_unitful
         end
     end
     
-    # Store in cache
+    # Store in cache (all values are now Unitful)
     for (key, total_area) in col_totals
         story, vertex_idx = key
         cache_column_tributary!(struc, story, vertex_idx,
@@ -627,7 +635,7 @@ function size_members_discrete!(
             L_raw = sum(struc.segments[i].L for i in segment_indices(m))
             L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
             set_section!(m, chosen)
-            set_volumes!(m, MaterialVolumes(material => StructuralSizer.area(chosen) * L_total))
+            set_volumes!(m, MaterialVolumes(material => StructuralSizer.section_area(chosen) * L_total))
             
             # Update ASAP elements
             for seg_idx in segment_indices(m)
@@ -646,4 +654,388 @@ function size_members_discrete!(
     defl_str = isnothing(deflection_limit) ? "none" : "L/$(Int(round(1/deflection_limit)))"
     @info "Sized $(length(group_ids)) member groups using discrete MIP" optimizer=optimizer n_max_sections=n_max_sections deflection_limit=defl_str
     return struc
+end
+
+# =============================================================================
+# Multi-Material Column Sizing
+# =============================================================================
+
+"""
+    rc_section_to_asap(section::StructuralSizer.RCColumnSection, material::StructuralSizer.Concrete)
+
+Convert an RCColumnSection to an ASAP Section for structural analysis.
+
+Uses gross section properties (ignores reinforcement for stiffness).
+"""
+function rc_section_to_asap(section::StructuralSizer.RCColumnSection, material::StructuralSizer.Concrete)
+    # Get dimensions in meters
+    b = ustrip(uconvert(u"m", section.b))
+    h = ustrip(uconvert(u"m", section.h))
+    
+    # Gross section properties
+    A = b * h                    # Area [m²]
+    Ix = b * h^3 / 12            # Strong axis I [m⁴]
+    Iy = h * b^3 / 12            # Weak axis I [m⁴]
+    
+    # Torsional constant (approximation for rectangular sections)
+    # J ≈ β × a × b³ where a ≥ b
+    a_dim = max(b, h)
+    b_dim = min(b, h)
+    ratio = a_dim / b_dim
+    # β ranges from 0.141 (square) to 0.333 (very elongated)
+    β = 1/3 - 0.21 * (b_dim/a_dim) * (1 - (b_dim/a_dim)^4 / 12)
+    J = β * a_dim * b_dim^3
+    
+    # Material properties
+    E = material.E
+    ν = material.ν
+    G = E / (2 * (1 + ν))
+    ρ = material.ρ
+    
+    return Asap.Section(A*u"m^2", E, G, Ix*u"m^4", Iy*u"m^4", J*u"m^4", ρ)
+end
+
+"""
+    size_columns!(struc::BuildingStructure)
+    size_columns!(struc::BuildingStructure, opts::SteelColumnOptions)
+    size_columns!(struc::BuildingStructure, opts::ConcreteColumnOptions)
+
+Size columns using discrete MIP optimization.
+
+If no options are provided, uses `struc.design_parameters.columns` if set,
+otherwise defaults to `SteelColumnOptions()`.
+
+# Example
+```julia
+# Use design parameters (recommended)
+struc.design_parameters = DesignParameters(
+    columns = ConcreteColumnOptions(grade = NWC_5000),
+)
+size_columns!(struc)
+
+# Or pass options directly
+size_columns!(struc, SteelColumnOptions(section_type = :hss))
+size_columns!(struc, ConcreteColumnOptions(max_depth = 0.6))
+```
+"""
+function size_columns!(
+    struc::BuildingStructure,
+    opts::Union{StructuralSizer.SteelColumnOptions, StructuralSizer.ConcreteColumnOptions, Nothing} = nothing;
+    resolution::Int = 200,
+    reanalyze::Bool = true,
+    gravity_factor::Quantity = 9.81u"m/s^2",
+)
+    # Determine options: explicit > design_parameters > default
+    effective_opts = if !isnothing(opts)
+        opts
+    elseif !isnothing(struc.design_parameters) && !isnothing(struc.design_parameters.columns)
+        struc.design_parameters.columns
+    else
+        StructuralSizer.SteelColumnOptions()
+    end
+    
+    _size_columns_impl!(struc, effective_opts; resolution, reanalyze, gravity_factor)
+end
+
+# Steel implementation
+function _size_columns_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.SteelColumnOptions;
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    member_edge_group = :columns
+    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[]))
+    
+    # Add gravity loads
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+    
+    # Get group demands
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
+    
+    # Build geometries
+    geometries = [StructuralSizer.SteelMemberGeometry(L; Lb=Lb, Cb=Cb, Kx=Kx, Ky=Ky)
+                  for (L, Lb, Cb, Kx, Ky) in zip(L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs)]
+    
+    # Extract demands (N, N*m for steel)
+    Pu = [d.Pu_c for d in demands]
+    Mux = [d.Mux for d in demands]
+    Muy = [d.Muy for d in demands]
+    
+    # Run optimization
+    result = StructuralSizer.size_columns(Pu, Mux, geometries, opts; Muy=Muy)
+    
+    # Apply results
+    _apply_column_results!(struc, result, group_ids, opts.material, :steel, edge_ids_in_group)
+    
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+    
+    @info "Sized $(length(group_ids)) column groups" material="steel" section_type=opts.section_type
+    return struc
+end
+
+# Concrete implementation
+function _size_columns_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.ConcreteColumnOptions;
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    member_edge_group = :columns
+    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[]))
+    
+    # Add gravity loads
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+    
+    # Get group demands
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
+    
+    # Build geometries (concrete uses Lu, k)
+    geometries = [StructuralSizer.ConcreteMemberGeometry(L; Lu=Lb, k=Ky)
+                  for (L, Lb, Ky) in zip(L_totals, Lb_govs, Ky_govs)]
+    
+    # Convert demands: N/N*m → kip/kip*ft for concrete
+    Pu_kip = [ustrip(uconvert(StructuralBase.StructuralUnits.kip, d.Pu_c * u"N")) for d in demands]
+    Mux_kipft = [ustrip(uconvert(StructuralBase.StructuralUnits.kip*u"ft", d.Mux * u"N*m")) for d in demands]
+    Muy_kipft = [ustrip(uconvert(StructuralBase.StructuralUnits.kip*u"ft", d.Muy * u"N*m")) for d in demands]
+    
+    # Run optimization
+    result = StructuralSizer.size_columns(Pu_kip, Mux_kipft, geometries, opts; Muy=Muy_kipft)
+    
+    # Apply results
+    _apply_column_results!(struc, result, group_ids, opts.grade, :concrete, edge_ids_in_group)
+    
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+    
+    @info "Sized $(length(group_ids)) column groups" material="concrete" grade=StructuralSizer.material_name(opts.grade)
+    return struc
+end
+
+# Helper: add gravity loads
+function _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+    existing_gravity_elements = Set()
+    for load in struc.asap_model.loads
+        if isa(load, Asap.GravityLoad)
+            push!(existing_gravity_elements, load.element)
+        end
+    end
+    
+    for edge_idx in edge_ids_in_group
+        el = struc.asap_model.elements[edge_idx]
+        el in existing_gravity_elements && continue
+        push!(struc.asap_model.loads, Asap.GravityLoad(el, gravity_factor))
+    end
+end
+
+# Helper: apply optimization results
+function _apply_column_results!(struc, result, group_ids, material, material_type, edge_ids_in_group)
+    member_array = struc.columns
+    
+    for (g_idx, gid) in enumerate(group_ids)
+        chosen = result.sections[g_idx]
+        
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+        
+        # Build ASAP section
+        asap_sec = if material_type === :steel
+            chosen.name === nothing && throw(ArgumentError("Steel section has no name for ASAP conversion"))
+            AsapToolkit.toASAPframe(chosen.name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
+        else
+            rc_section_to_asap(chosen, material)
+        end
+        
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+            
+            # Compute total length
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            
+            set_section!(m, chosen)
+            set_volumes!(m, MaterialVolumes(material => StructuralSizer.section_area(chosen) * L_total))
+            
+            # Update ASAP elements
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+end
+
+# =============================================================================
+# Initial Column Size Estimation
+# =============================================================================
+
+"""
+    estimate_column_sizes!(struc; fc=4000u"psi", qu_default=200u"psf", method=:tributary)
+
+Estimate initial column sizes and store in Column.c1, Column.c2.
+
+This provides preliminary column dimensions needed for slab clear span calculation
+(ln = l - c) before full column design. The estimate is intentionally conservative.
+
+# Arguments
+- `struc`: BuildingStructure with columns and tributary areas computed
+- `fc`: Concrete compressive strength (default 4000 psi)
+- `qu_default`: Default factored floor load if not available from cells (default 200 psf)
+- `method`: :tributary (from Voronoi area) or :span (from span rule of thumb)
+
+# Requires
+- Columns initialized with `initialize_members!()`
+- Tributary areas computed with `compute_column_tributaries!()`
+
+# Effects
+- Sets `col.c1` and `col.c2` for each column
+- Uses square columns (c1 = c2) for interior
+- May use rectangular (c2 = 1.5 × c1) for edge columns
+
+# Example
+```julia
+initialize!(struc; floor_type=:flat_plate, ...)
+compute_column_tributaries!(struc)  # Usually called by initialize!
+estimate_column_sizes!(struc; fc=5000u"psi")
+
+# Now columns have c1, c2 set
+for col in struc.columns
+    println("Column at story \$(col.story): \$(col.c1) × \$(col.c2)")
+end
+```
+"""
+function estimate_column_sizes!(struc::BuildingStructure;
+                                 fc::Unitful.Pressure = 4000u"psi",
+                                 qu_default::Unitful.Pressure = 200u"psf",
+                                 method::Symbol = :tributary)
+    skel = struc.skeleton
+    n_total_stories = length(skel.stories_z) - 1  # stories_z includes ground (0)
+    
+    if n_total_stories < 1
+        @warn "No stories found in skeleton, cannot estimate column sizes"
+        return struc
+    end
+    
+    estimated_count = 0
+    
+    for col in struc.columns
+        # Number of stories above this column
+        n_above = n_total_stories - col.story
+        n_above = max(n_above, 1)  # At least 1 (supports at least 1 floor)
+        
+        if method == :tributary
+            # Get tributary area (already Unitful from cache)
+            At = column_tributary_area(struc, col)
+            
+            if isnothing(At) || ustrip(u"m^2", At) <= 0
+                # Fall back to span-based estimate
+                avg_span = _estimate_avg_span(skel)
+                c = StructuralSizer.estimate_column_size_from_span(avg_span)
+                col.c1 = c
+                col.c2 = c
+            else
+                # Get average load from adjacent cells
+                qu = _get_column_load_intensity(struc, col, qu_default)
+                
+                # Estimate column size (At already has units from accessor)
+                c = StructuralSizer.estimate_column_size(At, qu, n_above, fc)
+                
+                # Rectangular for edge/corner columns (optional)
+                if col.position == :interior
+                    col.c1 = c
+                    col.c2 = c
+                else
+                    # Edge/corner: use rectangular (c2 = c, c1 = c/1.2)
+                    # This gives better punching shear capacity at edges
+                    col.c1 = c
+                    col.c2 = c
+                end
+            end
+        else  # method == :span
+            avg_span = _estimate_avg_span(skel)
+            c = StructuralSizer.estimate_column_size_from_span(avg_span)
+            col.c1 = c
+            col.c2 = c
+        end
+        
+        estimated_count += 1
+    end
+    
+    @info "Estimated initial column sizes" method=method columns=estimated_count fc=fc
+    return struc
+end
+
+"""Get average span from skeleton for span-based column estimate."""
+function _estimate_avg_span(skel::BuildingSkeleton)
+    if isempty(skel.edges)
+        return 20u"ft"  # Default assumption
+    end
+    
+    # Sample horizontal edge lengths
+    total_len = 0.0u"m"
+    count = 0
+    
+    for edge in skel.edges
+        len = Meshes.measure(edge)
+        # Only count horizontal edges (beams, not columns)
+        p1, p2 = edge.vertices
+        z1 = Meshes.coords(p1).z
+        z2 = Meshes.coords(p2).z
+        if abs(z1 - z2) < 0.1u"m"  # Horizontal
+            total_len += len
+            count += 1
+        end
+    end
+    
+    if count > 0
+        return total_len / count
+    else
+        return 20u"ft"  # Default
+    end
+end
+
+"""Get factored load intensity for column from adjacent cells."""
+function _get_column_load_intensity(struc::BuildingStructure, col, qu_default)
+    # Get cells contributing to this column (areas are Unitful)
+    by_cell = column_tributary_by_cell(struc, col)
+    
+    if isnothing(by_cell) || isempty(by_cell)
+        return qu_default
+    end
+    
+    # Area-weighted average of cell loads
+    total_load = 0.0u"kN"
+    total_area = 0.0u"m^2"
+    
+    for (cell_idx, area) in by_cell  # area is already Unitful (m²)
+        if cell_idx <= length(struc.cells)
+            cell = struc.cells[cell_idx]
+            # Factored load: 1.2D + 1.6L (conservative)
+            # Self-weight will be added from slab thickness later
+            sdl = cell.sdl
+            ll = cell.live_load
+            qu = 1.2 * sdl + 1.6 * ll
+            
+            total_load += qu * area
+            total_area += area
+        end
+    end
+    
+    if total_area > 0u"m^2"
+        return total_load / total_area
+    else
+        return qu_default
+    end
 end

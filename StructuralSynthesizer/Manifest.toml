@@ -2,7 +2,7 @@
 
 julia_version = "1.11.6"
 manifest_format = "2.0"
-project_hash = "8c82333c300ea182c5f96c2244610c2f3a309874"
+project_hash = "e04750e7771e9d0111b879091db47625072c02e2"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1786,7 +1786,7 @@ uuid = "a1b2c3d4-5678-90ab-cdef-123456789abc"
 version = "0.1.0"
 
 [[deps.StructuralSizer]]
-deps = ["CSV", "DelaunayTriangulation", "Gurobi", "HiGHS", "JSON3", "JuMP", "Logging", "Meshes", "QuadGK", "Roots", "StructuralBase", "Unitful"]
+deps = ["Asap", "AsapToolkit", "CSV", "DelaunayTriangulation", "Gurobi", "HiGHS", "JSON3", "JuMP", "Logging", "Meshes", "QuadGK", "Roots", "StructuralBase", "Unitful"]
 path = "../StructuralSizer"
 uuid = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
 version = "0.1.0"

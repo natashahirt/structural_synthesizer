@@ -9,6 +9,23 @@
 # - Column tributary areas (Voronoi)
 # - Cell edge tributaries (straight skeleton / directed)
 # - Strip geometry (column/middle strip split)
+#
+# =============================================================================
+# UNIT CONVENTION - Explicit Unitful Storage
+# =============================================================================
+#
+# TributaryCache stores Unitful quantities directly:
+#   - Areas:       AreaQuantity    (e.g., 45.2 m²)
+#   - Lengths:     LengthQuantity  (e.g., 3.5 m)
+#   - Polygons:    NTuple{2, LengthQuantity} (e.g., (3.5 m, 2.1 m))
+#
+# All accessor functions return Unitful quantities:
+#   At = column_tributary_area(struc, col)  # → 45.2 m²
+#   by_cell = column_tributary_by_cell(struc, col)  # Dict{Int, AreaQuantity}
+#
+# For visualization, strip units:
+#   area_val = ustrip(u"m^2", At)  # → 45.2 (Float64)
+#
 # =============================================================================
 
 """
@@ -44,11 +61,16 @@ end
     cache_column_tributary!(struc, story, vertex_idx, total_area, by_cell, polygons)
 
 Store column Voronoi tributary in the cache.
+
+# Arguments
+- `total_area`: Area quantity (e.g., `45.2u"m^2"`)
+- `by_cell`: Dict{Int, AreaQuantity} mapping cell_idx → area
+- `polygons`: Dict{Int, Vector{NTuple{2, LengthQuantity}}} for visualization
 """
 function cache_column_tributary!(struc::BuildingStructure, story::Int, vertex_idx::Int,
-                                  total_area::Float64,
-                                  by_cell::Dict{Int, Float64},
-                                  polygons::Dict{Int, Vector{NTuple{2,Float64}}})
+                                  total_area::AreaQuantity,
+                                  by_cell::Dict{Int, AreaQuantity},
+                                  polygons::Dict{Int, Vector{NTuple{2, LengthQuantity}}})
     result = ColumnTributaryResult(total_area, by_cell, polygons)
     set_vertex_tributary!(struc.tributaries, story, vertex_idx, result)
     return result
@@ -58,23 +80,38 @@ end
     column_tributary_area(struc, col)
 
 Get total tributary area for a column from the cache.
-Returns area in m² as Float64, or nothing if not computed.
+
+Returns the area as a Unitful quantity (e.g., `45.2 m²`), or `nothing` if not computed.
+
+# Example
+```julia
+At = column_tributary_area(struc, col)  # → 45.2 m²
+isnothing(At) && error("Tributaries not computed!")
+```
 """
 function column_tributary_area(struc::BuildingStructure, col)
     cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
     isnothing(cached) && return nothing
-    return cached.total_area
+    return cached.total_area  # Already Unitful
 end
 
 """
     column_tributary_by_cell(struc, col)
 
 Get per-cell tributary area breakdown for a column from the cache.
-Returns Dict{Int, Float64} (cell_idx → area in m²), or empty Dict if not computed.
+Returns Dict{Int, AreaQuantity} (cell_idx → area), or empty Dict if not computed.
+
+# Example
+```julia
+by_cell = column_tributary_by_cell(struc, col)
+for (cell_idx, area) in by_cell
+    println("Cell \$cell_idx: \$area")  # e.g., "Cell 3: 22.5 m²"
+end
+```
 """
 function column_tributary_by_cell(struc::BuildingStructure, col)
     cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
-    isnothing(cached) && return Dict{Int, Float64}()
+    isnothing(cached) && return Dict{Int, AreaQuantity}()
     return cached.by_cell
 end
 
@@ -82,11 +119,22 @@ end
     column_tributary_polygons(struc, col)
 
 Get tributary polygon vertices for a column from the cache (for visualization).
-Returns Dict{Int, Vector{NTuple{2,Float64}}} (cell_idx → polygon vertices), or empty Dict if not computed.
+Returns Dict{Int, Vector{NTuple{2, LengthQuantity}}} (cell_idx → polygon vertices), 
+or empty Dict if not computed.
+
+# Example
+```julia
+polygons = column_tributary_polygons(struc, col)
+for (cell_idx, verts) in polygons
+    for (x, y) in verts
+        println("(\$x, \$y)")  # e.g., "(3.5 m, 2.1 m)"
+    end
+end
+```
 """
 function column_tributary_polygons(struc::BuildingStructure, col)
     cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
-    isnothing(cached) && return Dict{Int, Vector{NTuple{2,Float64}}}()
+    isnothing(cached) && return Dict{Int, Vector{NTuple{2, LengthQuantity}}}()
     return cached.polygons
 end
 

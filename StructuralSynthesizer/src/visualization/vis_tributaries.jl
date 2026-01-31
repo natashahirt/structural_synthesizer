@@ -358,14 +358,15 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
     end
     
     # Collect all polygon vertices for centering
+    # Polygon vertices are Unitful - strip to meters for plotting
     all_xs = Float64[]
     all_ys = Float64[]
     for col in story_cols
         trib_polygons = column_tributary_polygons(struc, col)
         for (_, polygon) in trib_polygons
-            for v in polygon
-                push!(all_xs, v[1])
-                push!(all_ys, v[2])
+            for (vx, vy) in polygon
+                push!(all_xs, ustrip(u"m", vx))
+                push!(all_ys, ustrip(u"m", vy))
             end
         end
         # Also include column position
@@ -399,12 +400,12 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
         color = colors[mod1(col_idx, length(colors))]
         trib_polygons = column_tributary_polygons(struc, col)
         
-        # Draw each per-cell polygon
+        # Draw each per-cell polygon (strip units for plotting)
         for (cell_idx, polygon) in trib_polygons
             isempty(polygon) && continue
             
-            xs = [v[1] - cx for v in polygon]
-            ys = [v[2] - cy for v in polygon]
+            xs = [ustrip(u"m", vx) - cx for (vx, _) in polygon]
+            ys = [ustrip(u"m", vy) - cy for (_, vy) in polygon]
             push!(xs, xs[1])
             push!(ys, ys[1])
             
@@ -414,14 +415,15 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
                          strokewidth = 2)
         end
         
-        # Label at column position
+        # Label at column position (area is now Unitful)
         trib_area = column_tributary_area(struc, col)
         if show_labels && !isnothing(trib_area)
             v = skel.vertices[col.vertex_idx]
             c = Meshes.coords(v)
             mx = Float64(ustrip(u"m", c.x)) - cx
             my = Float64(ustrip(u"m", c.y)) - cy
-            label = "$(round(trib_area, digits=1)) m²"
+            area_m2 = ustrip(u"m^2", trib_area)
+            label = "$(round(area_m2, digits=1)) m²"
             GLMakie.text!(ax, mx, my + 0.5, text=label, fontsize=10,
                          align=(:center, :bottom), color=:black)
         end

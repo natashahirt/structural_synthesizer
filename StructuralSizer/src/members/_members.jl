@@ -1,16 +1,19 @@
 # Member sizing: materials, sections, codes, optimization
 
-# Abstract interfaces (must come first - used by codes and sections)
-include("optimize/interface.jl")
-include("optimize/geometry.jl")
-include("optimize/demands.jl")
-include("optimize/objectives.jl")
+# Core optimization abstractions (must come first - used by codes and sections)
+include("optimize/core/_core.jl")
 
 # Sections (geometry + catalogs)
 include("sections/_sections.jl")
 
-# Design code checks (checkers use AbstractCapacityChecker from interface)
+# Design code checks (checkers use AbstractCapacityChecker from core)
 include("codes/_codes.jl")
 
-# Optimization algorithms (use checkers from codes)
-include("optimize/discrete_mip.jl")
+# Optimization solvers (use checkers from codes)
+include("optimize/solvers/_solvers.jl")
+
+# Sizing options (must come before types which use them)
+include("optimize/options.jl")
+
+# Member-type specific APIs
+include("optimize/types/_types.jl")

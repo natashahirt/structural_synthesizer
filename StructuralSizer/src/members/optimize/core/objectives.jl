@@ -22,16 +22,16 @@ struct MinCarbon <: AbstractObjective end
 function objective_value end
 
 function objective_value(::MinWeight, s::AbstractSection, mat::AbstractMaterial, L)
-    area(s) * L * mat.ρ
+    section_area(s) * L * mat.ρ
 end
 
 function objective_value(::MinVolume, s::AbstractSection, L)
-    area(s) * L
+    section_area(s) * L
 end
 objective_value(::MinVolume, s::AbstractSection, ::AbstractMaterial, L) = objective_value(MinVolume(), s, L)
 
 function objective_value(obj::MinCost{<:Real}, s::AbstractSection, mat::AbstractMaterial, L)
-    area(s) * L * mat.ρ * obj.unit_cost
+    section_area(s) * L * mat.ρ * obj.unit_cost
 end
 
 function objective_value(obj::MinCost{<:Function}, s::AbstractSection, mat::AbstractMaterial, L)
@@ -39,7 +39,7 @@ function objective_value(obj::MinCost{<:Function}, s::AbstractSection, mat::Abst
 end
 
 function objective_value(::MinCarbon, s::AbstractSection, mat::AbstractMaterial, L)
-    area(s) * L * mat.ρ * mat.ecc
+    section_area(s) * L * mat.ρ * mat.ecc
 end
 
 # Batch computation

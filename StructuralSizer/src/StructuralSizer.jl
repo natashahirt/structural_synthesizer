@@ -25,6 +25,9 @@ include("slabs/_slabs.jl")
 # Foundations (types, soils, design codes)
 include("foundations/_foundations.jl")
 
+# Visualization interface (traits for section geometry - no GLMakie dependency)
+include("visualization/_visualization.jl")
+
 # === Exports ===
 
 # Types
@@ -49,18 +52,31 @@ export SteelMemberGeometry, TimberMemberGeometry, ConcreteMemberGeometry
 # Checkers
 export AISCChecker, AISCCapacityCache  # Steel (implemented)
 export NDSChecker, Timber              # Timber (stub)
-export ACIChecker                      # Concrete (stub)
+export ACIChecker                      # Concrete beam (stub)
+export ACIColumnChecker, ACIColumnCapacityCache  # Concrete column (implemented)
 
 # Optimization
 export optimize_discrete
+export size_columns
+export to_steel_demands, to_rc_demands
+export to_steel_geometry, to_concrete_geometry, convert_geometries
+
+# Sizing options (clean API)
+export SteelColumnOptions, ConcreteColumnOptions, SteelBeamOptions
+export ColumnOptions  # Union type for dispatch
+export steel_column_catalog, rc_column_catalog
+
+# Material display
+export material_name
 
 # Materials - Steel
 export A992_Steel, S355_Steel, Rebar_40, Rebar_60, Rebar_75, Rebar_80
 # Materials - Concrete
-export NWC_4000, NWC_6000, NWC_GGBS, NWC_PFA
+export NWC_3000, NWC_4000, NWC_5000, NWC_6000, NWC_GGBS, NWC_PFA
+export concrete_fc_ksi, concrete_fc_mpa, concrete_E_ksi, concrete_wc_pcf
 
 # Section Interface (generic)
-export area, depth, width, weight_per_length
+export section_area, section_depth, section_width, weight_per_length
 
 # =============================================================================
 # Sections - Steel
@@ -84,9 +100,16 @@ export GlulamSection
 export STANDARD_GLULAM_WIDTHS, GLULAM_LAM_THICKNESS
 
 # =============================================================================
-# Sections - Concrete (stubs)
+# Sections - Concrete
 # =============================================================================
 export RCBeamSection, rho
+export RCColumnSection, RebarLocation
+export RCCircularSection, circular_compression_zone
+export RCColumnDemand
+export standard_rc_columns, common_rc_rect_columns, all_rc_rect_columns
+export standard_rc_circular_columns, common_rc_circular_columns, all_rc_circular_columns
+export effective_depth, compression_steel_depth, moment_of_inertia, radius_of_gyration, n_bars
+export extreme_tension_depth, get_bar_depths, bar_depth_from_compression
 
 # Capacity Interface (generic)
 export get_Mn, get_Vn, get_Pn, get_Tn
@@ -97,6 +120,25 @@ export check_interaction
 export get_slenderness, is_compact
 export get_Lp_Lr, get_Fcr_LTB, get_Fcr_flexural, get_Fe, get_Cv1
 export check_PM_interaction, check_PMxMy_interaction
+
+# ACI Column P-M Interaction
+export beta1, calculate_PM_at_c, c_from_εt
+export pure_compression_capacity, max_compression_capacity
+export phi_factor, calculate_phi_PM_at_c
+export PMDiagramPoint, PMInteractionDiagram, PMInteractionDiagramCircular
+export generate_PM_diagram, get_nominal_curve, get_factored_curve
+export get_control_points, get_control_point
+export check_PM_capacity, capacity_at_axial, capacity_at_moment, utilization_ratio
+# Slenderness
+export slenderness_ratio, should_consider_slenderness
+export effective_stiffness, critical_buckling_load
+export magnification_factor_nonsway, calc_Cm, minimum_moment
+export magnify_moment_nonsway, magnification_factor_sway, magnify_moment_sway
+export concrete_modulus
+# Biaxial bending
+export bresler_reciprocal_load, check_bresler_reciprocal
+export bresler_load_contour, pca_load_contour
+export check_biaxial_capacity, check_biaxial_simple
 
 # =============================================================================
 # Floor System Types
@@ -157,6 +199,7 @@ export punching_perimeter, punching_capacity_interior, punching_demand, check_pu
 export cracked_moment_of_inertia, effective_moment_of_inertia, cracking_moment
 export immediate_deflection, long_term_deflection_factor, deflection_limit
 export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
+export estimate_column_size, estimate_column_size_from_span
 
 # Common interface
 export self_weight, total_depth, volume_per_area
@@ -245,5 +288,19 @@ export concrete_volume, steel_volume, footprint_area, utilization
 
 # Design functions
 export design_spread_footing, check_spread_footing
+
+# =============================================================================
+# Section Visualization Interface
+# =============================================================================
+
+# Geometry traits
+export AbstractSectionGeometry
+export SolidRect, HollowRect, HollowRound, IShape
+
+# Trait assignment and getters
+export section_geometry
+export section_thickness
+export section_flange_width, section_flange_thickness, section_web_thickness
+export has_rebar, section_rebar_positions, section_rebar_radius
 
 end # module

@@ -1,3 +1,7 @@
+# Import units for material display functions
+using StructuralBase.StructuralUnits: ksi
+using Unitful: psi
+
 # Material type definitions first
 include("types.jl")
 

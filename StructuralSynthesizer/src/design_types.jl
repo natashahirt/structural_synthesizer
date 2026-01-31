@@ -27,24 +27,50 @@ Parameters that define a design configuration.
 Different `DesignParameters` on the same `BuildingStructure` produce
 different `BuildingDesign` results, enabling parametric studies.
 
-# Materials
+# Materials (defaults)
 Use existing types from StructuralSizer:
 - `concrete::Concrete` - with fc′, E, ρ, etc.
 - `steel::StructuralSteel` - with Fy, Fu, E, etc.
 - `rebar::RebarSteel` - for reinforcement
 
+# Member Sizing Options
+Optional overrides for column/beam sizing:
+- `columns`: `SteelColumnOptions` or `ConcreteColumnOptions`
+- `beams`: `SteelBeamOptions`
+
 # Example
 ```julia
+# Simple: just set materials
 params = DesignParameters(
-    name = "4ksi Concrete",
-    concrete = Concrete(
-        57000*sqrt(4000)*u"psi",  # E
-        4000.0u"psi",              # fc′
-        150.0u"lbf/ft^3",          # ρ
-        0.2,                       # ν
-        0.12                       # ecc
-    )
+    steel = A992_Steel,
+    concrete = NWC_5000,
 )
+
+# Full control: specify sizing options
+params = DesignParameters(
+    name = "High-Rise Office",
+    
+    # Materials
+    steel = A992_Steel,
+    concrete = NWC_5000,
+    
+    # Concrete columns with specific settings
+    columns = ConcreteColumnOptions(
+        grade = NWC_5000,
+        max_depth = 0.6,
+    ),
+    
+    # Steel beams with strict deflection
+    beams = SteelBeamOptions(
+        deflection_limit = 1/480,
+    ),
+    
+    optimize_for = :carbon,
+)
+
+# Then sizing auto-uses these:
+size_columns!(struc)  # uses params.columns
+size_beams!(struc)    # uses params.beams
 ```
 """
 Base.@kwdef mutable struct DesignParameters
@@ -52,11 +78,15 @@ Base.@kwdef mutable struct DesignParameters
     name::String = "default"
     description::String = ""
     
-    # Materials - use existing types from StructuralSizer
+    # Materials - defaults for the building
     concrete::Union{StructuralSizer.Concrete, Nothing} = nothing
     steel::Union{StructuralSizer.StructuralSteel, Nothing} = nothing
     rebar::Union{StructuralSizer.RebarSteel, Nothing} = nothing
     timber::Union{StructuralSizer.Timber, Nothing} = nothing
+    
+    # Member sizing options (override material defaults)
+    columns::Union{StructuralSizer.SteelColumnOptions, StructuralSizer.ConcreteColumnOptions, Nothing} = nothing
+    beams::Union{StructuralSizer.SteelBeamOptions, Nothing} = nothing
     
     # Floor options (from StructuralSizer)
     floor_options::Union{StructuralSizer.FloorOptions, Nothing} = nothing
@@ -171,6 +201,9 @@ end
 """
 A complete design solution for a BuildingStructure.
 
+Holds a reference to the source `BuildingStructure` for geometry access,
+enabling a clean API: `visualize(design)` works without passing structure separately.
+
 Multiple BuildingDesign instances can reference the same BuildingStructure,
 enabling comparison of different material choices or optimization targets.
 
@@ -179,27 +212,28 @@ enabling comparison of different material choices or optimization targets.
 building = BuildingStructure(skeleton)
 # ... initialize cells, members ...
 
-design1 = design_building(building, DesignParameters(
+design1 = BuildingDesign(building, DesignParameters(
     name = "Concrete 4ksi",
     concrete = NWC_4000
 ))
 
-design2 = design_building(building, DesignParameters(
+design2 = BuildingDesign(building, DesignParameters(
     name = "Concrete 6ksi", 
     concrete = NWC_6000
 ))
 
-compare_designs(design1, design2)  # Compare thickness, weight, carbon
+visualize(design1)  # Self-contained: accesses geometry via design.structure
+compare_designs(design1, design2)
 ```
 """
-mutable struct BuildingDesign
-    # Reference to source building (not owned, just referenced)
-    building_id::UInt64               # hash(building) for serialization
+mutable struct BuildingDesign{T, A, P}
+    # Reference to source building (pointer, not copy)
+    structure::BuildingStructure{T, A, P}
     
     # Design configuration
     params::DesignParameters
     
-    # Design results (keyed by element index)
+    # Design results (keyed by member index)
     slabs::Dict{Int, SlabDesignResult}
     columns::Dict{Int, ColumnDesignResult}
     beams::Dict{Int, BeamDesignResult}
@@ -212,9 +246,9 @@ mutable struct BuildingDesign
     compute_time_s::Float64
 end
 
-function BuildingDesign(params::DesignParameters)
-    BuildingDesign(
-        UInt64(0),
+function BuildingDesign(struc::BuildingStructure{T, A, P}, params::DesignParameters=DesignParameters()) where {T, A, P}
+    BuildingDesign{T, A, P}(
+        struc,
         params,
         Dict{Int, SlabDesignResult}(),
         Dict{Int, ColumnDesignResult}(),
@@ -228,6 +262,12 @@ end
 # =============================================================================
 # BuildingDesign Accessors
 # =============================================================================
+
+"""Get the source BuildingStructure."""
+structure(d::BuildingDesign) = d.structure
+
+"""Get the source BuildingSkeleton (shorthand for d.structure.skeleton)."""
+skeleton(d::BuildingDesign) = d.structure.skeleton
 
 """Get slab design result by index."""
 slab_design(d::BuildingDesign, idx::Int) = get(d.slabs, idx, nothing)
