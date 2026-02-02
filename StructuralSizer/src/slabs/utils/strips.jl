@@ -3,6 +3,9 @@
 # Splits tributary polygons at half-depth for ACI column/middle strip definitions.
 # This generalizes ACI 318's l2/4 column strip width to arbitrary polygon shapes.
 
+using Asap: TributaryPolygon
+import Asap: vertices  # Extend with methods for strip types
+
 """
     ColumnStripPolygon
 

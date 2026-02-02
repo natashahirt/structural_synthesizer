@@ -4,7 +4,7 @@
 using Test
 using Unitful
 using StructuralSizer
-using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
+# Units are re-exported from StructuralSizer (via Asap)
 
 @testset "StructuralSizer Tests" begin
     # Nebyu's vault tests (based on MATLAB output)
@@ -19,10 +19,9 @@ using StructuralBase: StructuralUnits  # For u"ksi", u"kip" etc. in tests
     # AISC companion manual tests for steel elements
     include("steel_member/test_aisc_companion_manual_1.jl")
     include("steel_member/test_aisc_360_reference.jl")
-    # Tributary area tests (edge and voronoi)
-    include("tributary/test_spans.jl")
-    include("tributary/test_tributary_workflow.jl")
-    include("tributary/test_voronoi_tributaries.jl")
+    # ACI strip geometry tests (generic tributary is now in Asap)
+    include("slabs/test_strip_geometry.jl")
+    # Foundation tests
     include("foundations/test_spread_footing.jl")
     # Concrete column tests (rectangular)
     include("concrete_column/test_data/tied_column_16x16.jl")

@@ -1,8 +1,7 @@
 using StructuralSynthesizer
 using StructuralSizer
 using StructuralSizer: get_Fe_flexural, get_Fe_torsional, get_compression_factors
-using StructuralBase
-using StructuralBase: StructuralUnits  # For u"ksi" etc.
+# Units are re-exported from StructuralSizer (via Asap)
 using Asap
 using Unitful
 using Test

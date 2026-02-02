@@ -4,7 +4,12 @@
 # Strain compatibility analysis for circular reinforced concrete columns.
 # Reference: StructurePoint "Interaction Diagram - Circular Spiral Reinforced
 #            Concrete Column (ACI 318-19)"
+#
+# Uses unified material utilities from aci_material_utils.jl
+# Uses PMInteractionDiagram{RCCircularSection} from column_pm_rect.jl
 # ==============================================================================
+
+using Asap: to_inches, to_sqinches
 
 """
     calculate_PM_at_c(section::RCCircularSection, mat, c_in::Real) -> NamedTuple
@@ -40,17 +45,17 @@ StructurePoint formulas for circular sections:
 - ȳ = D³ sin³(θ) / (12 × A_comp)
 """
 function calculate_PM_at_c(section::RCCircularSection, mat, c_in::Real)
-    # Extract material properties (assume ksi units from mat)
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
-    Es = _get_Es_ksi(mat)
-    εcu = _get_εcu(mat)
+    # Extract material properties (uses unified extractors from aci_material_utils.jl)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
     
     # Section dimensions (stored in inches)
-    D = ustrip(u"inch", section.D)
+    D = to_inches(section.D)
     
     # Whitney stress block
-    β₁ = beta1(fc)
+    β₁ = beta1(mat)
     a = β₁ * c_in  # Stress block depth
     
     # Limit stress block to section diameter
@@ -86,11 +91,11 @@ function calculate_PM_at_c(section::RCCircularSection, mat, c_in::Real)
     
     for bar in section.bars
         # Bar y is from bottom → distance from TOP = D - bar.y
-        d_bar = D - ustrip(u"inch", bar.y)  # Depth of bar from compression face
-        As_bar = ustrip(u"inch^2", bar.As)
+        d_bar = D - to_inches(bar.y)  # Depth of bar from compression face
+        As_bar = to_sqinches(bar.As)
         
         # Steel strain at this bar
-        εs = calculate_steel_strain(d_bar, c_in, D, εcu)
+        εs = calculate_steel_strain(d_bar, c_in, D, εcu_val)
         
         # Steel stress (positive = tension, negative = compression)
         fs = calculate_steel_stress(εs, fy, Es)
@@ -120,9 +125,9 @@ function calculate_PM_at_c(section::RCCircularSection, mat, c_in::Real)
     end
     
     # Extreme tension strain: bar furthest from compression face (lowest y)
-    y_tension_bar_from_bottom = minimum(ustrip(u"inch", bar.y) for bar in section.bars)
+    y_tension_bar_from_bottom = minimum(to_inches(bar.y) for bar in section.bars)
     d_tension = D - y_tension_bar_from_bottom  # d = depth to extreme tension steel
-    εt = calculate_steel_strain(d_tension, c_in, D, εcu)
+    εt = calculate_steel_strain(d_tension, c_in, D, εcu_val)
     
     # Total axial force (positive = compression)
     Pn = Cc + Fs_total  # kip
@@ -148,11 +153,11 @@ Calculate pure axial compression capacity P0 per ACI 318-19.
 P0 = 0.85 * f'c * (Ag - As) + fy * As
 """
 function pure_compression_capacity(section::RCCircularSection, mat)
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
     
-    Ag = ustrip(u"inch^2", section.Ag)
-    As = ustrip(u"inch^2", section.As_total)
+    Ag = to_sqinches(section.Ag)
+    As = to_sqinches(section.As_total)
     
     P0 = 0.85 * fc * (Ag - As) + fy * As
     return P0  # kip
@@ -197,7 +202,7 @@ function calculate_phi_PM_at_c(section::RCCircularSection, mat, c_in::Real)
     result = calculate_PM_at_c(section, mat, c_in)
     
     # Calculate φ based on tension strain
-    fy = _get_fy_ksi(mat)
+    fy = fy_ksi(mat)
     φ = phi_factor(result.εt, section.tie_type; fy_ksi=fy)
     
     # Factored capacities
@@ -218,18 +223,9 @@ end
 # ==============================================================================
 # P-M Interaction Diagram for Circular Sections
 # ==============================================================================
-
-"""
-    PMInteractionDiagramCircular
-
-Complete P-M interaction diagram for a circular column section.
-"""
-struct PMInteractionDiagramCircular
-    section::RCCircularSection
-    mat::NamedTuple
-    points::Vector{PMDiagramPoint}
-    control_points::Dict{Symbol, Int}
-end
+# Uses parametric PMInteractionDiagram{RCCircularSection} from column_pm_rect.jl
+# Legacy type alias for backward compatibility:
+const PMInteractionDiagramCircular = PMInteractionDiagram{RCCircularSection}
 
 """
     generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::Int=20)
@@ -238,12 +234,12 @@ Generate a complete P-M interaction diagram for a circular section per ACI 318-1
 
 # Arguments
 - `section`: RC circular column section
-- `mat`: Material properties (fc, fy, Es, εcu)
+- `mat`: Material properties (Concrete, ReinforcedConcreteMaterial, or NamedTuple)
 - `n_intermediate`: Number of intermediate points between control points
 
 # Returns
-PMInteractionDiagramCircular with:
-- 7 standard ACI control points (StructurePoint methodology)
+PMInteractionDiagram{RCCircularSection} with:
+- 8 standard ACI control points (StructurePoint methodology)
 - Optional intermediate points for smooth curves
 
 # Control Points (per StructurePoint Circular Column Example)
@@ -257,15 +253,15 @@ PMInteractionDiagramCircular with:
 8. Pure tension
 """
 function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::Int=20)
-    # Material properties
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
-    Es = _get_Es_ksi(mat)
-    εcu = _get_εcu(mat)
+    # Material properties (using unified extractors)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
     εy = fy / Es
     
     # Section properties
-    D = ustrip(u"inch", section.D)
+    D = to_inches(section.D)
     d = extreme_tension_depth(section)  # Depth to extreme tension steel
     
     points = PMDiagramPoint[]
@@ -280,7 +276,7 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
         Inf, -εy,
         P0, 0.0,
         φ_comp, φ_comp * P0, 0.0,
-        "P₀ (Pure Compression)"
+        PURE_COMPRESSION
     ))
     control_indices[:pure_compression] = length(points)
     
@@ -295,7 +291,7 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
         c_large, result_large.εt,
         Pn_max, result_large.Mn,
         φ_comp, φ_comp * Pn_max, φ_comp * result_large.Mn,
-        "Pn,max (Allowable Compression)"
+        MAX_COMPRESSION
     ))
     control_indices[:max_compression] = length(points)
     
@@ -308,7 +304,7 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
         c_fs0, result_fs0.εt,
         result_fs0.Pn, result_fs0.Mn,
         result_fs0.φ, result_fs0.φPn, result_fs0.φMn,
-        "fs = 0"
+        FS_ZERO
     ))
     control_indices[:fs_zero] = length(points)
     
@@ -316,26 +312,26 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
     # Control Point 4: Half Yield (fs = 0.5fy)
     # =========================================================================
     εt_half = 0.5 * εy
-    c_half = c_from_εt(εt_half, d, εcu)
+    c_half = c_from_εt(εt_half, d, εcu_val)
     result_half = calculate_phi_PM_at_c(section, mat, c_half)
     push!(points, PMDiagramPoint(
         c_half, result_half.εt,
         result_half.Pn, result_half.Mn,
         result_half.φ, result_half.φPn, result_half.φMn,
-        "fs = 0.5fy"
+        FS_HALF_FY
     ))
     control_indices[:fs_half_fy] = length(points)
     
     # =========================================================================
     # Control Point 5: Balanced (fs = fy)
     # =========================================================================
-    c_balanced = c_from_εt(εy, d, εcu)
+    c_balanced = c_from_εt(εy, d, εcu_val)
     result_balanced = calculate_phi_PM_at_c(section, mat, c_balanced)
     push!(points, PMDiagramPoint(
         c_balanced, result_balanced.εt,
         result_balanced.Pn, result_balanced.Mn,
         result_balanced.φ, result_balanced.φPn, result_balanced.φMn,
-        "Balanced (fs = fy)"
+        BALANCED
     ))
     control_indices[:balanced] = length(points)
     
@@ -343,13 +339,13 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
     # Control Point 6: Tension Controlled (εt = εy + 0.003)
     # =========================================================================
     εt_tension = εy + 0.003
-    c_tension = c_from_εt(εt_tension, d, εcu)
+    c_tension = c_from_εt(εt_tension, d, εcu_val)
     result_tension = calculate_phi_PM_at_c(section, mat, c_tension)
     push!(points, PMDiagramPoint(
         c_tension, result_tension.εt,
         result_tension.Pn, result_tension.Mn,
         result_tension.φ, result_tension.φPn, result_tension.φMn,
-        "Tension Controlled (εt = εy + 0.003)"
+        TENSION_CONTROLLED
     ))
     control_indices[:tension_controlled] = length(points)
     
@@ -362,58 +358,56 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
         c_pure_m, result_pure_m.εt,
         result_pure_m.Pn, result_pure_m.Mn,
         result_pure_m.φ, result_pure_m.φPn, result_pure_m.φMn,
-        "Pure Bending"
+        PURE_BENDING
     ))
     control_indices[:pure_bending] = length(points)
     
     # =========================================================================
     # Control Point 8: Pure Tension
     # =========================================================================
-    As_total = ustrip(u"inch^2", section.As_total)
+    As_total = to_sqinches(section.As_total)
     Pnt = -fy * As_total  # Tension negative
     push!(points, PMDiagramPoint(
         -Inf, Inf,
         Pnt, 0.0,
         0.90, 0.90 * Pnt, 0.0,
-        "Pure Tension"
+        PURE_TENSION
     ))
     control_indices[:pure_tension] = length(points)
     
     # =========================================================================
-    # Add intermediate points (inserted between control points, indices update)
+    # Add intermediate points (inserted between control points)
     # =========================================================================
     if n_intermediate > 0
-        # Add intermediate points but preserve control point indices
-        # by looking up control points by label after insertion
         all_points = _add_intermediate_points_circular(section, mat, points, n_intermediate)
         
-        # Rebuild control_indices based on labels in new points list
+        # Rebuild control_indices based on control_type in new points list
         new_indices = Dict{Symbol, Int}()
-        label_to_symbol = Dict(
-            "P₀ (Pure Compression)" => :pure_compression,
-            "Pn,max (Allowable Compression)" => :max_compression,
-            "fs = 0" => :fs_zero,
-            "fs = 0.5fy" => :fs_half_fy,
-            "Balanced (fs = fy)" => :balanced,
-            "Tension Controlled (εt = εy + 0.003)" => :tension_controlled,
-            "Pure Bending" => :pure_bending,
-            "Pure Tension" => :pure_tension
+        type_to_symbol = Dict(
+            PURE_COMPRESSION => :pure_compression,
+            MAX_COMPRESSION => :max_compression,
+            FS_ZERO => :fs_zero,
+            FS_HALF_FY => :fs_half_fy,
+            BALANCED => :balanced,
+            TENSION_CONTROLLED => :tension_controlled,
+            PURE_BENDING => :pure_bending,
+            PURE_TENSION => :pure_tension
         )
         for (i, pt) in enumerate(all_points)
-            if !isempty(pt.label) && haskey(label_to_symbol, pt.label)
-                new_indices[label_to_symbol[pt.label]] = i
+            if pt.control_type != INTERMEDIATE && haskey(type_to_symbol, pt.control_type)
+                new_indices[type_to_symbol[pt.control_type]] = i
             end
         end
         
-        return PMInteractionDiagramCircular(section, mat, all_points, new_indices)
+        return PMInteractionDiagram(section, mat, all_points, new_indices)
     end
     
-    return PMInteractionDiagramCircular(section, mat, points, control_indices)
+    return PMInteractionDiagram(section, mat, points, control_indices)
 end
 
 """Find c value for pure bending (Pn ≈ 0) for circular sections."""
 function _find_pure_bending_c_circular(section::RCCircularSection, mat; tol::Float64=0.1)
-    D = ustrip(u"inch", section.D)
+    D = to_inches(section.D)
     d = extreme_tension_depth(section)
     
     # Bracket: c between small value and balanced point
@@ -483,7 +477,7 @@ function _add_intermediate_points_circular(
                     c_interp, result.εt,
                     result.Pn, result.Mn,
                     result.φ, result.φPn, result.φMn,
-                    ""  # No label for intermediate points
+                    INTERMEDIATE
                 ))
             end
         end
@@ -497,97 +491,18 @@ function _add_intermediate_points_circular(
 end
 
 # ==============================================================================
-# Diagram Access Functions (dispatch on circular type)
+# NOTE: Diagram access functions (get_nominal_curve, get_factored_curve, etc.)
+# are now unified in column_pm_rect.jl and work for all PMInteractionDiagram{S}
+# types via dispatch on the parametric type.
 # ==============================================================================
-
-"""Get nominal P-M points as (Pn, Mn) arrays."""
-function get_nominal_curve(diagram::PMInteractionDiagramCircular)
-    Pn = [pt.Pn for pt in diagram.points]
-    Mn = [pt.Mn for pt in diagram.points]
-    return (Pn=Pn, Mn=Mn)
-end
-
-"""Get factored P-M points as (φPn, φMn) arrays."""
-function get_factored_curve(diagram::PMInteractionDiagramCircular)
-    φPn = [pt.φPn for pt in diagram.points]
-    φMn = [pt.φMn for pt in diagram.points]
-    return (φPn=φPn, φMn=φMn)
-end
 
 """Get control points only (labeled points)."""
-function get_control_points(diagram::PMInteractionDiagramCircular)
-    return filter(pt -> !isempty(pt.label), diagram.points)
-end
-
-"""Get a specific control point by name."""
-function get_control_point(diagram::PMInteractionDiagramCircular, name::Symbol)
-    idx = get(diagram.control_points, name, nothing)
-    if isnothing(idx)
-        error("Control point :$name not found. Available: $(keys(diagram.control_points))")
-    end
-    return diagram.points[idx]
-end
-
 # ==============================================================================
-# Capacity Check Functions
+# NOTE: Access and capacity check functions (get_control_points, 
+# get_control_point, check_PM_capacity, capacity_at_axial, capacity_at_moment,
+# utilization_ratio) are unified in column_pm_rect.jl and work for all 
+# PMInteractionDiagram{S} types via dispatch on the parametric type.
+#
+# The type alias PMInteractionDiagramCircular = PMInteractionDiagram{RCCircularSection}
+# allows backward-compatible usage while sharing the common implementation.
 # ==============================================================================
-
-"""Check if demand (Pu, Mu) is within circular column P-M capacity."""
-function check_PM_capacity(diagram::PMInteractionDiagramCircular, Pu::Real, Mu::Real)
-    Mu = abs(Mu)
-    
-    curve = get_factored_curve(diagram)
-    φPn = curve.φPn
-    φMn = curve.φMn
-    
-    φMn_at_Pu = _interpolate_moment_at_P(φPn, φMn, Pu)
-    φPn_at_Mu = _interpolate_axial_at_M(φPn, φMn, Mu)
-    
-    if φMn_at_Pu > 0 && abs(φPn_at_Mu) > 0
-        utilization_M = Mu / max(φMn_at_Pu, 1e-6)
-        utilization_P = abs(Pu) / max(abs(φPn_at_Mu), 1e-6)
-        utilization = max(utilization_M, utilization_P)
-        
-        if utilization_M > utilization_P
-            governing = :moment
-        elseif utilization_P > utilization_M
-            governing = :axial
-        else
-            governing = :combined
-        end
-    elseif φMn_at_Pu > 0
-        utilization = Mu / φMn_at_Pu
-        governing = :moment
-    else
-        utilization = 1.5
-        governing = :combined
-    end
-    
-    adequate = utilization ≤ 1.0
-    
-    return (
-        adequate = adequate,
-        utilization = utilization,
-        φMn_at_Pu = φMn_at_Pu,
-        φPn_at_Mu = φPn_at_Mu,
-        governing = governing
-    )
-end
-
-"""Get factored moment capacity at a given factored axial load."""
-function capacity_at_axial(diagram::PMInteractionDiagramCircular, Pu::Real)
-    curve = get_factored_curve(diagram)
-    return _interpolate_moment_at_P(curve.φPn, curve.φMn, Pu)
-end
-
-"""Get factored axial capacity at a given factored moment."""
-function capacity_at_moment(diagram::PMInteractionDiagramCircular, Mu::Real)
-    curve = get_factored_curve(diagram)
-    return _interpolate_axial_at_M(curve.φPn, curve.φMn, abs(Mu))
-end
-
-"""Calculate utilization ratio for circular columns."""
-function utilization_ratio(diagram::PMInteractionDiagramCircular, Pu::Real, Mu::Real)
-    result = check_PM_capacity(diagram, Pu, Mu)
-    return result.utilization
-end

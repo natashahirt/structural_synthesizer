@@ -5,9 +5,7 @@ Pkg.instantiate()
 # Note: Revise is loaded automatically via ~/.julia/config/startup.jl
 
 using Unitful
-using StructuralBase      # Shared types & constants
-using StructuralBase: StructuralUnits  # Custom unit definitions (kip, ksi, psf)
-using StructuralSizer     # Member-level sizing (materials)
+using StructuralSizer     # Member-level sizing (materials) - re-exports units from Asap
 using StructuralSynthesizer  # Geometry & BIM logic
 using Asap
 

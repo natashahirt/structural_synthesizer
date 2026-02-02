@@ -30,3 +30,6 @@ include("timber/_timber_sections.jl")
 
 # Concrete sections (RC beams, columns, etc.)
 include("concrete/_concrete_sections.jl")
+
+# Asap.Section conversion (requires all section types to be defined)
+include("to_asap_section.jl")

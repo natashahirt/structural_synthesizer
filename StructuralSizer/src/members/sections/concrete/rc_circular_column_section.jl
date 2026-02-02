@@ -5,7 +5,7 @@
 # Typically uses spiral reinforcement for confinement.
 # ==============================================================================
 
-using StructuralBase.StructuralUnits: Length, Area, Inertia
+using Asap: Length, Area, SecondMomentOfArea
 
 # ==============================================================================
 # RC Circular Column Section

@@ -2,13 +2,13 @@
 # Round HSS (Pipe) Sections
 # ==============================================================================
 
-using StructuralBase.StructuralUnits: Length, Area, Volume, Inertia
+using Asap: Length, Area, Volume, SecondMomentOfArea
 
 # Use same type aliases (already defined if hss_rect_section.jl loaded first)
 const LengthQ_Round = Length
 const AreaQ_Round   = Area
 const ModQ_Round    = Volume
-const InertQ_Round  = Inertia
+const InertQ_Round  = SecondMomentOfArea
 
 """
     HSSRoundSection <: AbstractRoundHollowSection

@@ -2,12 +2,12 @@
 # Rectangular/Square HSS Sections
 # ==============================================================================
 
-using StructuralBase.StructuralUnits: Length, Area, Volume, Inertia
+using Asap: Length, Area, Volume, SecondMomentOfArea
 
 const LengthQ_HSS = Length
 const AreaQ_HSS   = Area
 const ModQ_HSS    = Volume   # Section modulus has L³ dimension
-const InertQ_HSS  = Inertia  # Moment of inertia L⁴
+const InertQ_HSS  = SecondMomentOfArea  # Second moment of area L⁴
 
 """
     HSSRectSection <: AbstractRectHollowSection

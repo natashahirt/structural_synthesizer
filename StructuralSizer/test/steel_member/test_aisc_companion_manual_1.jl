@@ -1,7 +1,7 @@
 using Test
 using Unitful
 using StructuralSizer
-using StructuralBase: StructuralUnits  # u"kip", u"ksi", u"ft", u"inch"
+# Units are re-exported from StructuralSizer (via Asap)
 
 @testset "AISC companion manual 1 tests (v16.0 companion PDF)" begin
 

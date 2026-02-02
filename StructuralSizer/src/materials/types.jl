@@ -2,7 +2,7 @@
 # Material Type Definitions
 # =============================================================================
 #
-# All material types that inherit from AbstractMaterial (defined in StructuralBase).
+# All material types that inherit from AbstractMaterial (defined in types.jl).
 # Presets (specific material instances) are in separate files:
 #   - steel.jl    → A992_Steel, S355_Steel, Rebar_*
 #   - concrete.jl → NWC_4000, NWC_6000, etc.
@@ -70,18 +70,63 @@ Concrete material with compressive strength.
 - `fc′`: Compressive strength (28-day)
 - `ρ`: Density
 - `ν`: Poisson's ratio
+- `εcu`: Ultimate compressive strain (default 0.003 per ACI 318)
 - `ecc`: Embodied carbon [kgCO₂e/kg]
+
+# Notes
+- `εcu = 0.003` is the standard ACI 318 value for concrete up to ~10 ksi
+- High-strength concrete (>10 ksi) may use lower values (e.g., 0.0025)
 """
 struct Concrete{T_P, T_D} <: AbstractMaterial
-    E::T_P      # Young's modulus
-    fc′::T_P    # Compressive strength
-    ρ::T_D      # Density
-    ν::Float64  # Poisson's ratio
+    E::T_P        # Young's modulus
+    fc′::T_P      # Compressive strength
+    ρ::T_D        # Density
+    ν::Float64    # Poisson's ratio
+    εcu::Float64  # Ultimate compressive strain
     ecc::Float64  # Embodied carbon [kgCO₂e/kg]
 end
 
-function Concrete(E, fc′, ρ, ν, ecc)
-    Concrete{typeof(E), typeof(ρ)}(E, fc′, ρ, Float64(ν), Float64(ecc))
+function Concrete(E, fc′, ρ, ν, ecc; εcu::Real = 0.003)
+    Concrete{typeof(E), typeof(ρ)}(E, fc′, ρ, Float64(ν), Float64(εcu), Float64(ecc))
+end
+
+# =============================================================================
+# Reinforced Concrete Material (Concrete + Rebar)
+# =============================================================================
+
+"""
+    ReinforcedConcreteMaterial <: AbstractMaterial
+
+Combined concrete + reinforcing steel material for RC design.
+Links a `Concrete` material with longitudinal and transverse `RebarSteel`.
+
+# Fields
+- `concrete`: Concrete material (fc′, E, εcu, etc.)
+- `rebar`: RebarSteel for longitudinal reinforcement (Fy, Es)
+- `transverse`: RebarSteel for ties/spirals (defaults to same as rebar)
+
+# Example
+```julia
+# Using presets
+rc_mat = ReinforcedConcreteMaterial(NWC_4000, Rebar_60)
+
+# With different transverse steel
+rc_mat = ReinforcedConcreteMaterial(NWC_5000, Rebar_75, Rebar_60)
+
+# Access properties
+fc = rc_mat.concrete.fc′     # Concrete strength
+fy = rc_mat.rebar.Fy         # Rebar yield strength
+```
+"""
+struct ReinforcedConcreteMaterial{C<:Concrete, R<:RebarSteel} <: AbstractMaterial
+    concrete::C
+    rebar::R
+    transverse::R
+end
+
+# Convenience constructor (same rebar for longitudinal and transverse)
+function ReinforcedConcreteMaterial(concrete::Concrete, rebar::RebarSteel)
+    ReinforcedConcreteMaterial(concrete, rebar, rebar)
 end
 
 # =============================================================================

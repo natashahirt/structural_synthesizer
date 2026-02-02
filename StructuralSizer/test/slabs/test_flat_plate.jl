@@ -8,7 +8,7 @@
 using Test
 using Unitful
 using Unitful: @u_str
-using StructuralBase.StructuralUnits  # For ksi, ksf, etc. in @u_str
+using StructuralSizer: ksi, ksf, psf  # Units from Asap via StructuralSizer
 using StructuralSizer
 
 # =============================================================================

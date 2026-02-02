@@ -1,5 +1,5 @@
 using StructuralSizer
-using StructuralBase: StructuralUnits
+# Units are re-exported from StructuralSizer (via Asap)
 using Unitful
 using Test
 

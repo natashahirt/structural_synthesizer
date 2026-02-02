@@ -3,29 +3,31 @@
 # ==============================================================================
 # Strain compatibility analysis for reinforced concrete columns
 # Reference: ACI 318-19 Chapter 22 (Sectional Strength)
+#
+# Material utilities (beta1, Ec, fr, extractors) are in aci_material_utils.jl
 
 using Unitful
+using Asap: to_inches, to_sqinches
 
 # ==============================================================================
-# Material Constants
+# Control Point Types for P-M Diagrams
 # ==============================================================================
 
 """
-    beta1(fc_ksi::Real) -> Float64
+    ControlPointType
 
-Whitney stress block factor β₁ per ACI 318-19 Table 22.2.2.4.3.
-- β₁ = 0.85 for f'c ≤ 4 ksi
-- β₁ = 0.85 - 0.05(f'c - 4) for 4 < f'c < 8 ksi
-- β₁ = 0.65 for f'c ≥ 8 ksi
+Enumeration of standard control points on ACI P-M interaction diagrams.
 """
-function beta1(fc_ksi::Real)
-    if fc_ksi ≤ 4.0
-        return 0.85
-    elseif fc_ksi ≥ 8.0
-        return 0.65
-    else
-        return 0.85 - 0.05 * (fc_ksi - 4.0)
-    end
+@enum ControlPointType begin
+    PURE_COMPRESSION       # P₀ - all compression
+    MAX_COMPRESSION        # Pn,max = α×P₀
+    FS_ZERO               # fs = 0, c = d
+    FS_HALF_FY            # fs = 0.5fy
+    BALANCED              # fs = fy, εt = εy
+    TENSION_CONTROLLED    # εt = εy + 0.003
+    PURE_BENDING          # Pn ≈ 0
+    PURE_TENSION          # All steel in tension
+    INTERMEDIATE          # Unlabeled intermediate point
 end
 
 # ==============================================================================
@@ -104,18 +106,18 @@ Coordinate system:
 - d = distance from compression face to extreme tension steel
 """
 function calculate_PM_at_c(section::RCColumnSection, mat, c_in::Real)
-    # Extract material properties (assume ksi units)
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
-    Es = _get_Es_ksi(mat)
-    εcu = _get_εcu(mat)
+    # Extract material properties (uses unified extractors from aci_material_utils.jl)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
     
     # Section dimensions (stored in inches)
-    b = ustrip(u"inch", section.b)
-    h = ustrip(u"inch", section.h)
+    b = to_inches(section.b)
+    h = to_inches(section.h)
     
     # Whitney stress block
-    β₁ = beta1(fc)
+    β₁ = beta1(mat)
     a = β₁ * c_in  # Stress block depth
     
     # Limit stress block to section depth
@@ -140,11 +142,11 @@ function calculate_PM_at_c(section::RCColumnSection, mat, c_in::Real)
     
     for bar in section.bars
         # Bar y is from bottom → distance from TOP = h - bar.y
-        y_bar_from_top = h - ustrip(u"inch", bar.y)
-        As_bar = ustrip(u"inch^2", bar.As)
+        y_bar_from_top = h - to_inches(bar.y)
+        As_bar = to_sqinches(bar.As)
         
         # Steel strain at this bar
-        εs = calculate_steel_strain(y_bar_from_top, c_in, h, εcu)
+        εs = calculate_steel_strain(y_bar_from_top, c_in, h, εcu_val)
         
         # Steel stress (positive = tension, negative = compression)
         fs = calculate_steel_stress(εs, fy, Es)
@@ -175,9 +177,9 @@ function calculate_PM_at_c(section::RCColumnSection, mat, c_in::Real)
     
     # Extreme tension strain: bar furthest from compression face
     # bar.y = distance from bottom, small y = near tension face (bottom)
-    y_tension_bar_from_bottom = minimum(ustrip(u"inch", bar.y) for bar in section.bars)
+    y_tension_bar_from_bottom = minimum(to_inches(bar.y) for bar in section.bars)
     y_tension_from_top = h - y_tension_bar_from_bottom  # = d
-    εt = calculate_steel_strain(y_tension_from_top, c_in, h, εcu)
+    εt = calculate_steel_strain(y_tension_from_top, c_in, h, εcu_val)
     
     # Total axial force (positive = compression)
     Pn = Cc + Fs_total  # kip
@@ -189,20 +191,6 @@ function calculate_PM_at_c(section::RCColumnSection, mat, c_in::Real)
     
     return (Pn = Pn, Mn = abs(Mn), εt = εt, c = c_in)
 end
-
-# ==============================================================================
-# Material Property Extractors (handle different input types)
-# ==============================================================================
-
-# For NamedTuple test data
-_get_fc_ksi(mat::NamedTuple) = mat.fc
-_get_fy_ksi(mat::NamedTuple) = mat.fy
-_get_Es_ksi(mat::NamedTuple) = mat.Es
-_get_εcu(mat::NamedTuple) = hasproperty(mat, :εcu) ? mat.εcu : 0.003
-
-# For Concrete material type (when available)
-# _get_fc_ksi(mat::Concrete) = ustrip(u"ksi", mat.fc)
-# etc.
 
 # ==============================================================================
 # Helper: Find c for a given εt
@@ -244,11 +232,11 @@ Note: This is the theoretical maximum. ACI 22.4.2 requires using:
 - Pn,max = 0.85 * P0 for spiral columns
 """
 function pure_compression_capacity(section::RCColumnSection, mat)
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
     
-    Ag = ustrip(u"inch^2", section.Ag)
-    As = ustrip(u"inch^2", section.As_total)
+    Ag = to_sqinches(section.Ag)
+    As = to_sqinches(section.As_total)
     
     P0 = 0.85 * fc * (Ag - As) + fy * As
     return P0  # kip
@@ -341,7 +329,7 @@ function calculate_phi_PM_at_c(section::RCColumnSection, mat, c_in::Real)
     result = calculate_PM_at_c(section, mat, c_in)
     
     # Calculate φ based on tension strain
-    fy = _get_fy_ksi(mat)
+    fy = fy_ksi(mat)
     φ = phi_factor(result.εt, section.tie_type; fy_ksi=fy)
     
     # Factored capacities
@@ -367,35 +355,54 @@ end
     PMDiagramPoint
 
 A single point on the P-M interaction diagram.
+
+# Fields
+- `c`: Neutral axis depth (in)
+- `εt`: Extreme tension steel strain
+- `Pn`: Nominal axial capacity (kip)
+- `Mn`: Nominal moment capacity (kip-ft)
+- `φ`: Strength reduction factor
+- `φPn`: Factored axial capacity (kip)
+- `φMn`: Factored moment capacity (kip-ft)
+- `control_type`: Type of control point (enum)
 """
 struct PMDiagramPoint
-    c::Float64       # Neutral axis depth (in)
-    εt::Float64      # Extreme tension steel strain
-    Pn::Float64      # Nominal axial capacity (kip)
-    Mn::Float64      # Nominal moment capacity (kip-ft)
-    φ::Float64       # Strength reduction factor
-    φPn::Float64     # Factored axial capacity (kip)
-    φMn::Float64     # Factored moment capacity (kip-ft)
-    label::String    # Control point label (if any)
+    c::Float64
+    εt::Float64
+    Pn::Float64
+    Mn::Float64
+    φ::Float64
+    φPn::Float64
+    φMn::Float64
+    control_type::ControlPointType
 end
 
 """
-    PMInteractionDiagram
+    PMInteractionDiagram{S<:AbstractSection}
 
-Complete P-M interaction diagram for a column section.
+Complete P-M interaction diagram for any RC column section type.
+Parametric on section type S for dispatch to correct geometry calculations.
+
+# Type Aliases
+- `PMDiagramRect = PMInteractionDiagram{RCColumnSection}`
+- `PMDiagramCircular = PMInteractionDiagram{RCCircularSection}`
 
 # Fields
-- `section`: RCColumnSection used to generate the diagram
-- `mat`: Material properties
+- `section`: RC section (RCColumnSection or RCCircularSection)
+- `material`: Material properties (ReinforcedConcreteMaterial, Concrete, or NamedTuple)
 - `points`: Vector of PMDiagramPoint (ordered from compression to tension)
-- `control_points`: Dict mapping control point names to indices
+- `control_points`: Dict mapping control point symbols to indices
 """
-struct PMInteractionDiagram
-    section::RCColumnSection
-    mat::NamedTuple
+struct PMInteractionDiagram{S<:AbstractSection, M}
+    section::S
+    material::M
     points::Vector{PMDiagramPoint}
     control_points::Dict{Symbol, Int}
 end
+
+# Type aliases for convenience
+const PMDiagramRect = PMInteractionDiagram{RCColumnSection}
+const PMDiagramCircular = PMInteractionDiagram{RCCircularSection}
 
 """
     generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=20)
@@ -426,16 +433,16 @@ StructurePoint: "Interaction Diagram - Tied Reinforced Concrete Column
 Design Strength (ACI 318-19)"
 """
 function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=20)
-    # Material properties
-    fc = _get_fc_ksi(mat)
-    fy = _get_fy_ksi(mat)
-    Es = _get_Es_ksi(mat)
-    εcu = _get_εcu(mat)
+    # Material properties (using unified extractors)
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
     εy = fy / Es
     
     # Section properties
-    h = ustrip(u"inch", section.h)
-    d = ustrip(u"inch", effective_depth(section))
+    h = to_inches(section.h)
+    d = to_inches(effective_depth(section))
     
     points = PMDiagramPoint[]
     control_indices = Dict{Symbol, Int}()
@@ -450,7 +457,7 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
         Inf, -εy,  # Compression throughout
         P0, 0.0,
         φ_comp, φ_comp * P0, 0.0,
-        "P₀ (Pure Compression)"
+        PURE_COMPRESSION
     ))
     control_indices[:pure_compression] = length(points)
     
@@ -469,7 +476,7 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
         c_large, result_large.εt,
         Pn_max, result_large.Mn,
         φ_comp, φ_comp * Pn_max, φ_comp * result_large.Mn,
-        "Pn,max (Allowable Compression)"
+        MAX_COMPRESSION
     ))
     control_indices[:max_compression] = length(points)
     
@@ -483,7 +490,7 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
         c_fs0, result_fs0.εt,
         result_fs0.Pn, result_fs0.Mn,
         result_fs0.φ, result_fs0.φPn, result_fs0.φMn,
-        "fs = 0"
+        FS_ZERO
     ))
     control_indices[:fs_zero] = length(points)
     
@@ -491,13 +498,13 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
     # Control Point 4: Half Yield (fs = 0.5fy, εt = 0.5εy)
     # =========================================================================
     εt_half = 0.5 * εy
-    c_half = c_from_εt(εt_half, d, εcu)
+    c_half = c_from_εt(εt_half, d, εcu_val)
     result_half = calculate_phi_PM_at_c(section, mat, c_half)
     push!(points, PMDiagramPoint(
         c_half, result_half.εt,
         result_half.Pn, result_half.Mn,
         result_half.φ, result_half.φPn, result_half.φMn,
-        "fs = 0.5fy"
+        FS_HALF_FY
     ))
     control_indices[:fs_half_fy] = length(points)
     
@@ -505,13 +512,13 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
     # Control Point 5: Balanced (fs = fy, εt = εy)
     # Marks compression-controlled limit
     # =========================================================================
-    c_balanced = c_from_εt(εy, d, εcu)
+    c_balanced = c_from_εt(εy, d, εcu_val)
     result_balanced = calculate_phi_PM_at_c(section, mat, c_balanced)
     push!(points, PMDiagramPoint(
         c_balanced, result_balanced.εt,
         result_balanced.Pn, result_balanced.Mn,
         result_balanced.φ, result_balanced.φPn, result_balanced.φMn,
-        "Balanced (fs = fy)"
+        BALANCED
     ))
     control_indices[:balanced] = length(points)
     
@@ -520,13 +527,13 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
     # Marks tension-controlled limit (φ = 0.90)
     # =========================================================================
     εt_tension = εy + 0.003
-    c_tension = c_from_εt(εt_tension, d, εcu)
+    c_tension = c_from_εt(εt_tension, d, εcu_val)
     result_tension = calculate_phi_PM_at_c(section, mat, c_tension)
     push!(points, PMDiagramPoint(
         c_tension, result_tension.εt,
         result_tension.Pn, result_tension.Mn,
         result_tension.φ, result_tension.φPn, result_tension.φMn,
-        "Tension Controlled (εt = εy + 0.003)"
+        TENSION_CONTROLLED
     ))
     control_indices[:tension_controlled] = length(points)
     
@@ -540,7 +547,7 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
         c_pure_m, result_pure_m.εt,
         result_pure_m.Pn, result_pure_m.Mn,
         result_pure_m.φ, result_pure_m.φPn, result_pure_m.φMn,
-        "Pure Bending"
+        PURE_BENDING
     ))
     control_indices[:pure_bending] = length(points)
     
@@ -548,13 +555,13 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
     # Control Point 8: Pure Tension
     # All steel in tension at yield
     # =========================================================================
-    As_total = ustrip(u"inch^2", section.As_total)
+    As_total = to_sqinches(section.As_total)
     Pnt = -fy * As_total  # Tension negative
     push!(points, PMDiagramPoint(
         -Inf, Inf,  # All tension
         Pnt, 0.0,
         0.90, 0.90 * Pnt, 0.0,
-        "Pure Tension"
+        PURE_TENSION
     ))
     control_indices[:pure_tension] = length(points)
     
@@ -570,8 +577,8 @@ end
 
 """Find c value for pure bending (Pn ≈ 0) using bisection."""
 function _find_pure_bending_c(section::RCColumnSection, mat; tol::Float64=0.1)
-    h = ustrip(u"inch", section.h)
-    d = ustrip(u"inch", effective_depth(section))
+    h = to_inches(section.h)
+    d = to_inches(effective_depth(section))
     
     # Bracket: c between small value and balanced point
     c_low = 0.5  # Small c → tension dominates
@@ -640,7 +647,7 @@ function _add_intermediate_points(
             c, result.εt,
             result.Pn, result.Mn,
             result.φ, result.φPn, result.φMn,
-            ""  # No label for intermediate points
+            INTERMEDIATE
         ))
     end
     
@@ -669,9 +676,9 @@ function get_factored_curve(diagram::PMInteractionDiagram)
     return (φPn=φPn, φMn=φMn)
 end
 
-"""Get control points only (labeled points)."""
+"""Get control points only (non-intermediate points)."""
 function get_control_points(diagram::PMInteractionDiagram)
-    return filter(pt -> !isempty(pt.label), diagram.points)
+    return filter(pt -> pt.control_type != INTERMEDIATE, diagram.points)
 end
 
 """Get a specific control point by name."""
@@ -890,4 +897,359 @@ function _interpolate_axial_at_M(φPn::Vector, φMn::Vector, Mu::Real)
     
     # Return max P (most conservative for compression check)
     return maximum(matching_P)
+end
+
+# ==============================================================================
+# Y-AXIS P-M INTERACTION (Biaxial Bending Support)
+# ==============================================================================
+# Reference: StructurePoint "Biaxial Bending Interaction Diagrams for Rectangular
+# Reinforced Concrete Column Design (ACI 318-19)"
+#
+# For rectangular columns with b ≠ h:
+# - X-axis bending: Moment about horizontal axis, depth = h, width = b
+# - Y-axis bending: Moment about vertical axis, depth = b, width = h
+#
+# The y-axis diagram uses the same strain compatibility procedure but with:
+# - Compression face at RIGHT side (x = b)
+# - Section depth = b, width = h
+# - Bar distance measured from right edge (b - bar.x)
+# ==============================================================================
+
+"""
+    calculate_PM_at_c_yaxis(section::RCColumnSection, mat, c_in::Real) -> NamedTuple
+
+Calculate nominal (Pn, Mn) capacity for Y-AXIS BENDING at a given neutral axis depth c.
+
+For y-axis bending (moment about vertical axis):
+- Compression face at RIGHT (x = b)
+- Tension face at LEFT (x = 0)
+- Section "depth" = b (width becomes depth for this bending direction)
+- Section "width" = h (height becomes width for this bending direction)
+
+# Arguments
+- `section`: RCColumnSection with bar positions
+- `mat`: Material properties
+- `c_in`: Neutral axis depth from compression face (right side) in inches
+
+# Returns
+NamedTuple with Pn (kip), Mn (kip-ft), εt, c
+
+# Reference
+StructurePoint: "Biaxial Bending Interaction Diagrams for Rectangular RC Column Design"
+"""
+function calculate_PM_at_c_yaxis(section::RCColumnSection, mat, c_in::Real)
+    # Extract material properties
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
+    
+    # For y-axis bending: swap roles of b and h
+    # "depth" for bending = b (compression/tension in x-direction)
+    # "width" for concrete area = h
+    depth = to_inches(section.b)  # This is the bending depth
+    width = to_inches(section.h)  # This is the compression block width
+    
+    # Whitney stress block
+    β₁ = beta1(mat)
+    a = β₁ * c_in
+    a_eff = min(a, depth)
+    
+    # Concrete compression force: Cc = 0.85 * f'c * width * a
+    # For y-axis: width = h (the dimension perpendicular to bending)
+    Cc = 0.85 * fc * width * a_eff  # kip
+    
+    # Concrete force location from compression face (right side, x = b)
+    x_Cc_from_right = a_eff / 2
+    
+    # Steel forces
+    Fs_total = 0.0
+    Ms_total = 0.0
+    
+    centroid_from_right = depth / 2  # Section centroid from compression face
+    fc_stress = 0.85 * fc
+    
+    for bar in section.bars
+        # Bar x is from left edge → distance from RIGHT = b - bar.x
+        x_bar_from_right = depth - to_inches(bar.x)
+        As_bar = to_sqinches(bar.As)
+        
+        # Steel strain at this bar (using x position for y-axis bending)
+        εs = calculate_steel_strain(x_bar_from_right, c_in, depth, εcu_val)
+        
+        # Steel stress
+        fs = calculate_steel_stress(εs, fy, Es)
+        
+        # Check if bar is within compression zone
+        in_compression_zone = x_bar_from_right < a_eff
+        
+        # Steel force contribution
+        if in_compression_zone
+            Fs = -As_bar * (fs + fc_stress)
+        else
+            Fs = -fs * As_bar
+        end
+        
+        Fs_total += Fs
+        
+        # Moment about section centroid (y-axis)
+        arm = centroid_from_right - x_bar_from_right
+        Ms_total += Fs * arm
+    end
+    
+    # Extreme tension strain: bar closest to left edge (smallest x)
+    x_tension_bar_from_left = minimum(to_inches(bar.x) for bar in section.bars)
+    x_tension_from_right = depth - x_tension_bar_from_left  # = d for y-axis
+    εt = calculate_steel_strain(x_tension_from_right, c_in, depth, εcu_val)
+    
+    # Total axial force
+    Pn = Cc + Fs_total
+    
+    # Total moment about y-axis centroid
+    Mc = Cc * (centroid_from_right - x_Cc_from_right)
+    Mn_in = Mc + Ms_total
+    Mn = Mn_in / 12.0  # kip-ft
+    
+    return (Pn = Pn, Mn = abs(Mn), εt = εt, c = c_in)
+end
+
+"""
+    calculate_phi_PM_at_c_yaxis(section::RCColumnSection, mat, c_in::Real) -> NamedTuple
+
+Calculate factored (φPn, φMn) capacity for Y-AXIS bending at a given neutral axis depth.
+"""
+function calculate_phi_PM_at_c_yaxis(section::RCColumnSection, mat, c_in::Real)
+    result = calculate_PM_at_c_yaxis(section, mat, c_in)
+    fy = fy_ksi(mat)
+    φ = phi_factor(result.εt, section.tie_type; fy_ksi=fy)
+    
+    return (
+        Pn = result.Pn,
+        Mn = result.Mn,
+        φPn = φ * result.Pn,
+        φMn = φ * result.Mn,
+        φ = φ,
+        εt = result.εt,
+        c = result.c
+    )
+end
+
+"""
+    effective_depth_yaxis(section::RCColumnSection) -> Float64
+
+Calculate effective depth for y-axis bending (distance from right face to leftmost bars).
+"""
+function effective_depth_yaxis(section::RCColumnSection)
+    b = to_inches(section.b)
+    x_min = minimum(to_inches(bar.x) for bar in section.bars)
+    return b - x_min  # d for y-axis bending
+end
+
+"""
+    _find_pure_bending_c_yaxis(section::RCColumnSection, mat; tol=0.1) -> Float64
+
+Find c value for pure bending (Pn ≈ 0) about y-axis using bisection.
+"""
+function _find_pure_bending_c_yaxis(section::RCColumnSection, mat; tol::Float64=0.1)
+    d = effective_depth_yaxis(section)
+    
+    c_low = 0.5
+    c_high = d
+    
+    result_low = calculate_PM_at_c_yaxis(section, mat, c_low)
+    result_high = calculate_PM_at_c_yaxis(section, mat, c_high)
+    
+    if result_low.Pn > 0 && result_high.Pn > 0
+        c_low = 0.1
+        result_low = calculate_PM_at_c_yaxis(section, mat, c_low)
+    end
+    
+    for _ in 1:50
+        c_mid = (c_low + c_high) / 2
+        result_mid = calculate_PM_at_c_yaxis(section, mat, c_mid)
+        
+        if abs(result_mid.Pn) < tol
+            return c_mid
+        elseif result_mid.Pn > 0
+            c_high = c_mid
+        else
+            c_low = c_mid
+        end
+    end
+    
+    return (c_low + c_high) / 2
+end
+
+"""
+    generate_PM_diagram_yaxis(section::RCColumnSection, mat; n_intermediate::Int=20)
+
+Generate P-M interaction diagram for Y-AXIS bending (Mny capacity).
+
+This is used for biaxial bending checks where rectangular columns have different
+capacities about each axis.
+
+# Arguments
+- `section`: RC column section
+- `mat`: Material properties
+- `n_intermediate`: Number of intermediate points
+
+# Returns
+PMInteractionDiagram for y-axis bending
+
+# Reference
+StructurePoint: "Biaxial Bending Interaction Diagrams for Rectangular RC Column Design"
+"""
+function generate_PM_diagram_yaxis(section::RCColumnSection, mat; n_intermediate::Int=20)
+    # Material properties
+    fc = fc_ksi(mat)
+    fy = fy_ksi(mat)
+    Es = Es_ksi(mat)
+    εcu_val = εcu(mat)
+    εy = fy / Es
+    
+    # For y-axis: use b as the depth, d from leftmost bars to right face
+    b = to_inches(section.b)
+    d = effective_depth_yaxis(section)
+    
+    points = PMDiagramPoint[]
+    control_indices = Dict{Symbol, Int}()
+    
+    # Pure compression (same as x-axis - section squashes uniformly)
+    P0 = pure_compression_capacity(section, mat)
+    φ_comp = section.tie_type == :spiral ? 0.75 : 0.65
+    push!(points, PMDiagramPoint(
+        Inf, -εy, P0, 0.0, φ_comp, φ_comp * P0, 0.0, PURE_COMPRESSION
+    ))
+    control_indices[:pure_compression] = length(points)
+    
+    # Maximum allowable compression
+    α = section.tie_type == :spiral ? 0.85 : 0.80
+    Pn_max = α * P0
+    c_large = 5.0 * b
+    result_large = calculate_phi_PM_at_c_yaxis(section, mat, c_large)
+    push!(points, PMDiagramPoint(
+        c_large, result_large.εt, Pn_max, result_large.Mn,
+        φ_comp, φ_comp * Pn_max, φ_comp * result_large.Mn, MAX_COMPRESSION
+    ))
+    control_indices[:max_compression] = length(points)
+    
+    # fs = 0 (c = d)
+    c_fs0 = d
+    result_fs0 = calculate_phi_PM_at_c_yaxis(section, mat, c_fs0)
+    push!(points, PMDiagramPoint(
+        c_fs0, result_fs0.εt, result_fs0.Pn, result_fs0.Mn,
+        result_fs0.φ, result_fs0.φPn, result_fs0.φMn, FS_ZERO
+    ))
+    control_indices[:fs_zero] = length(points)
+    
+    # fs = 0.5fy
+    εt_half = 0.5 * εy
+    c_half = c_from_εt(εt_half, d, εcu_val)
+    result_half = calculate_phi_PM_at_c_yaxis(section, mat, c_half)
+    push!(points, PMDiagramPoint(
+        c_half, result_half.εt, result_half.Pn, result_half.Mn,
+        result_half.φ, result_half.φPn, result_half.φMn, FS_HALF_FY
+    ))
+    control_indices[:fs_half_fy] = length(points)
+    
+    # Balanced (fs = fy)
+    c_balanced = c_from_εt(εy, d, εcu_val)
+    result_balanced = calculate_phi_PM_at_c_yaxis(section, mat, c_balanced)
+    push!(points, PMDiagramPoint(
+        c_balanced, result_balanced.εt, result_balanced.Pn, result_balanced.Mn,
+        result_balanced.φ, result_balanced.φPn, result_balanced.φMn, BALANCED
+    ))
+    control_indices[:balanced] = length(points)
+    
+    # Tension controlled (εt = εy + 0.003)
+    εt_tension = εy + 0.003
+    c_tension = c_from_εt(εt_tension, d, εcu_val)
+    result_tension = calculate_phi_PM_at_c_yaxis(section, mat, c_tension)
+    push!(points, PMDiagramPoint(
+        c_tension, result_tension.εt, result_tension.Pn, result_tension.Mn,
+        result_tension.φ, result_tension.φPn, result_tension.φMn, TENSION_CONTROLLED
+    ))
+    control_indices[:tension_controlled] = length(points)
+    
+    # Pure bending
+    c_pure_m = _find_pure_bending_c_yaxis(section, mat)
+    result_pure_m = calculate_phi_PM_at_c_yaxis(section, mat, c_pure_m)
+    push!(points, PMDiagramPoint(
+        c_pure_m, result_pure_m.εt, result_pure_m.Pn, result_pure_m.Mn,
+        result_pure_m.φ, result_pure_m.φPn, result_pure_m.φMn, PURE_BENDING
+    ))
+    control_indices[:pure_bending] = length(points)
+    
+    # Pure tension
+    As_total = to_sqinches(section.As_total)
+    Pnt = -fy * As_total
+    push!(points, PMDiagramPoint(
+        -Inf, Inf, Pnt, 0.0, 0.90, 0.90 * Pnt, 0.0, PURE_TENSION
+    ))
+    control_indices[:pure_tension] = length(points)
+    
+    # Add intermediate points
+    if n_intermediate > 0
+        points = _add_intermediate_points_yaxis(section, mat, points, n_intermediate)
+    end
+    
+    return PMInteractionDiagram(section, mat, points, control_indices)
+end
+
+"""Add intermediate points for y-axis P-M diagram."""
+function _add_intermediate_points_yaxis(
+    section::RCColumnSection, 
+    mat, 
+    control_points::Vector{PMDiagramPoint},
+    n_per_segment::Int
+)
+    c_values = Float64[]
+    for pt in control_points
+        if isfinite(pt.c) && pt.c > 0
+            push!(c_values, pt.c)
+        end
+    end
+    sort!(c_values, rev=true)
+    
+    all_points = PMDiagramPoint[]
+    
+    push!(all_points, control_points[1])
+    push!(all_points, control_points[2])
+    
+    c_max = maximum(c_values)
+    c_min = minimum(c_values)
+    
+    c_sweep = range(c_max, c_min, length=n_per_segment + 2)[2:end-1]
+    
+    for c in c_sweep
+        result = calculate_phi_PM_at_c_yaxis(section, mat, c)
+        push!(all_points, PMDiagramPoint(
+            c, result.εt, result.Pn, result.Mn,
+            result.φ, result.φPn, result.φMn, INTERMEDIATE
+        ))
+    end
+    
+    push!(all_points, control_points[end-1])
+    push!(all_points, control_points[end])
+    
+    return all_points
+end
+
+"""
+    generate_PM_diagrams_biaxial(section::RCColumnSection, mat; n_intermediate::Int=20)
+
+Generate P-M interaction diagrams for BOTH axes (biaxial bending support).
+
+# Returns
+NamedTuple with:
+- `x`: PMInteractionDiagram for x-axis bending (Mnx)
+- `y`: PMInteractionDiagram for y-axis bending (Mny)
+
+# Reference
+StructurePoint: "Manual Design Procedure for Columns and Walls with Biaxial Bending"
+"""
+function generate_PM_diagrams_biaxial(section::RCColumnSection, mat; n_intermediate::Int=20)
+    diagram_x = generate_PM_diagram(section, mat; n_intermediate=n_intermediate)
+    diagram_y = generate_PM_diagram_yaxis(section, mat; n_intermediate=n_intermediate)
+    return (x = diagram_x, y = diagram_y)
 end

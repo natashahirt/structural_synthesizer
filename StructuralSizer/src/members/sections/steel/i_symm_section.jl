@@ -1,13 +1,13 @@
 """Doubly-symmetric I-section with computed properties."""
 
-# Import type aliases from StructuralBase
-using StructuralBase.StructuralUnits: Length, Area, Volume, Inertia, WarpingConstant
+# Import type aliases from Asap
+using Asap: Length, Area, Volume, SecondMomentOfArea, WarpingConstant
 
 # Local aliases for consistency with existing code (Length, Area, etc. match struct field types)
 const LengthQ = Length
 const AreaQ   = Area
 const ModQ    = Volume   # Section modulus has L³ dimension (same as Volume)
-const InertQ  = Inertia  # Moment of inertia L⁴
+const InertQ  = SecondMomentOfArea  # Second moment of area L⁴
 const WarpQ   = WarpingConstant  # Warping constant L⁶
 
 mutable struct ISymmSection <: AbstractSection

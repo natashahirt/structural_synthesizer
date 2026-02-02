@@ -1,6 +1,6 @@
 # AISC HSS (Rectangular/Square) + Round HSS Catalog Loader (v15 CSV)
 
-using StructuralBase.StructuralUnits: asfloat, maybe_asfloat
+using Asap: asfloat, maybe_asfloat
 
 const HSS_RECT_CATALOG = Dict{String, HSSRectSection}()
 const HSS_ROUND_CATALOG = Dict{String, HSSRoundSection}()

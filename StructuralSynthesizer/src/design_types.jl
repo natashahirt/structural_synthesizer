@@ -27,7 +27,7 @@ Parameters that define a design configuration.
 Different `DesignParameters` on the same `BuildingStructure` produce
 different `BuildingDesign` results, enabling parametric studies.
 
-# Materials (defaults)
+# Materials
 Use existing types from StructuralSizer:
 - `concrete::Concrete` - with fc′, E, ρ, etc.
 - `steel::StructuralSteel` - with Fy, Fu, E, etc.
@@ -38,6 +38,12 @@ Optional overrides for column/beam sizing:
 - `columns`: `SteelColumnOptions` or `ConcreteColumnOptions`
 - `beams`: `SteelBeamOptions`
 
+# Analysis Settings
+- `load_combination::LoadCombination` - Load factors (default: STRENGTH_1_2D_1_6L)
+- `diaphragm_mode::Symbol` - `:none`, `:rigid`, or `:shell`
+- `default_frame_E/G/ρ` - Placeholder frame properties before sizing
+- `column_I_factor` / `beam_I_factor` - ACI cracking factors for effective stiffness
+
 # Example
 ```julia
 # Simple: just set materials
@@ -46,7 +52,7 @@ params = DesignParameters(
     concrete = NWC_5000,
 )
 
-# Full control: specify sizing options
+# Full control: materials, sizing, and analysis
 params = DesignParameters(
     name = "High-Rise Office",
     
@@ -65,7 +71,16 @@ params = DesignParameters(
         deflection_limit = 1/480,
     ),
     
+    # Analysis settings
+    load_combination = STRENGTH_1_2D_1_6L,
+    diaphragm_mode = :rigid,
+    
     optimize_for = :carbon,
+)
+
+# Use serviceability combination for deflection checks
+service_params = DesignParameters(
+    load_combination = SERVICE,  # 1.0D + 1.0L
 )
 
 # Then sizing auto-uses these:
@@ -78,22 +93,44 @@ Base.@kwdef mutable struct DesignParameters
     name::String = "default"
     description::String = ""
     
-    # Materials - defaults for the building
+    # ─── Materials ───
+    # Defaults for the building (used when section-specific material not provided)
     concrete::Union{StructuralSizer.Concrete, Nothing} = nothing
     steel::Union{StructuralSizer.StructuralSteel, Nothing} = nothing
     rebar::Union{StructuralSizer.RebarSteel, Nothing} = nothing
     timber::Union{StructuralSizer.Timber, Nothing} = nothing
     
-    # Member sizing options (override material defaults)
+    # ─── Member Sizing Options ───
+    # Override material defaults for specific member types
     columns::Union{StructuralSizer.SteelColumnOptions, StructuralSizer.ConcreteColumnOptions, Nothing} = nothing
     beams::Union{StructuralSizer.SteelBeamOptions, Nothing} = nothing
     
-    # Floor options (from StructuralSizer)
+    # ─── Floor Options ───
     floor_options::Union{StructuralSizer.FloorOptions, Nothing} = nothing
     
-    # Design targets
+    # ─── Design Targets ───
     deflection_limit::Symbol = :L_360        # :L_240, :L_360, :L_480
     optimize_for::Symbol = :weight           # :weight, :carbon, :cost
+    
+    # ─── Analysis Settings ───
+    # Load combination (replaces hardcoded DL/LL factors)
+    load_combination::LoadCombination = DEFAULT_STRENGTH
+    
+    # Diaphragm modeling for lateral analysis
+    diaphragm_mode::Symbol = :none           # :none, :rigid, :shell
+    diaphragm_E::Union{typeof(1.0u"Pa"), Nothing} = nothing  # override E (default: 1e15 Pa for rigid, 30 GPa for shell)
+    diaphragm_ν::Float64 = 0.2
+    
+    # Default frame element properties (before member sizing)
+    # Used as placeholder section in to_asap! before actual sizing
+    default_frame_E::typeof(1.0u"Pa") = 200e9u"Pa"      # Steel default
+    default_frame_G::typeof(1.0u"Pa") = 77e9u"Pa"       # Steel default
+    default_frame_ρ::typeof(1.0u"kg/m^3") = 7850.0u"kg/m^3"
+    
+    # ─── ACI Cracking Factors ───
+    # For converting RC sections to Asap.Section (effective stiffness)
+    column_I_factor::Float64 = 0.70    # ACI 318-14 §6.6.3.1.1 for columns
+    beam_I_factor::Float64 = 0.35      # ACI 318-14 §6.6.3.1.1 for beams
 end
 
 # =============================================================================

@@ -72,12 +72,23 @@ opts = ConcreteColumnOptions(
     section_shape = :rect,
     max_depth = 0.6,  # meters
 )
+
+# Full control over materials and detailing
+opts = ConcreteColumnOptions(
+    grade = NWC_5000,
+    rebar_grade = Rebar_75,
+    cover = 2.0u"inch",
+    transverse_bar_size = :no4,
+)
 ```
 
 # Fields
 - `grade`: Concrete material (default: NWC_4000)
 - `section_shape`: `:rect` or `:circular` (default: `:rect`)
-- `rebar_fy_ksi`: Rebar yield strength in ksi (default: 60.0)
+- `rebar_grade`: RebarSteel material for longitudinal bars (default: Rebar_60)
+- `transverse_rebar_grade`: RebarSteel for ties/spirals (default: same as rebar_grade)
+- `cover`: Clear cover to transverse reinforcement (default: 1.5" or 38mm)
+- `transverse_bar_size`: Tie/spiral bar size, :no3, :no4, :no5 (default: :no4)
 - `catalog`: `:common`, `:all` (default: `:common`)
 - `custom_catalog`: Custom section vector (overrides catalog)
 - `max_depth`: Maximum depth/diameter in meters (default: Inf)
@@ -87,11 +98,25 @@ opts = ConcreteColumnOptions(
 - `βdns`: Sustained load ratio for slenderness (default: 0.6)
 - `objective`: MinVolume(), MinWeight(), MinCost(), MinCarbon() (default: MinVolume())
 - `optimizer`: `:auto`, `:highs`, `:gurobi` (default: `:auto`)
+
+# Material Presets
+- Concrete: NWC_3000, NWC_4000, NWC_5000, NWC_6000, NWC_GGBS, NWC_PFA
+- Rebar: Rebar_40, Rebar_60, Rebar_75, Rebar_80
+
+# Notes
+- Leaving rebar_fy_ksi as Float64 for backward compatibility. 
+  New code should use rebar_grade which provides full material properties.
+- If both rebar_fy_ksi and rebar_grade are specified, rebar_grade takes precedence.
 """
 Base.@kwdef struct ConcreteColumnOptions
     grade::Concrete = NWC_4000
     section_shape::Symbol = :rect       # :rect or :circular
-    rebar_fy_ksi::Float64 = 60.0
+    rebar_grade::RebarSteel = Rebar_60
+    transverse_rebar_grade::Union{Nothing, RebarSteel} = nothing  # defaults to rebar_grade
+    cover::typeof(1.0u"inch") = 1.5u"inch"     # Clear cover to ties
+    transverse_bar_size::Symbol = :no4         # :no3, :no4, :no5
+    # Legacy field for backward compatibility
+    rebar_fy_ksi::Union{Nothing, Float64} = nothing  # Deprecated: use rebar_grade
     catalog::Symbol = :common           # :common, :all
     custom_catalog::Union{Nothing, Vector} = nothing
     max_depth::Float64 = Inf            # meters (depth for rect, diameter for circular)
@@ -101,6 +126,35 @@ Base.@kwdef struct ConcreteColumnOptions
     βdns::Float64 = 0.6
     objective::AbstractObjective = MinVolume()
     optimizer::Symbol = :auto
+end
+
+# Import ksi for use in helper functions
+using Asap: ksi
+
+# Helper to get effective fy from options (supports legacy rebar_fy_ksi)
+function get_rebar_fy_ksi(opts::ConcreteColumnOptions)
+    # Legacy field takes precedence if explicitly set
+    if !isnothing(opts.rebar_fy_ksi)
+        return opts.rebar_fy_ksi
+    end
+    # Otherwise use rebar_grade
+    return ustrip(ksi, opts.rebar_grade.Fy)
+end
+
+# Helper to get effective transverse rebar grade
+function get_transverse_rebar(opts::ConcreteColumnOptions)
+    isnothing(opts.transverse_rebar_grade) ? opts.rebar_grade : opts.transverse_rebar_grade
+end
+
+# Helper to get transverse bar diameter in inches
+const TRANSVERSE_BAR_DIAMETERS = Dict(
+    :no3 => 0.375,  # 3/8"
+    :no4 => 0.500,  # 1/2"
+    :no5 => 0.625,  # 5/8"
+)
+
+function get_transverse_bar_diameter(opts::ConcreteColumnOptions)
+    get(TRANSVERSE_BAR_DIAMETERS, opts.transverse_bar_size, 0.5)
 end
 
 # ==============================================================================

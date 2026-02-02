@@ -1,2 +1,2 @@
 include("utils.jl")
-include("meshing.jl")
+# Note: meshing.jl removed - use Asap.Shell() for triangulation

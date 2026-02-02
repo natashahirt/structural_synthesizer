@@ -131,8 +131,7 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     
     skel = struc.skeleton
     
-    # Use shared type aliases from StructuralBase.StructuralUnits
-    # (AreaQuantity = typeof(1.0u"m^2"), LengthQuantity = typeof(1.0u"m"))
+    # Type aliases from Asap: AreaQuantity = typeof(1.0u"m^2"), LengthQuantity = typeof(1.0u"m")
     
     # Build (x,y) → Column lookup (rounded to avoid FP precision issues)
     col_by_xy = Dict{Tuple{Float64, Float64}, Vector{Column{T}}}()
@@ -463,7 +462,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
                 Cb_gov = min(Cb_gov, seg.Cb)
 
                 el = struc.asap_model.elements[edge_idx]
-                f = AsapToolkit.InternalForces(el, struc.asap_model; resolution=resolution)
+                f = Asap.InternalForces(el, struc.asap_model; resolution=resolution)
 
                 # Convention check:
                 # ASAP P: Tension is positive. Compression is negative.
@@ -490,7 +489,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
 
                 # Local deflection for serviceability check
                 # ulocal[3,:] is the local Z deflection (transverse to beam axis)
-                edisp = AsapToolkit.ElementDisplacements(el, struc.asap_model; resolution=resolution)
+                edisp = Asap.ElementDisplacements(el, struc.asap_model; resolution=resolution)
                 δ_local = maximum(abs.(edisp.ulocal[3, :]))  # Max local Z deflection
                 δ_max = max(δ_max, δ_local)
                 
@@ -542,7 +541,7 @@ Respects `Member.group_id` by solving at the group level.
 
 !!! warning "Steel-Specific Implementation"
     This function is currently hardcoded for steel members using `AISCChecker` and
-    `AsapToolkit.toASAPframe`. To support other materials (concrete, timber), the
+    `StructuralSizer.to_asap_section`. To support other materials (concrete, timber), the
     design checker and ASAP section conversion need to be parameterized by material.
     See `StructuralSizer` for the generic checker interface.
 
@@ -623,9 +622,7 @@ function size_members_discrete!(
         mg.section = chosen
 
         # Build ASAP section once per group
-        chosen.name === nothing && throw(ArgumentError("Chosen section has no name; cannot convert to ASAP section via `toASAPframe(name, ...)`."))
-        sec_name = chosen.name
-        asap_sec = AsapToolkit.toASAPframe(sec_name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
+        asap_sec = StructuralSizer.to_asap_section(chosen, material)
 
         for m_idx in mg.member_indices
             m = member_array[m_idx]  # Index into appropriate member array
@@ -661,39 +658,15 @@ end
 # =============================================================================
 
 """
-    rc_section_to_asap(section::StructuralSizer.RCColumnSection, material::StructuralSizer.Concrete)
+    rc_section_to_asap(section, material)
 
-Convert an RCColumnSection to an ASAP Section for structural analysis.
+Convert an RC section to an ASAP Section for structural analysis.
+Delegates to `StructuralSizer.to_asap_section`.
 
-Uses gross section properties (ignores reinforcement for stiffness).
+!!! note "Deprecated"
+    Use `StructuralSizer.to_asap_section(section, material)` directly.
 """
-function rc_section_to_asap(section::StructuralSizer.RCColumnSection, material::StructuralSizer.Concrete)
-    # Get dimensions in meters
-    b = ustrip(uconvert(u"m", section.b))
-    h = ustrip(uconvert(u"m", section.h))
-    
-    # Gross section properties
-    A = b * h                    # Area [m²]
-    Ix = b * h^3 / 12            # Strong axis I [m⁴]
-    Iy = h * b^3 / 12            # Weak axis I [m⁴]
-    
-    # Torsional constant (approximation for rectangular sections)
-    # J ≈ β × a × b³ where a ≥ b
-    a_dim = max(b, h)
-    b_dim = min(b, h)
-    ratio = a_dim / b_dim
-    # β ranges from 0.141 (square) to 0.333 (very elongated)
-    β = 1/3 - 0.21 * (b_dim/a_dim) * (1 - (b_dim/a_dim)^4 / 12)
-    J = β * a_dim * b_dim^3
-    
-    # Material properties
-    E = material.E
-    ν = material.ν
-    G = E / (2 * (1 + ν))
-    ρ = material.ρ
-    
-    return Asap.Section(A*u"m^2", E, G, Ix*u"m^4", Iy*u"m^4", J*u"m^4", ρ)
-end
+rc_section_to_asap(section, material) = StructuralSizer.to_asap_section(section, material)
 
 """
     size_columns!(struc::BuildingStructure)
@@ -804,9 +777,9 @@ function _size_columns_impl!(
                   for (L, Lb, Ky) in zip(L_totals, Lb_govs, Ky_govs)]
     
     # Convert demands: N/N*m → kip/kip*ft for concrete
-    Pu_kip = [ustrip(uconvert(StructuralBase.StructuralUnits.kip, d.Pu_c * u"N")) for d in demands]
-    Mux_kipft = [ustrip(uconvert(StructuralBase.StructuralUnits.kip*u"ft", d.Mux * u"N*m")) for d in demands]
-    Muy_kipft = [ustrip(uconvert(StructuralBase.StructuralUnits.kip*u"ft", d.Muy * u"N*m")) for d in demands]
+    Pu_kip = [ustrip(uconvert(Asap.kip, d.Pu_c * u"N")) for d in demands]
+    Mux_kipft = [ustrip(uconvert(Asap.kip*u"ft", d.Mux * u"N*m")) for d in demands]
+    Muy_kipft = [ustrip(uconvert(Asap.kip*u"ft", d.Muy * u"N*m")) for d in demands]
     
     # Run optimization
     result = StructuralSizer.size_columns(Pu_kip, Mux_kipft, geometries, opts; Muy=Muy_kipft)
@@ -850,12 +823,7 @@ function _apply_column_results!(struc, result, group_ids, material, material_typ
         mg.section = chosen
         
         # Build ASAP section
-        asap_sec = if material_type === :steel
-            chosen.name === nothing && throw(ArgumentError("Steel section has no name for ASAP conversion"))
-            AsapToolkit.toASAPframe(chosen.name; E=material.E, G=material.G, ρ=material.ρ, unit=u"m")
-        else
-            rc_section_to_asap(chosen, material)
-        end
+        asap_sec = StructuralSizer.to_asap_section(chosen, material)
         
         for m_idx in mg.member_indices
             m = member_array[m_idx]
@@ -1006,7 +974,17 @@ function _estimate_avg_span(skel::BuildingSkeleton)
     end
 end
 
-"""Get factored load intensity for column from adjacent cells."""
+"""
+    _get_column_load_intensity(struc, col, qu_default) -> PressureQuantity
+
+Get area-weighted factored load intensity for a column from adjacent cells.
+
+Uses `total_factored_pressure(cell)` which includes SDL, live load, AND slab self-weight
+(1.2×DL + 1.6×LL per ACI 318 load combinations).
+
+Note: Cell self-weight is populated during slab sizing via `initialize_slabs!`.
+If called before slab sizing, self-weight will be zero.
+"""
 function _get_column_load_intensity(struc::BuildingStructure, col, qu_default)
     # Get cells contributing to this column (areas are Unitful)
     by_cell = column_tributary_by_cell(struc, col)
@@ -1022,11 +1000,9 @@ function _get_column_load_intensity(struc::BuildingStructure, col, qu_default)
     for (cell_idx, area) in by_cell  # area is already Unitful (m²)
         if cell_idx <= length(struc.cells)
             cell = struc.cells[cell_idx]
-            # Factored load: 1.2D + 1.6L (conservative)
-            # Self-weight will be added from slab thickness later
-            sdl = cell.sdl
-            ll = cell.live_load
-            qu = 1.2 * sdl + 1.6 * ll
+            # Use total_factored_pressure which includes SDL + self_weight + LL
+            # with proper load factors (1.2D + 1.6L)
+            qu = total_factored_pressure(cell)
             
             total_load += qu * area
             total_area += area

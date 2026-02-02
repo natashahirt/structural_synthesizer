@@ -7,5 +7,6 @@ include("options.jl")
 # Sizing codes
 include("codes/_codes.jl")
 
-# Tributary area computation (straight skeleton)
-include("tributary/_tributary.jl")
+# ACI strip geometry utilities (column/middle strip split)
+# Generic tributary computation is now in Asap
+include("utils/_utils.jl")

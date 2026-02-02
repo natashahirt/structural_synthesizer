@@ -2,7 +2,7 @@
 using Test
 using Unitful
 using StructuralSizer
-using StructuralBase: StructuralUnits
+# Units are re-exported from StructuralSizer (via Asap)
 
 @testset "Steel Member Tests" begin
     include("steel_member/test_hss_sections.jl")

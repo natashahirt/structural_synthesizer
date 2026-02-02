@@ -9,7 +9,7 @@
 #          in materials/concrete.jl
 
 using Unitful
-using StructuralBase.StructuralUnits: ksi
+using Asap: ksi
 
 # ==============================================================================
 # Standard Column Sizes

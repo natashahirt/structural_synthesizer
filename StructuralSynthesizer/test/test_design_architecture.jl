@@ -1,7 +1,7 @@
 # Test the new design architecture
 using StructuralSynthesizer
 using StructuralSizer  # For Concrete, StructuralSteel types
-using StructuralBase.StructuralUnits  # For ksi, psi, etc.
+using StructuralSizer: ksi  # Units from Asap via StructuralSizer
 using Test
 using Unitful
 
@@ -48,8 +48,12 @@ println("Testing design architecture types...")
     end
     
     @testset "BuildingDesign" begin
+        # BuildingDesign requires a BuildingStructure
+        skel = gen_medium_office(10.0u"m", 10.0u"m", 3.0u"m", 1, 1, 1)
+        struc = BuildingStructure(skel)
+        
         params = DesignParameters(name = "Test Design")
-        design = BuildingDesign(params)
+        design = BuildingDesign(struc, params)
         
         @test design.params.name == "Test Design"
         @test isempty(design.slabs)

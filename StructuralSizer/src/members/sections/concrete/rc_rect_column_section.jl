@@ -5,8 +5,8 @@
 # Supports tied and spiral confinement.
 # ==============================================================================
 
-# Import type aliases from StructuralBase
-using StructuralBase.StructuralUnits: Length, Area, Inertia
+# Import type aliases from Asap
+using Asap: Length, Area, SecondMomentOfArea
 
 # ==============================================================================
 # Rebar Location

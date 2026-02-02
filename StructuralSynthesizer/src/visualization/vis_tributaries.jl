@@ -89,7 +89,7 @@ function _get_cell_vertices_2d_with_offset(struc::BuildingStructure, cell::Cell)
     end
     
     # IMPORTANT: Ensure CCW ordering to match tributary computation
-    coords = StructuralSizer._ensure_ccw(coords)
+    coords = Asap._ensure_ccw(coords)
     
     # Compute centroid offset
     cx = sum(v[1] for v in coords) / length(coords)

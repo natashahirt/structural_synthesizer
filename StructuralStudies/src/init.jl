@@ -8,7 +8,7 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 # Core structural modules
-using StructuralBase
+# StructuralSizer re-exports units from Asap
 using StructuralSizer
 using Unitful
 

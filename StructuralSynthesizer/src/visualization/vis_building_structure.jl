@@ -138,13 +138,13 @@ function visualize(struc::BuildingStructure;
         end
 
         # Calculate displacements/forces with a reasonable increment
-        # AsapToolkit accepts Unitful at API boundary, but visualization math uses Float64
+        # Asap accepts Unitful at API boundary, but visualization math uses Float64
         avg_len_unitful = model.nElements > 0 ? sum(getproperty.(model.elements, :length)) / model.nElements : 1.0u"m"
         avg_len = ustrip(u"m", avg_len_unitful)  # Float64 for internal visualization math
-        increment = avg_len_unitful / resolution  # Unitful for AsapToolkit API
+        increment = avg_len_unitful / resolution  # Unitful for Asap API
         
-        # AsapToolkit provides high-level helpers for displacements and forces
-        edisps = AsapToolkit.displacements(model, increment)
+        # Asap provides displacements and forces analysis
+        edisps = Asap.displacements(model, increment)
         isempty(edisps) && error("No element displacements available. Is the model empty or unsolved? (nElements=$(model.nElements), nLoads=$(length(model.loads)))")
         println("First element uglobal: ", edisps[1].uglobal[:, 1:3])
 
@@ -160,7 +160,7 @@ function visualize(struc::BuildingStructure;
         end
 
         # For stress coloring, we need internal forces
-        eforces = color_by == :stress ? AsapToolkit.InternalForces(model, increment) : nothing
+        eforces = color_by == :stress ? Asap.InternalForces(model, increment) : nothing
 
         # Collectors for consistent coloring across all members
         all_points = Vector{GLMakie.Point3f}[]
@@ -204,7 +204,7 @@ function visualize(struc::BuildingStructure;
                 Sy = hasproperty(section, :Sy) ? section.Sy : 1.0
                 
                 # Combined stress approximation: σ = |P/A| + |Mz/Sx| + |My/Sy|
-                # AsapToolkit.InternalForces contains vectors P, My, Vy, Mz, Vz
+                # Asap.InternalForces (dispatches to ElementInternalForces) contains vectors P, My, Vy, Mz, Vz
                 svals = [abs(eforce.P[j]/A) + abs(eforce.Mz[j]/Sx) + abs(eforce.My[j]/Sy) for j in 1:length(eforce.P)]
                 append!(all_colors, svals)
             end
@@ -391,7 +391,7 @@ function _draw_tributary_areas!(ax, struc::BuildingStructure, leg_elems, leg_lab
             c = Meshes.coords(p)
             push!(verts_2d, (ustrip(u"m", c.x), ustrip(u"m", c.y)))
         end
-        verts_2d = StructuralSizer._ensure_ccw(verts_2d)
+        verts_2d = Asap._ensure_ccw(verts_2d)
         n_verts = length(verts_2d)
         
         for trib in tribs

@@ -223,7 +223,7 @@ ShapedSlabResult(vol::L, sw::F) where {L, F} = ShapedSlabResult{L, F}(vol, sw, n
 """
 Strip reinforcement design result (flat plate/slab design).
 """
-struct StripReinforcement{L<:StructuralUnits.Length, A<:StructuralUnits.Area, M<:StructuralUnits.Moment}
+struct StripReinforcement{L<:Asap.Length, A<:Asap.Area, M<:Asap.Moment}
     location::Symbol          # :ext_neg, :pos, :int_neg
     Mu::M                     # Design moment
     As_reqd::A                # Required steel area
@@ -237,7 +237,7 @@ end
 """
 Panel design result for flat plate per ACI 318 DDM/EFM.
 """
-struct FlatPlatePanelResult{L<:StructuralUnits.Length, M<:StructuralUnits.Moment} <: AbstractFloorResult
+struct FlatPlatePanelResult{L<:Asap.Length, M<:Asap.Moment} <: AbstractFloorResult
     # Geometry
     l1::L                     # Span in direction 1
     l2::L                     # Span in direction 2

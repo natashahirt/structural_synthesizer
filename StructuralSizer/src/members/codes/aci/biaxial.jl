@@ -4,8 +4,10 @@
 # Reference: ACI 318-19 and StructurePoint Design Examples:
 # - "Manual Design Procedure for Columns and Walls with Biaxial Bending"
 # - "Biaxial Bending Interaction Diagrams for Square RC Column Design"
+# - "Biaxial Bending Interaction Diagrams for Rectangular RC Column Design"
 
 using Unitful
+using Asap: to_inches
 
 # ==============================================================================
 # Bresler Reciprocal Load Method
@@ -284,4 +286,119 @@ function check_biaxial_simple(
         φMn_at_Pu = φMn,
         method = :contour_symmetric
     )
+end
+
+"""
+    check_biaxial_rectangular(
+        section::RCColumnSection, mat,
+        Pu::Real, Mux::Real, Muy::Real;
+        method::Symbol = :contour,
+        α::Real = 1.5
+    ) -> NamedTuple
+
+Full biaxial check for RECTANGULAR columns with separate x/y capacities.
+
+This generates P-M diagrams for both axes and uses the appropriate capacity
+in each direction. Required for non-square columns where b ≠ h.
+
+# Arguments
+- `section`: RC column section
+- `mat`: Material properties
+- `Pu`: Factored axial load (kip), positive = compression
+- `Mux`: Factored moment about x-axis (kip-ft) - bends about h
+- `Muy`: Factored moment about y-axis (kip-ft) - bends about b
+- `method`: `:contour` (Bresler Load Contour) or `:reciprocal`
+- `α`: Load contour exponent (default 1.5)
+
+# Returns
+NamedTuple with:
+- `adequate`: Bool - true if demand is within capacity
+- `utilization`: Float64 - demand/capacity ratio
+- `φMnx_at_Pu`: Factored x-moment capacity at given Pu
+- `φMny_at_Pu`: Factored y-moment capacity at given Pu
+- `method`: Method used
+
+# Reference
+StructurePoint: "Biaxial Bending Interaction Diagrams for Rectangular 
+Reinforced Concrete Column Design (ACI 318-19)"
+"""
+function check_biaxial_rectangular(
+    section::RCColumnSection, 
+    mat,
+    Pu::Real, Mux::Real, Muy::Real;
+    method::Symbol = :contour,
+    α::Real = 1.5
+)
+    # Generate diagrams for both axes
+    diagrams = generate_PM_diagrams_biaxial(section, mat; n_intermediate=15)
+    
+    # Use the full check with separate diagrams
+    return check_biaxial_capacity(diagrams.x, diagrams.y, Pu, Mux, Muy; method=method, α=α)
+end
+
+"""
+    check_biaxial_auto(
+        section::RCColumnSection, mat,
+        Pu::Real, Mux::Real, Muy::Real;
+        method::Symbol = :contour,
+        α::Real = 1.5,
+        square_tolerance::Real = 0.01
+    ) -> NamedTuple
+
+Automatic biaxial check that detects square vs rectangular sections.
+
+# Arguments
+- `section`: RC column section
+- `mat`: Material properties
+- `Pu`: Factored axial load (kip)
+- `Mux, Muy`: Factored moments (kip-ft)
+- `method`: `:contour` or `:reciprocal`
+- `α`: Load contour exponent (default 1.5)
+- `square_tolerance`: Tolerance for b/h ratio to consider square (default 0.01)
+
+# Returns
+NamedTuple with biaxial check results
+
+# Notes
+- If b ≈ h (within tolerance): uses symmetric check (faster)
+- If b ≠ h: uses full rectangular check with separate diagrams
+"""
+function check_biaxial_auto(
+    section::RCColumnSection, 
+    mat,
+    Pu::Real, Mux::Real, Muy::Real;
+    method::Symbol = :contour,
+    α::Real = 1.5,
+    square_tolerance::Real = 0.01
+)
+    # Check if section is approximately square
+    b = to_inches(section.b)
+    h = to_inches(section.h)
+    aspect_ratio = b / h
+    
+    is_square = abs(aspect_ratio - 1.0) ≤ square_tolerance
+    
+    if is_square
+        # Use symmetric check (faster)
+        result = check_biaxial_simple(section, mat, Pu, Mux, Muy; α=α)
+        return (
+            adequate = result.adequate,
+            utilization = result.utilization,
+            φMnx_at_Pu = result.φMn_at_Pu,
+            φMny_at_Pu = result.φMn_at_Pu,
+            method = result.method,
+            is_square = true
+        )
+    else
+        # Use full rectangular check
+        result = check_biaxial_rectangular(section, mat, Pu, Mux, Muy; method=method, α=α)
+        return (
+            adequate = result.adequate,
+            utilization = result.utilization,
+            φMnx_at_Pu = result.φMnx_at_Pu,
+            φMny_at_Pu = result.φMny_at_Pu,
+            method = result.method,
+            is_square = false
+        )
+    end
 end

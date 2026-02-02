@@ -3,8 +3,10 @@
 # ==============================================================================
 # Implements AbstractCapacityChecker for ACI 318 concrete column design.
 # Matches the interface used by AISCChecker for MIP optimization.
+#
+# Uses unified material utilities from aci_material_utils.jl
 
-using StructuralBase.StructuralUnits: kip, ksi
+using Asap: kip, ksi, to_ksi
 
 """
     ACIColumnChecker <: AbstractCapacityChecker
@@ -57,7 +59,7 @@ end
 # ==============================================================================
 
 """Union type for P-M diagrams (rectangular or circular)."""
-const PMDiagram = Union{PMInteractionDiagram, PMInteractionDiagramCircular}
+const PMDiagram = Union{PMInteractionDiagram{RCColumnSection}, PMInteractionDiagram{RCCircularSection}}
 
 """
     ACIColumnCapacityCache <: AbstractCapacityCache
@@ -97,6 +99,10 @@ create_cache(::ACIColumnChecker, n_sections::Int) = ACIColumnCapacityCache(n_sec
 
 Precompute P-M diagrams and objective coefficients for all sections.
 Works with both rectangular (RCColumnSection) and circular (RCCircularSection) types.
+
+# Material Support
+- `Concrete`: Uses checker.fy_ksi for rebar strength
+- `ReinforcedConcreteMaterial`: Uses embedded rebar properties
 """
 function precompute_capacities!(
     checker::ACIColumnChecker,
@@ -108,15 +114,49 @@ function precompute_capacities!(
     n = length(catalogue)
     
     # Extract material properties in ksi (ACI uses US units internally)
-    cache.fc_ksi = ustrip(ksi, material.fc′)
+    cache.fc_ksi = fc_ksi(material)
     cache.fy_ksi = checker.fy_ksi  # From checker (rebar strength)
     cache.Es_ksi = 29000.0         # Standard Es for rebar
     
-    # Material properties as NamedTuple for P-M functions (in ksi)
-    mat = (fc = cache.fc_ksi, fy = cache.fy_ksi, Es = cache.Es_ksi, εcu = 0.003)
+    # Build material tuple for P-M functions
+    mat = to_material_tuple(material, cache.fy_ksi, cache.Es_ksi)
     
+    _precompute_diagrams!(checker, cache, catalogue, material, mat, objective, n)
+end
+
+# Overload for ReinforcedConcreteMaterial - uses embedded rebar properties
+function precompute_capacities!(
+    checker::ACIColumnChecker,
+    cache::ACIColumnCapacityCache,
+    catalogue::AbstractVector{<:AbstractSection},
+    material::ReinforcedConcreteMaterial,
+    objective::AbstractObjective
+)
+    n = length(catalogue)
+    
+    # Extract material properties from the RC material
+    cache.fc_ksi = fc_ksi(material)
+    cache.fy_ksi = fy_ksi(material)
+    cache.Es_ksi = Es_ksi(material)
+    
+    # Build material tuple from RC material
+    mat = to_material_tuple(material)
+    
+    _precompute_diagrams!(checker, cache, catalogue, material.concrete, mat, objective, n)
+end
+
+# Internal helper to avoid code duplication
+function _precompute_diagrams!(
+    checker::ACIColumnChecker,
+    cache::ACIColumnCapacityCache,
+    catalogue::AbstractVector{<:AbstractSection},
+    concrete::Concrete,  # For objective_value (needs Concrete, not tuple)
+    mat::NamedTuple,     # For P-M calculations
+    objective::AbstractObjective,
+    n::Int
+)
     # Determine target unit for objective
-    ref_obj = objective_value(objective, catalogue[1], material, 1.0u"m")
+    ref_obj = objective_value(objective, catalogue[1], concrete, 1.0u"m")
     ref_unit = ref_obj isa Unitful.Quantity ? unit(ref_obj) : Unitful.NoUnits
     
     for j in 1:n
@@ -129,7 +169,7 @@ function precompute_capacities!(
         cache.depths[j] = _section_depth_m(section)
         
         # Objective coefficient (value per meter)
-        val = objective_value(objective, section, material, 1.0u"m")
+        val = objective_value(objective, section, concrete, 1.0u"m")
         if ref_unit != Unitful.NoUnits
             cache.obj_coeffs[j] = ustrip(uconvert(ref_unit, val))
         else
@@ -332,6 +372,31 @@ function objective_value(
 )
     # Simplified cost: use volume as proxy
     return uconvert(u"m^3", section.Ag * length)
+end
+
+# MinCarbon: Embodied carbon = mass × ECC (kgCO₂e/kg)
+function objective_value(
+    ::MinCarbon,
+    section::RCColumnSection,
+    material::Concrete,
+    length::Unitful.Length
+)
+    Ag = section.b * section.h
+    # Mass = volume × density, embodied carbon = mass × ecc
+    volume = uconvert(u"m^3", Ag * length)
+    mass_kg = ustrip(volume) * ustrip(u"kg/m^3", material.ρ)
+    return mass_kg * material.ecc  # kgCO₂e
+end
+
+function objective_value(
+    ::MinCarbon,
+    section::RCCircularSection,
+    material::Concrete,
+    length::Unitful.Length
+)
+    volume = uconvert(u"m^3", section.Ag * length)
+    mass_kg = ustrip(volume) * ustrip(u"kg/m^3", material.ρ)
+    return mass_kg * material.ecc  # kgCO₂e
 end
 
 # ==============================================================================

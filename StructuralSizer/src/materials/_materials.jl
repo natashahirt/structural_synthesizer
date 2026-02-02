@@ -1,5 +1,5 @@
 # Import units for material display functions
-using StructuralBase.StructuralUnits: ksi
+using Asap: ksi
 using Unitful: psi
 
 # Material type definitions first

@@ -118,9 +118,8 @@ struct CellTributaryResult
     strip_geometry::Union{PanelStripGeometry, Nothing}  # Column/middle strip split
 end
 
-# Import concrete Unitful type aliases from StructuralBase
-# (defined in StructuralBase.StructuralUnits for shared use)
-using StructuralBase.StructuralUnits: AreaQuantity, LengthQuantity
+# Import concrete Unitful type aliases from Asap (via StructuralSizer)
+using Asap: AreaQuantity, LengthQuantity
 
 """
 Cached Voronoi tributary for a column.

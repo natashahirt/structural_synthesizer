@@ -1,6 +1,8 @@
 # ==============================================================================
 # Tests for ACI 318-19 Slenderness Effects
 # Reference: StructurePoint "Slender Column Design in Non-Sway Frame"
+# Reference: StructurePoint "Slender Concrete Column Design in Sway Frames - 
+#            Moment Magnification Method (ACI 318-19)"
 # ==============================================================================
 
 using Test
@@ -9,6 +11,7 @@ using Unitful
 
 # Load test data
 include("test_data/slenderness_nonsway_17x17.jl")
+include("test_data/slenderness_sway_18x18.jl")
 
 @testset "Slenderness Effects (ACI 318-19)" begin
     ref = SLENDER_NONSWAY_17X17
@@ -109,12 +112,8 @@ include("test_data/slenderness_nonsway_17x17.jl")
             arrangement = :two_layer
         )
         
-        mat = (
-            fc = ref.materials.fc,
-            fy = ref.materials.fy,
-            Es = ref.materials.Es,
-            εcu = ref.materials.εcu
-        )
+        # Use proper ReinforcedConcreteMaterial (f'c = 3 ksi, fy = 60 ksi)
+        mat = RC_3000_60
         
         # Accurate method: (0.2EcIg + EsIse) / (1 + βdns)
         EI_eff = StructuralSizer.effective_stiffness(
@@ -157,12 +156,8 @@ include("test_data/slenderness_nonsway_17x17.jl")
             arrangement = :two_layer
         )
         
-        mat = (
-            fc = ref.materials.fc,
-            fy = ref.materials.fy,
-            Es = ref.materials.Es,
-            εcu = ref.materials.εcu
-        )
+        # Use proper ReinforcedConcreteMaterial (f'c = 3 ksi, fy = 60 ksi)
+        mat = RC_3000_60
         
         Lu_m = ref.column.Lu / 39.37
         geometry = ConcreteMemberGeometry(Lu_m; k = ref.frame.k_calc, braced = true)
@@ -228,12 +223,8 @@ include("test_data/slenderness_nonsway_17x17.jl")
             arrangement = :two_layer
         )
         
-        mat = (
-            fc = ref.materials.fc,
-            fy = ref.materials.fy,
-            Es = ref.materials.Es,
-            εcu = ref.materials.εcu
-        )
+        # Use proper ReinforcedConcreteMaterial (f'c = 3 ksi, fy = 60 ksi)
+        mat = RC_3000_60
         
         Lu_m = ref.column.Lu / 39.37
         geometry = ConcreteMemberGeometry(Lu_m; k = ref.frame.k_calc, braced = true)
@@ -277,5 +268,221 @@ include("test_data/slenderness_nonsway_17x17.jl")
         # M2 = M2ns + δs×M2s = 100 + 1.5×40 = 160
         @test result.M1 ≈ 80.0
         @test result.M2 ≈ 160.0
+    end
+end
+
+# ==============================================================================
+# Complete Sway Frame Magnification Tests
+# Reference: StructurePoint "Slender Concrete Column Design in Sway Frames"
+# ==============================================================================
+
+@testset "Sway Frame Magnification - Complete (ACI 318-19)" begin
+    ref = SLENDER_SWAY_18X18
+    
+    # Create column section (18×18 with 8 #6 bars)
+    section = RCColumnSection(
+        b = ref.column.b * u"inch",
+        h = ref.column.h * u"inch",
+        cover = ref.column.cover * u"inch",
+        bar_size = ref.reinforcement.bar_size,
+        n_bars = ref.reinforcement.n_bars,
+        tie_type = :tied
+    )
+    
+    # Use proper ReinforcedConcreteMaterial (f'c = 4 ksi, fy = 60 ksi)
+    mat = RC_4000_60
+    
+    # =========================================================================
+    @testset "Story Stability Index Q" begin
+        # Create StoryProperties
+        story = StoryProperties(
+            ref.story.ΣPu,
+            ref.story.ΣPc,
+            ref.story.Vus,
+            ref.story.Δo,
+            ref.story.lc
+        )
+        
+        # Calculate Q = ΣPu × Δo / (Vus × lc)
+        Q = stability_index(story)
+        @test Q ≈ ref.sway.Q rtol=0.02
+        
+        # Check sway frame determination (Q > 0.05)
+        @test is_sway_frame(story) == ref.sway.is_sway
+    end
+    
+    # =========================================================================
+    @testset "Sway Magnification Factor δs - Q Method" begin
+        # δs = 1 / (1 - Q)
+        Q = ref.sway.Q
+        δs_Q = magnification_factor_sway_Q(Q)
+        @test δs_Q ≈ ref.sway.δs_Q_method rtol=0.02
+    end
+    
+    # =========================================================================
+    @testset "Sway Magnification Factor δs - ΣPc Method" begin
+        # δs = 1 / (1 - ΣPu/(0.75×ΣPc))
+        δs_Pc = magnification_factor_sway(ref.story.ΣPu, ref.story.ΣPc)
+        @test δs_Pc ≈ ref.sway.δs_Pc_method rtol=0.02
+    end
+    
+    # =========================================================================
+    @testset "Simple Sway Moment Magnification" begin
+        # Test the basic moment magnification formula
+        result = magnify_moment_sway(
+            ref.loading.M1ns, ref.loading.M2ns,
+            ref.loading.M1s, ref.loading.M2s,
+            ref.sway.δs
+        )
+        
+        # M1 = M1ns + δs × M1s
+        expected_M1 = ref.loading.M1ns + ref.sway.δs * ref.loading.M1s
+        @test result.M1 ≈ expected_M1 rtol=0.01
+        
+        # M2 = M2ns + δs × M2s
+        expected_M2 = ref.loading.M2ns + ref.sway.δs * ref.loading.M2s
+        @test result.M2 ≈ expected_M2 rtol=0.01
+        
+        # Check against reference magnified moments
+        @test result.M1 ≈ ref.sway.M1_magnified rtol=0.02
+        @test result.M2 ≈ ref.sway.M2_magnified rtol=0.02
+    end
+    
+    # =========================================================================
+    @testset "Effective Stiffness for Sway Frame" begin
+        # (EI)eff for sway uses βds instead of βdns
+        EI_eff_sway = effective_stiffness_sway(
+            section, mat;
+            βds = ref.loading.βds,  # 0.0 for wind
+            method = :accurate
+        )
+        
+        # With βds = 0, denominator = 1.0
+        # Should be larger than non-sway with βdns = 0.805
+        EI_eff_nonsway = effective_stiffness(
+            section, mat;
+            βdns = ref.loading.βdns,  # 0.805
+            method = :accurate
+        )
+        
+        @test EI_eff_sway > EI_eff_nonsway
+        
+        # Verify reasonable magnitude
+        @test 5e6 < EI_eff_sway < 15e6  # kip-in²
+    end
+    
+    # =========================================================================
+    @testset "Critical Buckling Load for Sway Frame" begin
+        Lu_m = ref.column.Lu / 39.37  # Convert to meters
+        geometry = ConcreteMemberGeometry(Lu_m; k = ref.frame.k_sway, braced = false)
+        
+        Pc_sway = critical_buckling_load_sway(
+            section, mat, geometry;
+            βds = ref.loading.βds
+        )
+        
+        # Pc should be reasonable order of magnitude
+        @test 1000 < Pc_sway < 5000  # kip
+        
+        # Verify formula: Pc = π²(EI)eff / (kLu)²
+        EI_eff = effective_stiffness_sway(section, mat; βds=ref.loading.βds)
+        kLu = ref.frame.k_sway * ref.column.Lu
+        Pc_expected = π^2 * EI_eff / kLu^2
+        @test Pc_sway ≈ Pc_expected rtol=0.01
+    end
+    
+    # =========================================================================
+    @testset "Complete Sway Magnification Procedure" begin
+        # Set up story and geometry
+        story = StoryProperties(
+            ref.story.ΣPu,
+            ref.story.ΣPc,
+            ref.story.Vus,
+            ref.story.Δo,
+            ref.story.lc
+        )
+        
+        Lu_m = ref.column.Lu / 39.37
+        geometry = ConcreteMemberGeometry(Lu_m; k = ref.frame.k_sway, braced = false)
+        
+        # Run complete magnification
+        result = magnify_moment_sway_complete(
+            section, mat, geometry,
+            ref.loading.Pu,
+            ref.loading.M1ns, ref.loading.M2ns,
+            ref.loading.M1s, ref.loading.M2s;
+            story = story,
+            βds = ref.loading.βds,
+            βdns = ref.loading.βdns
+        )
+        
+        # Check sway magnification occurred
+        @test result.sway_magnified == true
+        
+        # Check Q is calculated correctly
+        @test result.Q ≈ ref.sway.Q rtol=0.02
+        
+        # Magnified end moments should be close to reference
+        # (Using Q method gives slightly different δs than ΣPc method)
+        @test result.M1 ≈ ref.sway.M1_magnified rtol=0.10
+        @test result.M2 ≈ ref.sway.M2_magnified rtol=0.10
+        
+        # Design moment Mc should be max of magnified moments
+        @test result.Mc ≈ max(abs(result.M1), abs(result.M2)) rtol=0.01
+    end
+    
+    # =========================================================================
+    @testset "Sway vs Non-Sway Comparison" begin
+        Lu_m = ref.column.Lu / 39.37
+        
+        # Non-sway geometry (k = 0.65 typical for braced)
+        geometry_nonsway = ConcreteMemberGeometry(Lu_m; k = 0.65, braced = true)
+        
+        # Sway geometry (k = 1.282 for this example)
+        geometry_sway = ConcreteMemberGeometry(Lu_m; k = ref.frame.k_sway, braced = false)
+        
+        # Critical loads
+        Pc_nonsway = critical_buckling_load(section, mat, geometry_nonsway; βdns=ref.loading.βdns)
+        Pc_sway = critical_buckling_load_sway(section, mat, geometry_sway; βds=ref.loading.βds)
+        
+        # Sway Pc should be much lower (higher k, larger kLu)
+        @test Pc_sway < Pc_nonsway
+    end
+    
+    # =========================================================================
+    @testset "Stability Index Edge Cases" begin
+        # Very stable story (low Q)
+        story_stable = StoryProperties(100.0, 100000.0, 50.0, 0.05, 180.0)
+        @test is_sway_frame(story_stable) == false
+        @test stability_index(story_stable) < 0.05
+        
+        # Marginally sway (Q just above 0.05)
+        story_marginal = StoryProperties(1000.0, 10000.0, 20.0, 0.16, 160.0)
+        Q_marginal = stability_index(story_marginal)
+        # Q = 1000 × 0.16 / (20 × 160) = 0.05
+        @test Q_marginal ≈ 0.05 rtol=0.01
+        
+        # Very unstable (high Q approaching 1.0)
+        story_unstable = StoryProperties(3000.0, 5000.0, 10.0, 0.5, 100.0)
+        Q_unstable = stability_index(story_unstable)
+        δs_unstable = magnification_factor_sway_Q(Q_unstable)
+        @test δs_unstable > 2.0  # High magnification
+    end
+    
+    # =========================================================================
+    @testset "δs Limits and Warnings" begin
+        # Normal case
+        δs_normal = magnification_factor_sway_Q(0.10)
+        @test δs_normal ≈ 1.111 rtol=0.01
+        @test δs_normal ≥ 1.0
+        
+        # High but stable case (δs > 1.5 triggers warning)
+        δs_high = magnification_factor_sway_Q(0.40)
+        @test δs_high ≈ 1.667 rtol=0.01
+        @test δs_high > 1.5  # Would trigger warning in practice
+        
+        # Unstable case (Q ≥ 1.0 returns Inf)
+        δs_unstable = magnification_factor_sway_Q(1.0)
+        @test isinf(δs_unstable)
     end
 end

@@ -1,40 +1,50 @@
 """
-    to_asap!(struc; diaphragms=:none, shell_props=nothing)
+    to_asap!(struc; params=DesignParameters(), diaphragms=nothing, shell_props=nothing)
 
 Converts a BuildingStructure into an Asap.Model.
 Uses TributaryLoads for accurate load distribution based on tributary polygons.
 
 # Arguments
 - `struc`: BuildingStructure to convert
-- `diaphragms::Symbol=:none`: Diaphragm modeling approach
-  - `:none` — No diaphragm modeling (default)
-  - `:rigid` — Rigid diaphragm (very stiff shell elements, E=1e15 Pa)
+- `params::DesignParameters`: Design parameters (load combinations, frame defaults, etc.)
+- `diaphragms::Union{Symbol, Nothing}=nothing`: Override diaphragm mode from params
+  - `:none` — No diaphragm modeling
+  - `:rigid` — Rigid diaphragm (very stiff shell elements)
   - `:shell` — Semi-rigid shell elements from slab geometry
-- `shell_props::Union{Nothing, NamedTuple}=nothing`: Custom shell properties for `:shell` or `:rigid`
-  - `E`: Young's modulus (default: 30 GPa for `:shell`, 1e15 Pa for `:rigid`)
-  - `ν`: Poisson's ratio (default: 0.2)
+  - `nothing` — Use `params.diaphragm_mode` (default)
+- `shell_props::Union{Nothing, NamedTuple}=nothing`: Custom shell properties
+  - `E`: Young's modulus (overrides `params.diaphragm_E`)
+  - `ν`: Poisson's ratio (overrides `params.diaphragm_ν`)
   - `t_factor`: Thickness multiplier (default: 1.0)
 
 # Examples
 ```julia
-# No diaphragm (fastest, for gravity-only)
+# Simple: use defaults
 to_asap!(struc)
 
-# Rigid diaphragm (typical for lateral analysis)
-to_asap!(struc; diaphragms=:rigid)
+# With custom parameters
+params = DesignParameters(
+    load_combination = STRENGTH_1_2D_1_6L,
+    diaphragm_mode = :rigid,
+    default_frame_E = 200e9u"Pa",
+)
+to_asap!(struc; params=params)
+
+# Override diaphragm mode
+to_asap!(struc; params=params, diaphragms=:shell)
 
 # Shell diaphragm with custom properties
 to_asap!(struc; diaphragms=:shell, shell_props=(E=25e9u"Pa", ν=0.15))
-
-# Override rigid diaphragm stiffness
-to_asap!(struc; diaphragms=:rigid, shell_props=(E=1e12u"Pa",))
 ```
 """
 function to_asap!(struc::BuildingStructure{T, A, P}; 
-                  diaphragms::Symbol=:none,
+                  params::DesignParameters=DesignParameters(),
+                  diaphragms::Union{Symbol, Nothing}=nothing,
                   shell_props::Union{Nothing, NamedTuple}=nothing) where {T, A, P}
     
-    diaphragms in (:none, :rigid, :shell) || error("diaphragms must be :none, :rigid, or :shell")
+    # Determine diaphragm mode: explicit argument overrides params
+    diaphragm_mode = isnothing(diaphragms) ? params.diaphragm_mode : diaphragms
+    diaphragm_mode in (:none, :rigid, :shell) || error("diaphragms must be :none, :rigid, or :shell")
     
     skel = struc.skeleton
     
@@ -53,7 +63,16 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     end
 
     # 2. Frame Elements
-    default_section = AsapToolkit.toASAPframe("W10x22", unit=u"m")
+    # Default placeholder section using params - will be replaced during sizing
+    default_section = Asap.Section(
+        4.18e-3u"m^2",              # A (approx W10x22 - placeholder geometry)
+        params.default_frame_E,     # E from params
+        params.default_frame_G,     # G from params
+        89.8e-6u"m^4",              # Ix (placeholder)
+        11.4e-6u"m^4",              # Iy (placeholder)
+        0.5e-6u"m^4",               # J (placeholder)
+        params.default_frame_ρ      # ρ from params
+    )
     frame_elements = map(skel.edge_indices) do (v1, v2)
         return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed)
     end
@@ -61,28 +80,30 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     # 3. Shell Diaphragm elements (for both :rigid and :shell)
     shell_elements = Asap.ShellElement[]
     
-    if diaphragms in (:rigid, :shell) && !isempty(struc.slabs)
+    if diaphragm_mode in (:rigid, :shell) && !isempty(struc.slabs)
+        # Build shell_props from params if not provided
+        effective_props = _build_shell_props(params, diaphragm_mode, shell_props)
         shell_elements = _create_shell_diaphragms(struc, nodes; 
-                                                   mode=diaphragms, props=shell_props)
-        @debug "Created diaphragm shells" mode=diaphragms n_shells=length(shell_elements)
+                                                   mode=diaphragm_mode, props=effective_props)
+        @debug "Created diaphragm shells" mode=diaphragm_mode n_shells=length(shell_elements)
     end
     
     # 4. Compute tributaries if not done
     isempty(struc.cell_groups) && build_cell_groups!(struc)
     compute_cell_tributaries!(struc)  # Cache handles deduplication
     
-    # 5. Create loads using TributaryLoad
+    # 5. Create loads using TributaryLoad (uses params.load_combination)
     loads = Asap.AbstractLoad[]
     empty!(struc.cell_tributary_loads)
     
     for (cell_idx, cell) in enumerate(struc.cells)
-        cell_loads = _create_cell_tributary_loads!(loads, frame_elements, skel, struc, cell, cell_idx)
+        cell_loads = _create_cell_tributary_loads!(loads, frame_elements, skel, struc, cell, cell_idx, params)
         struc.cell_tributary_loads[cell_idx] = cell_loads
     end
     
     # 6. Add structural effects (e.g., vault thrust)
     for slab in struc.slabs
-        for spec in slab_edge_line_loads(struc, slab)
+        for spec in slab_edge_line_loads(struc, slab, params)
             el = frame_elements[spec.edge_idx]
             push_asap_loads!(loads, el, spec)
         end
@@ -97,6 +118,28 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     Asap.solve!(struc.asap_model)
 
     return struc.asap_model
+end
+
+"""Build effective shell_props from DesignParameters and explicit overrides."""
+function _build_shell_props(params::DesignParameters, mode::Symbol, explicit_props::Union{Nothing, NamedTuple})
+    # Start with params values
+    E_default = if mode == :rigid
+        1e15u"Pa"  # Effectively rigid
+    else
+        isnothing(params.diaphragm_E) ? 30e9u"Pa" : params.diaphragm_E
+    end
+    
+    ν_default = params.diaphragm_ν
+    t_factor = 1.0
+    
+    # Override with explicit props if provided
+    if !isnothing(explicit_props)
+        E_default = get(explicit_props, :E, E_default)
+        ν_default = get(explicit_props, :ν, ν_default)
+        t_factor = get(explicit_props, :t_factor, t_factor)
+    end
+    
+    return (E=E_default, ν=ν_default, t_factor=t_factor)
 end
 
 # =============================================================================
@@ -150,7 +193,8 @@ function _create_cell_tributary_loads!(
     skel::BuildingSkeleton,
     struc::BuildingStructure,
     cell::Cell,
-    cell_idx::Int
+    cell_idx::Int,
+    params::DesignParameters=DesignParameters()
 )::Vector{Asap.TributaryLoad}
     cell_loads = Asap.TributaryLoad[]
     
@@ -160,7 +204,13 @@ function _create_cell_tributary_loads!(
     
     face_edges = skel.face_edge_indices[cell.face_idx]
     face_verts = skel.face_vertex_indices[cell.face_idx]
-    pressure = uconvert(u"Pa", total_factored_pressure(cell))
+    
+    # Use load combination from params instead of hardcoded factors
+    combo = params.load_combination
+    dead = cell.sdl + cell.self_weight
+    live = cell.live_load
+    pressure = uconvert(u"Pa", factored_pressure(combo, dead, live))
+    
     n_verts = length(face_verts)
     
     for trib in tribs
@@ -300,9 +350,14 @@ end
 
 Convert a backend-agnostic edge load spec into ASAP loads.
 Assumes `spec` magnitudes are base SI (N, N/m).
+
+# Fallback Behavior
+Unrecognized `AbstractEdgeLoadSpec` subtypes issue a warning and are skipped,
+allowing the model to proceed with available loads rather than failing.
 """
 function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::AbstractEdgeLoadSpec)
-    error("No ASAP conversion defined for $(typeof(spec))")
+    @warn "No ASAP conversion for $(typeof(spec)) — load skipped" maxlog=1
+    return loads
 end
 
 function push_asap_loads!(loads::Vector{Asap.AbstractLoad}, el::Asap.Element, spec::EdgeLineLoadSpec)
@@ -334,7 +389,8 @@ function slab_face_edge_ids(struc::BuildingStructure, slab::Slab)
 end
 
 """Internal helper: structural effects as `EdgeLineLoadSpec` (e.g. vault thrust)."""
-function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{EdgeLineLoadSpec}
+function slab_edge_line_loads(struc::BuildingStructure, slab::Slab, 
+                               params::DesignParameters=DesignParameters())::Vector{EdgeLineLoadSpec}
     effects = StructuralSizer.structural_effects(slab.result)
     isempty(effects) && return EdgeLineLoadSpec[]
 
@@ -342,7 +398,7 @@ function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{Edge
 
     for eff in effects
         if eff isa StructuralSizer.LateralThrust
-            append!(loads, vault_thrust_line_loads(struc, slab, eff))
+            append!(loads, vault_thrust_line_loads(struc, slab, eff, params))
         end
     end
 
@@ -350,9 +406,12 @@ function slab_edge_line_loads(struc::BuildingStructure, slab::Slab)::Vector{Edge
 end
 
 # --- Vault thrust → edge line loads (simple implementation) ---
-function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, eff::StructuralSizer.LateralThrust)::Vector{EdgeLineLoadSpec}
-    # Factored thrust (consistent with other factored load usage in the model)
-    thrust_factored = eff.dead * Constants.DL_FACTOR + eff.live * Constants.LL_FACTOR
+function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, 
+                                  eff::StructuralSizer.LateralThrust,
+                                  params::DesignParameters=DesignParameters())::Vector{EdgeLineLoadSpec}
+    # Factored thrust using load combination from params
+    combo = params.load_combination
+    thrust_factored = eff.dead * combo.D + eff.live * combo.L
     mag_N_m = ustrip(u"N/m", uconvert(u"N/m", thrust_factored))
 
     # Span axis from slab spans
@@ -396,13 +455,14 @@ function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, eff::Stru
 end
 
 # =============================================================================
-# Diaphragm Shell Creation
+# Diaphragm Shell Creation (uses Asap.Shell meshing)
 # =============================================================================
 
 """
     create_slab_diaphragm_shells(struc, slab, nodes; E, ν, t_factor) -> Vector{<:Asap.ShellElement}
 
 Create shell elements for a slab's diaphragm action from its cell faces.
+Uses Asap.Shell() for automatic triangulation.
 
 # Arguments
 - `struc`: BuildingStructure containing the slab
@@ -413,7 +473,7 @@ Create shell elements for a slab's diaphragm action from its cell faces.
 - `t_factor`: Thickness multiplier (default 1.0)
 
 # Returns
-Vector of ShellTri3 or ShellQuad4 elements.
+Vector of ShellTri3 elements.
 """
 function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, nodes::Vector{Asap.Node};
                                        E=nothing, ν::Float64=0.2, t_factor::Float64=1.0)
@@ -432,11 +492,25 @@ function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, node
         end
     end
     
+    # Convert E to Pa if not already
+    E_pa = E isa Unitful.Quantity ? uconvert(u"Pa", E) : E * u"Pa"
+    
     # Collect face indices for this slab
     face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
     
-    # Create shells from face meshes
-    shells = create_diaphragm_elements(skel, face_indices, nodes, t, E, ν; prefer_quad=true)
+    # Create shells from face meshes using Asap.Shell
+    shells = Asap.ShellElement[]
+    section = Asap.ShellSection(t, E_pa, ν; ρ=0.0u"kg/m^3")  # zero mass for diaphragm
+    
+    for face_idx in face_indices
+        vert_indices = skel.face_vertex_indices[face_idx]
+        corners = tuple([nodes[vi] for vi in vert_indices]...)
+        
+        # Use Asap's Shell() for automatic triangulation (n=2 for coarse mesh)
+        face_shells = Asap.Shell(corners, section; n=2, id=:diaphragm,
+                                 edge_support_type=:free, interior_support_type=:free)
+        append!(shells, face_shells)
+    end
     
     # Assign global DOFs to each shell
     for shell in shells
@@ -444,10 +518,4 @@ function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, node
     end
     
     return shells
-end
-
-# Deprecated: use to_asap!(struc; diaphragms=:shell) instead
-function to_asap_with_diaphragms!(struc::BuildingStructure; include_diaphragms::Bool=true)
-    @warn "to_asap_with_diaphragms! is deprecated. Use to_asap!(struc; diaphragms=:shell) instead." maxlog=1
-    return to_asap!(struc; diaphragms=include_diaphragms ? :shell : :none)
 end

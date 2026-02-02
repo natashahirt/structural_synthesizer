@@ -1,6 +1,6 @@
 # AISC W-Shape Catalog
 
-using StructuralBase.StructuralUnits: asfloat, maybe_asfloat
+using Asap: asfloat, maybe_asfloat
 
 const W_CATALOG = Dict{String, ISymmSection}()
 

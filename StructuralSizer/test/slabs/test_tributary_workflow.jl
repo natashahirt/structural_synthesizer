@@ -1,8 +1,7 @@
 using Test
 using Unitful
 using Meshes
-using StructuralBase
-using StructuralBase: StructuralUnits
+# Units are re-exported from StructuralSizer (via Asap)
 using StructuralSizer
 using StructuralSynthesizer
 using Asap

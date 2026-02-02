@@ -1084,6 +1084,410 @@ end
 
 ---
 
+## Alternative: Two-Stage Shell Analysis for Slabs with Beams
+
+For slabs supported on beams (not flat plates), we have an alternative analysis approach that leverages ASAP's new shell element capabilities. This provides direct slab moment output (Mx, My, Mxy) for reinforcement design while using the proven tributary polygon workflow for beam forces.
+
+### Why Two-Stage Analysis?
+
+| Approach | Slab Moments | Beam Forces | Best For |
+|----------|--------------|-------------|----------|
+| **Full Shell FEM** | ✅ Direct from elements | ⚠️ Extracted from shared nodes (load path unclear) | Research, complex geometries |
+| **Pure Tributary** | ❌ Use code coefficients | ✅ Direct control via polygons | Simple rectangular bays |
+| **Two-Stage** | ✅ Direct from shell FEM | ✅ Direct control via tributary | Design-oriented workflow |
+
+The two-stage approach gives us the best of both worlds:
+- **Stage 1**: Shell analysis → accurate slab bending moments for reinforcement design
+- **Stage 2**: Tributary loads → predictable beam forces for beam reinforcement design
+
+### Two-Stage Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  STAGE 1: SLAB ANALYSIS (Shell FEM)                                     │
+│  ├── Create ShellModel with slab panels                                 │
+│  ├── Support shell edges (simple support: w=0 only)                     │
+│  ├── Apply SurfaceLoad (pressure) to shells                             │
+│  ├── Solve → get nodal displacements                                    │
+│  └── Extract: Mx, My, Mxy for slab reinforcement design                 │
+│              Deflections for serviceability check                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  STAGE 2: FRAME ANALYSIS (Tributary Loads)                              │
+│  ├── Compute tributary polygons from slab geometry                      │
+│  ├── Create TributaryLoads for each beam from polygon depths            │
+│  ├── Build FrameModel: beams + columns                                  │
+│  ├── Apply TributaryLoads to beams                                      │
+│  ├── Solve → get beam forces                                            │
+│  └── Extract: Mu, Vu for beam reinforcement design                      │
+│              Column reactions for column design                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Functions to Implement
+
+#### 1. `shell_to_tributary_loads()` - Core Helper
+
+**Location:** `external/Asap/src/Loads/shell_loads.jl` (new file)
+
+```julia
+"""
+    shell_to_tributary_loads(shells, beams, pressure; axis=nothing, direction=(0,0,-1))
+
+Generate TributaryLoads for beams from shell panel geometry.
+
+# Arguments
+- `shells::Vector{<:ShellElement}`: Shell panels defining slab regions
+- `beams::Vector{<:FrameElement}`: Edge beams to receive loads
+- `pressure::QuantityPressure`: Uniform pressure on shells
+
+# Keywords  
+- `axis::Union{Nothing, Vector{Float64}}`: Load distribution direction
+  - `nothing` → two-way (isotropic straight skeleton)
+  - `[1,0]` → one-way along X
+- `direction::NTuple{3,Float64}`: Load direction (default gravity)
+
+# Returns
+- `Vector{TributaryLoad}`: Loads ready to apply to frame model
+"""
+function shell_to_tributary_loads(
+    shells::Vector{<:ShellElement},
+    beams::Vector{<:FrameElement},
+    pressure::QuantityPressure;
+    axis::Union{Nothing, Vector{Float64}} = nothing,
+    direction::NTuple{3, Float64} = (0.0, 0.0, -1.0)
+)::Vector{TributaryLoad}
+    # Implementation steps:
+    # 1. For each shell, extract boundary polygon (vertices from nodes)
+    # 2. Call get_tributary_polygons(vertices; axis=axis)
+    # 3. For each tributary polygon:
+    #    - Match to corresponding beam (by edge geometry)
+    #    - Sort positions, convert depths to widths
+    #    - Create TributaryLoad
+    # 4. Return all loads
+end
+```
+
+#### 2. `match_beam_to_polygon_edge()` - Edge Matching
+
+```julia
+"""
+    match_beam_to_polygon_edge(beam, polygon_vertices; tol=1e-6)
+
+Find which edge index of the polygon corresponds to this beam.
+Returns edge index (1-based) or nothing if no match.
+"""
+function match_beam_to_polygon_edge(
+    beam::FrameElement,
+    polygon_vertices::Vector{<:Point};
+    tol::Float64 = 1e-6
+)::Union{Int, Nothing}
+    # Compare beam endpoint positions to polygon edge vertices
+    # Handle both directions (beam may be reversed)
+end
+```
+
+#### 3. `analyze_slab_system()` - Two-Stage Orchestration
+
+**Location:** `external/Asap/src/Analysis/slab_analysis.jl` (new file)
+
+```julia
+"""
+    analyze_slab_system(shells, beams, columns, pressure; ...)
+
+Two-stage analysis for slab-on-beam systems.
+
+# Returns
+- `SlabSystemResult` containing both shell and frame results
+"""
+function analyze_slab_system(
+    shells::Vector{<:ShellElement},
+    beams::Vector{<:FrameElement},
+    columns::Vector{<:FrameElement},
+    pressure::QuantityPressure;
+    axis = nothing,  # tributary direction
+    one_way::Bool = false  # use orthotropic shell stiffness
+)
+    # Stage 1: Shell Analysis
+    shell_model = create_shell_model(shells, pressure)
+    process!(shell_model)
+    solve!(shell_model)
+    shell_moments = extract_shell_moments(shell_model)
+    shell_deflections = extract_shell_deflections(shell_model)
+    
+    # Stage 2: Frame Analysis
+    trib_loads = shell_to_tributary_loads(shells, beams, pressure; axis=axis)
+    frame_model = create_frame_model(beams, columns, trib_loads)
+    process!(frame_model)
+    solve!(frame_model)
+    beam_forces = extract_beam_forces(frame_model)
+    column_reactions = extract_column_reactions(frame_model)
+    
+    return SlabSystemResult(
+        shell_moments, shell_deflections, shell_model,
+        beam_forces, column_reactions, frame_model,
+        trib_loads
+    )
+end
+```
+
+### Result Structure
+
+```julia
+struct SlabSystemResult
+    # Stage 1: Shell results
+    shell_moments::Dict{Symbol, NTuple{3, Float64}}  # panel_id => (Mx, My, Mxy) [Nm/m]
+    shell_deflections::Dict{Symbol, Float64}          # panel_id => δ_center [m]
+    shell_model::ShellModel
+    
+    # Stage 2: Frame results  
+    beam_internal_forces::Dict{Symbol, ElementInternalForces}  # beam_id => P, V, M
+    column_reactions::Dict{Symbol, Vector{Float64}}     # col_id => reactions
+    frame_model::FrameModel
+    
+    # Load distribution used
+    tributary_loads::Vector{TributaryLoad}
+end
+```
+
+### Implementation Challenges & Solutions
+
+#### Challenge 1: Edge Matching (Shell Edge → Beam)
+
+**Problem:** How to match a tributary polygon edge to a beam element?
+
+**Solution:** Compare beam endpoint positions to polygon edge vertices with tolerance.
+
+```julia
+function match_beam_to_polygon_edge(beam, vertices; tol=1e-6)
+    beam_start = [beam.iNode.x, beam.iNode.y, beam.iNode.z]
+    beam_end = [beam.jNode.x, beam.jNode.y, beam.jNode.z]
+    
+    n = length(vertices)
+    for i in 1:n
+        v1 = [vertices[i].x, vertices[i].y, vertices[i].z]
+        v2 = [vertices[mod1(i+1, n)].x, vertices[mod1(i+1, n)].y, vertices[mod1(i+1, n)].z]
+        
+        # Check both orientations
+        if (norm(beam_start - v1) < tol && norm(beam_end - v2) < tol) ||
+           (norm(beam_start - v2) < tol && norm(beam_end - v1) < tol)
+            return i
+        end
+    end
+    return nothing
+end
+```
+
+**Potential Issues:**
+- Floating-point tolerance selection (geometry-dependent)
+- Beams may be slightly offset from shell edges (eccentricity)
+- Shell triangulation may not align perfectly with beam endpoints
+
+#### Challenge 2: Multiple Shells Sharing a Beam (Interior Beams)
+
+**Problem:** Interior beams receive load from two adjacent slab panels.
+
+**Solution:** Accumulate tributary loads from all adjacent shells.
+
+```julia
+function shell_to_tributary_loads(shells, beams, pressure; ...)
+    loads = Dict{FrameElement, Vector{TributaryLoad}}()
+    
+    for shell in shells
+        vertices = get_shell_boundary(shell)
+        tribs = get_tributary_polygons(vertices; axis=axis)
+        
+        for (edge_idx, trib) in enumerate(tribs)
+            beam = find_beam_for_edge(beams, vertices, edge_idx)
+            if beam !== nothing
+                tload = create_tributary_load(beam, trib, pressure, direction)
+                push!(get!(loads, beam, []), tload)
+            end
+        end
+    end
+    
+    # Combine loads on same beam from multiple shells
+    return [combine_tributary_loads(beam, tloads) for (beam, tloads) in loads]
+end
+```
+
+**Potential Issues:**
+- Load direction must be consistent across panels
+- Tributary depths should be summed, not averaged
+- Need to handle partial overlaps carefully
+
+#### Challenge 3: Shell Triangulation vs Rectangular Panels
+
+**Problem:** `ShellTri3` elements give triangular panels, but tributary algorithm expects polygons (typically quadrilaterals).
+
+**Solutions:**
+
+| Option | Approach | Pros | Cons |
+|--------|----------|------|------|
+| A | 2-4 triangles per panel | Simple, sufficient for moments | Tributary computed per-panel, not per-triangle |
+| B | Group triangles by panel ID | Works with arbitrary meshes | Requires panel grouping metadata |
+| C | Extract boundary from mesh | Automatic | Complex boundary extraction logic |
+
+**Recommended:** Option A for initial implementation - 2 triangles (diagonal split) or 4 triangles (X-split) per rectangular panel. Store panel ID on each shell element for grouping.
+
+```julia
+# Each panel gets an ID; all triangles in panel share it
+shell1 = ShellTri3(nodes...; id=:panel_A1)
+shell2 = ShellTri3(nodes...; id=:panel_A1)  # Same panel
+
+# Group for tributary computation
+function get_panel_boundary(shells, panel_id)
+    panel_shells = filter(s -> s.id == panel_id, shells)
+    return extract_outer_boundary(panel_shells)
+end
+```
+
+#### Challenge 4: One-Way vs Two-Way Distribution Control
+
+**Problem:** Need explicit control over load distribution direction for one-way slabs.
+
+**Solution:** Use orthotropic shell properties in Stage 1, and `axis` parameter in Stage 2.
+
+```julia
+# One-way slab (spanning along Y)
+result = analyze_slab_system(
+    shells, beams, columns, pressure;
+    axis = [0.0, 1.0],  # Tributary perpendicular to span
+    one_way = true       # Use orthotropic shell stiffness
+)
+
+# Inside analyze_slab_system:
+if one_way
+    # Modify shell properties to be very stiff in span direction
+    for shell in shells
+        shell.E_ratio = 0.01  # E_perp / E_span (hypothetical API)
+    end
+end
+```
+
+**Potential Issues:**
+- Orthotropic shell implementation not yet complete
+- CLT and other naturally orthotropic materials need material-specific handling
+- Direction alignment between shell coords and tributary axis
+
+#### Challenge 5: Shell Boundary Conditions (Edge Support)
+
+**Problem:** How to support shell edges without over-constraining?
+
+**Solution:** "Soft" simple support - constrain only vertical displacement (w=0) along edges, leave rotations free.
+
+```julia
+function create_shell_model(shells, pressure)
+    nodes = collect_unique_nodes(shells)
+    edge_nodes = identify_edge_nodes(shells, nodes)
+    
+    # Simple support: only w=0
+    for node in edge_nodes
+        node.support = [false, false, true, false, false, false]  # Only z translation
+    end
+    
+    # Apply surface load
+    loads = [SurfaceLoad(shell, pressure) for shell in shells]
+    
+    return ShellModel(nodes, shells, loads)
+end
+```
+
+**Potential Issues:**
+- Need to identify which nodes are on boundary vs interior
+- Continuous slabs over supports need rotation coupling (future enhancement)
+- Corner supports may need special handling
+
+#### Challenge 6: Deflection Consistency
+
+**Problem:** Shell deflections and beam deflections are computed separately - are they consistent?
+
+**Analysis:** They serve different purposes:
+- **Shell deflection** (Stage 1): Slab deflection for ACI Table 24.2.2 limits
+- **Beam deflection** (Stage 2): Beam deflection includes beam section properties
+
+**Solution:** Report both; they're both valid for their respective design checks.
+
+```julia
+# Slab serviceability (ACI 24.2.2)
+δ_slab = result.shell_deflections[:panel_A1]
+@assert δ_slab < L/240  # Floor supporting partitions
+
+# Beam serviceability (separate check)
+beam_disp = displacements(result.frame_model, 0.5u"m")
+δ_beam = maximum(abs.(beam_disp[1].uglobal[3, :]))
+```
+
+### Comparison: Tributary Polygons vs Shell Edge Reactions
+
+For completeness, here's how the two-stage approach compares to directly using shell edge reactions:
+
+| Aspect | Tributary Polygons (Our Approach) | Shell Edge Reactions (Alternative) |
+|--------|-----------------------------------|-----------------------------------|
+| **Basis** | Geometric (straight skeleton) | Physics (FEM equilibrium) |
+| **Load shape** | Trapezoidal (d varies linearly to ridge) | Parabolic-ish (varies with plate stiffness) |
+| **One-way control** | `axis` parameter → directed tributary | Orthotropic shell E ratio |
+| **Mesh independence** | ✅ Uses polygon geometry | ❌ Depends on mesh along edges |
+| **Code compliance** | ✅ Matches ACI tributary assumptions | ⚠️ More accurate but non-standard |
+| **Speed** | ✅ O(n) polygon algorithm | ⚠️ Requires shell solve first |
+| **Implementation** | ✅ Existing `get_tributary_polygons` | 🔲 Need `extract_edge_reactions` |
+
+**Recommendation:** Use tributary polygons (our approach) for standard design workflows. Shell edge reactions could be added as an advanced option for research or validation.
+
+### Test Plan
+
+```julia
+@testset "Two-Stage Slab Analysis" begin
+    @testset "shell_to_tributary_loads - Rectangle" begin
+        # 4m × 3m shell, 4 edge beams
+        # Verify tributary loads match analytical
+    end
+    
+    @testset "Edge Matching" begin
+        # Verify correct beam-to-edge matching
+        # Test both beam orientations
+        # Test floating-point tolerance
+    end
+    
+    @testset "Multiple Panels Sharing Beam" begin
+        # 2×2 grid of panels, interior beam receives from both sides
+        # Verify load accumulation
+    end
+    
+    @testset "One-Way vs Two-Way" begin
+        # Same geometry with axis=[0,1] vs axis=nothing
+        # Verify load goes only to perpendicular beams for one-way
+    end
+    
+    @testset "Full Workflow - Square Panel" begin
+        # Known solution: square plate, uniform load
+        # Compare shell moments to analytical (Navier)
+        # Compare beam forces to tributary expectation
+        # Verify total load = sum of reactions
+    end
+end
+```
+
+### Files to Create
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `external/Asap/src/Loads/shell_loads.jl` | **Create** | `shell_to_tributary_loads()`, edge matching |
+| `external/Asap/src/Analysis/slab_analysis.jl` | **Create** | `analyze_slab_system()`, `SlabSystemResult` |
+| `external/Asap/test/test_two_stage_slab.jl` | **Create** | Tests for two-stage workflow |
+| `StructuralSynthesizer/src/design_workflow.jl` | **Modify** | Integrate `design_floor_system()` |
+
+### Estimated Effort
+
+| Component | Estimate |
+|-----------|----------|
+| `shell_to_tributary_loads()` + edge matching | 2-3 hours |
+| `analyze_slab_system()` orchestration | 2-3 hours |
+| Tests | 2-3 hours |
+| StructuralSynthesizer integration | 2-3 hours |
+| **Total** | **8-12 hours** |
+
+---
+
 ## Files to Create/Modify
 
 ### Phase 0: Member Hierarchy & Geometry
@@ -1346,8 +1750,12 @@ This section tracks implementation progress using a phased approach that handles
 interdependency between slab and column design:
 
 ```
-GEOMETRY → DDM SIZING → COLUMN SIZING → EFM ANALYSIS → FINAL CHECKS
-   ✅          ✅            🔲              🔲             🔲
+GEOMETRY → DDM SIZING → COLUMN SIZING → EFM ANALYSIS → FINAL CHECKS → INTEGRATION
+   ✅          ✅            ✅              🔲             🔲            🔲
+
+                                    ↓
+                        TWO-STAGE SHELL ANALYSIS (Alt. for slabs with beams)
+                                   🔲
 ```
 
 ---
@@ -1417,46 +1825,67 @@ GEOMETRY → DDM SIZING → COLUMN SIZING → EFM ANALYSIS → FINAL CHECKS
 
 ---
 
-### Phase 3: Concrete Column Sizing (ACI 318 Chapter 22) 🔲
+### Phase 3: Concrete Column Sizing (ACI 318-19) ✅ COMPLETE
 
-**Purpose**: Size RC columns for Pu, Mu from tributary loads (before EFM refinement)
+**Purpose**: Size RC columns for Pu, Mu using P-M interaction diagrams with slenderness and biaxial effects.
 
-**New File**: `StructuralSizer/src/members/codes/aci/concrete_column.jl`
+**Implementation Files**:
+- `StructuralSizer/src/members/sections/concrete/rc_column_section.jl` - Rectangular sections
+- `StructuralSizer/src/members/sections/concrete/rc_circular_section.jl` - Circular sections
+- `StructuralSizer/src/members/codes/aci/pm_interaction.jl` - P-M diagram generation
+- `StructuralSizer/src/members/codes/aci/phi_factors.jl` - Strength reduction factors
+- `StructuralSizer/src/members/codes/aci/slenderness.jl` - Moment magnification
+- `StructuralSizer/src/members/codes/aci/biaxial.jl` - Biaxial bending methods
+- `StructuralSizer/src/members/codes/aci/checker.jl` - ACIColumnChecker for MIP
+- `StructuralSizer/src/members/sections/concrete/catalogs/rc_columns.jl` - Section catalogs
 
-**Inputs**:
-- Pu from tributary: Σ(At × qu) for floors above
-- Mu estimated from unbalanced loads or DDM support moments
-- Lu = unbraced length (story height)
-- f'c, fy material properties
+**Validated Against**: StructurePoint spColumn examples (tied 18×18, spiral 20" circular)
 
-**ACI Procedure**:
-1. Slenderness check (ACI 6.2.5): kLu/r < 22 for short column
-2. Moment magnification (ACI 6.6) if slender
-3. Interaction diagram check: (Pu, Mu) inside P-M envelope
-4. Select (c1, c2, As) satisfying all requirements
-
-- [ ] `concrete-column-section`: Define `ConcreteRectColumn` section type
-  - c1, c2 dimensions
-  - As_total, bar arrangement
-  - Cover, tie spacing
-- [ ] `column-interaction-diagram`: P-M interaction capacity (ACI 22.4)
-  - φPn vs φMn envelope
-  - Tension-controlled vs compression-controlled
-- [ ] `slenderness-check`: kLu/r classification (ACI 6.2.5)
-  - Non-sway vs sway frame
-  - Short column exemption (kLu/r < 22)
-- [ ] `moment-magnification`: δ factor for slender columns (ACI 6.6)
-  - δns for non-sway
-  - δs for sway frames
-- [ ] `size-concrete-column`: Main sizing function
-  - Input: Pu, Mu, Lu, f'c, fy
-  - Output: ConcreteColumnResult (c1, c2, As, bars, utilization)
-- [ ] `column-min-requirements`: ACI minimums
-  - c_min ≥ 10" (ACI 10.3.1)
-  - ρ_min = 1% (ACI 10.6.1.1)
-  - ρ_max = 8% (ACI 10.6.1.1)
-- [ ] `result-type`: `ConcreteColumnResult` struct
-- [ ] `test-column-sizing`: Validate against hand calculations / examples
+- [X] `rc-column-section`: `RCColumnSection` with full rebar layout (`RebarLocation` array)
+  - b, h dimensions with Unitful support
+  - Perimeter and two-layer bar arrangements
+  - Cover, tie_type (:tied/:spiral)
+- [X] `rc-circular-section`: `RCCircularSection` for circular columns
+  - D diameter, perimeter bar layout
+  - Spiral confinement support
+- [X] `pm-interaction-diagram`: Whitney stress block P-M analysis (ACI 22.2)
+  - Strain compatibility at multiple neutral axis depths
+  - Concrete displaced by steel accounted for
+  - φPn vs φMn envelope generation
+  - `PMInteractionDiagram` and `PMInteractionDiagramCircular` types
+- [X] `phi-factors`: Strain-based φ calculation (ACI 21.2)
+  - εt-based transition (0.002 to 0.005)
+  - Tied: 0.65 → 0.90, Spiral: 0.75 → 0.90
+- [X] `slenderness-check`: kLu/r and moment magnification (ACI 6.2.5, 6.6)
+  - `slenderness_ratio()`, `should_consider_slenderness()`
+  - `effective_stiffness()` - accurate (0.2EcIg + EsIse) and approximate (0.4EcIg)
+  - `critical_buckling_load()` - Euler Pc
+  - `magnify_moment_nonsway()` - δns with Cm factor
+  - Minimum moment M_min = Pu(0.6 + 0.03h)
+- [X] `biaxial-bending`: Three ACI-approved methods (ACI R6.2.6)
+  - Bresler Reciprocal Load method
+  - Bresler Load Contour method (β = 0.65)
+  - PCA Load Contour method
+- [X] `column-catalogs`: Pre-defined section libraries
+  - `standard_rc_rect_columns()` - sizes 12" to 36", various ρ
+  - `standard_rc_circular_columns()` - diameters 12" to 30"
+  - `common_rc_rect_columns()`, `all_rc_rect_columns()`
+  - `common_rc_circular_columns()`, `all_rc_circular_columns()`
+- [X] `aci-column-checker`: MIP optimization interface
+  - `ACIColumnChecker <: AbstractCapacityChecker`
+  - `precompute_capacities!()` generates P-M diagrams
+  - `is_feasible()` checks demand against diagram
+  - Integrates with `size_columns()` API
+- [X] `sizing-options`: `ConcreteColumnOptions` struct
+  - grade, section_shape (:rect/:circular), rebar_fy
+  - catalog selection, max_depth constraint
+  - include_slenderness, include_biaxial flags
+  - βdns for sustained load ratio
+- [X] `test-column-sizing`: Comprehensive test suite
+  - `test/codes/aci/test_aci_pm_interaction.jl` - P-M diagram accuracy
+  - `test/codes/aci/test_aci_slenderness.jl` - Moment magnification
+  - `test/codes/aci/test_aci_biaxial.jl` - Biaxial methods
+  - `test/optimize/test_column_full.jl` - Full MIP integration
 
 ---
 
@@ -1537,13 +1966,139 @@ GEOMETRY → DDM SIZING → COLUMN SIZING → EFM ANALYSIS → FINAL CHECKS
 
 ---
 
+### Phase 7: Two-Stage Shell Analysis (Slabs with Beams) 🔲
+
+**Purpose**: Alternative analysis for slabs supported on beams (not flat plates) using shell FEM for slab moments and tributary for beam forces.
+
+**Location**: `external/Asap/src/Loads/shell_loads.jl`, `external/Asap/src/Analysis/slab_analysis.jl`
+
+**Key Challenges Identified:**
+
+1. **Edge Matching**: Match shell polygon edges to beam elements
+2. **Interior Beams**: Accumulate loads from multiple adjacent panels
+3. **Triangulation**: Group ShellTri3 elements by panel for tributary computation
+4. **One-Way Control**: Coordinate orthotropic shell properties with tributary axis
+5. **Boundary Conditions**: Support shell edges without over-constraining
+6. **Deflection Consistency**: Shell vs beam deflections serve different design checks
+
+**Implementation Tasks:**
+
+- [ ] `edge-matching`: `match_beam_to_polygon_edge()` - match polygon edge to beam
+  - Handle both beam orientations (start↔end swap)
+  - Configurable floating-point tolerance
+  - Test with offset/eccentric beams
+- [ ] `shell-to-tributary`: `shell_to_tributary_loads()` - core helper function
+  - Extract boundary polygon from shell nodes
+  - Call `get_tributary_polygons()` for load distribution
+  - Match edges to beams, create TributaryLoad for each
+  - Handle case where no beam matches an edge (free edge)
+- [ ] `multi-panel-accumulation`: Accumulate loads on interior beams
+  - Dictionary mapping beam → list of TributaryLoads
+  - Sum tributary depths from adjacent panels
+  - Preserve load direction consistency
+- [ ] `panel-grouping`: Group ShellTri3 elements by panel ID
+  - Store panel ID on shell element (`:id` field)
+  - `get_panel_boundary()` extracts outer boundary from grouped triangles
+  - Handle arbitrary triangulation (2, 4, or more triangles per panel)
+- [ ] `shell-model-builder`: `create_shell_model()` for Stage 1
+  - Collect unique nodes from shells
+  - Identify edge vs interior nodes
+  - Apply "soft" simple support (w=0 only) on edge nodes
+  - Create SurfaceLoad for each shell
+- [ ] `two-stage-orchestrator`: `analyze_slab_system()` - main workflow
+  - Stage 1: Build/solve ShellModel, extract moments/deflections
+  - Stage 2: Generate TributaryLoads, build/solve FrameModel
+  - Return `SlabSystemResult` with both sets of results
+- [ ] `result-struct`: `SlabSystemResult` with shell moments, beam forces, both models
+- [ ] `orthotropic-shell`: Support one-way slabs via orthotropic shell properties
+  - `E_span >> E_perp` for one-way behavior
+  - Coordinate with `axis` parameter in tributary
+- [ ] `test-edge-matching`: Test beam-to-edge matching with various orientations
+- [ ] `test-shell-to-tributary`: Test conversion on simple rectangular panel
+- [ ] `test-interior-beam`: Test load accumulation from 2 adjacent panels
+- [ ] `test-two-stage-workflow`: Full workflow test with analytical validation
+- [ ] `test-one-way-vs-two-way`: Compare results with different axis settings
+
+---
+
 ### Testing Summary
 
 | Phase | Test File | Status |
 |-------|-----------|--------|
 | 1. DDM Calcs | `test_flat_plate.jl` | ✅ Complete |
 | 2. Initial Column | `test_initial_column_estimate.jl` | 🔲 TODO |
-| 3. Column Sizing | `test_concrete_column.jl` | 🔲 TODO |
+| 3. Column Sizing | `test_aci_*.jl`, `test_column_full.jl` | ✅ Complete |
 | 4. EFM Analysis | `test_efm_analysis.jl` | 🔲 TODO |
 | 5. Final Checks | `test_design_iteration.jl` | 🔲 TODO |
 | 6. Full Workflow | `test_structurepoint_full.jl` | 🔲 TODO |
+| 7. Two-Stage Shell | `test_two_stage_slab.jl` | 🔲 TODO |
+
+---
+
+### Bonus: Column Parametric Study ✅ COMPLETE
+
+**Location**: `StructuralStudies/src/column_properties/`
+
+A comprehensive parametric study was conducted exploring RC column design trade-offs:
+
+- **26,000+ configurations** swept across: shape, size, aspect ratio, f'c, fy, ρ, cover, tie type
+- **Key findings**:
+  - Carbon efficiency peaks at ρ ≈ 2-3%
+  - Diminishing returns above f'c = 5 ksi
+  - Slenderness penalty significant beyond kLu/r = 50
+  - Circular spirals slightly more efficient for biaxial loading
+- **Visualizations**: 18 plots in `StructuralStudies/src/column_properties/figs/`
+
+---
+
+## Future Enhancements 🔲
+
+### Load Combinations
+
+**Priority**: High - Required for production design workflows
+
+Currently, self-weight and other loads are applied separately without formal combination support. Need to implement:
+
+- [ ] `load-combination-types`: Define standard combinations (LRFD, ASD)
+  - 1.2D + 1.6L (LRFD gravity)
+  - 1.2D + 1.0L + 1.0E (seismic)
+  - 0.9D + 1.0E (overturning check - dead load helps resist)
+  - D + L (ASD)
+- [ ] `load-case-management`: Track loads by type (D, L, Lr, S, W, E)
+  - `SelfWeight` → Dead (D)
+  - `AreaLoad` → depends on use (LL, SDL, etc.)
+  - Tag loads with case type at creation
+- [ ] `factored-load-api`: Scale and combine load cases
+  - `scale(load, factor)` → factored load
+  - `combine(load_cases, factors)` → combined load set
+- [ ] `envelope-results`: Envelope analysis across combinations
+  - Max/min moments, shears, deflections
+  - Critical combination identification
+- [ ] `solve-combinations`: Efficient multi-case solving
+  - `solve!(model, combinations)` → results per combination
+  - Reuse stiffness matrix, only re-solve load vectors
+
+**Design Considerations**:
+- Self-weight is factored differently than live load
+- Some combinations have dead load helping (0.9D for overturning)
+- Pattern loading for high L/D ratios (see memory: pattern loading deferred for L/D < 0.75)
+
+**Potential API**:
+```julia
+# Define load cases
+DL = SelfWeight(model)
+SDL = AreaLoad(shells, 1.0u"kPa"; case=:dead)
+LL = AreaLoad(shells, 2.5u"kPa"; case=:live)
+
+# Define combinations
+combos = [
+    LoadCombination(:LRFD_gravity, [1.2, 1.2, 1.6], [DL, SDL, LL]),
+    LoadCombination(:LRFD_seismic, [0.9, 0.9, 0.0], [DL, SDL, LL]),
+]
+
+# Solve all combinations
+results = solve!(model, combos)
+
+# Envelope
+M_max, M_min, governing_combo = envelope(results, :moment)
+```

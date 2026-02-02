@@ -2,6 +2,8 @@
 # Tests for ACI 318-19 Biaxial Bending
 # Reference: StructurePoint "Manual Design Procedure for Columns and Walls 
 #            with Biaxial Bending (ACI 318-11/14/19)"
+# Reference: StructurePoint "Biaxial Bending Interaction Diagrams for 
+#            Rectangular Reinforced Concrete Column Design (ACI 318-19)"
 # ==============================================================================
 
 using Test
@@ -10,6 +12,7 @@ using Unitful
 
 # Load test data
 include("test_data/biaxial_24x24.jl")
+include("test_data/biaxial_rect_18x24.jl")
 
 @testset "Biaxial Bending (ACI 318-19)" begin
     ref = BIAXIAL_24X24
@@ -102,12 +105,8 @@ include("test_data/biaxial_24x24.jl")
             tie_type = :tied
         )
         
-        mat = (
-            fc = ref.materials.fc,
-            fy = ref.materials.fy,
-            Es = 29000.0,
-            εcu = ref.materials.εcu
-        )
+        # Use proper ReinforcedConcreteMaterial (f'c = 5 ksi, fy = 60 ksi)
+        mat = RC_5000_60
         
         # Generate P-M diagram
         diagram = generate_PM_diagram(section, mat; n_intermediate=20)
@@ -178,5 +177,177 @@ include("test_data/biaxial_24x24.jl")
         
         # Linear utilization = 0.676 + 0.282 = 0.958
         @test ratio_x + ratio_y ≈ ref.bresler_contour.util_linear rtol=0.02
+    end
+end
+
+# ==============================================================================
+# Y-Axis P-M Diagram and Rectangular Biaxial Tests
+# Reference: StructurePoint "Biaxial Bending Interaction Diagrams for 
+#            Rectangular Reinforced Concrete Column Design (ACI 318-19)"
+# ==============================================================================
+
+@testset "Rectangular Biaxial Bending (Y-Axis P-M Diagram)" begin
+    ref = BIAXIAL_RECT_18X24
+    
+    # Create rectangular section (18" × 24")
+    section = RCColumnSection(
+        b = ref.geometry.b * u"inch",
+        h = ref.geometry.h * u"inch",
+        cover = ref.geometry.cover * u"inch",
+        bar_size = ref.reinforcement.bar_size,
+        n_bars = ref.reinforcement.n_bars,
+        tie_type = :tied
+    )
+    
+    # Use proper ReinforcedConcreteMaterial (f'c = 4 ksi, fy = 60 ksi)
+    mat = RC_4000_60
+    
+    # =========================================================================
+    @testset "Y-Axis Effective Depth" begin
+        # For y-axis bending, d is from right face to leftmost bars
+        d_y = StructuralSizer.effective_depth_yaxis(section)
+        
+        # Expected: b - cover - tie - d_bar/2 ≈ 18 - 1.5 - 0.5 - 0.564 ≈ 15.44
+        @test d_y ≈ ref.reinforcement.d_y rtol=0.05
+        
+        # d_y should be less than d_x (since b < h)
+        # effective_depth returns units, effective_depth_yaxis returns stripped Float64
+        d_x = ustrip(u"inch", StructuralSizer.effective_depth(section))
+        @test d_y < d_x
+    end
+    
+    # =========================================================================
+    @testset "Y-Axis P-M Diagram Generation" begin
+        # Generate diagram for y-axis bending
+        diagram_y = generate_PM_diagram_yaxis(section, mat; n_intermediate=15)
+        
+        # Check basic structure
+        @test length(diagram_y.points) > 5
+        @test haskey(diagram_y.control_points, :pure_compression)
+        @test haskey(diagram_y.control_points, :balanced)
+        @test haskey(diagram_y.control_points, :pure_bending)
+        
+        # Pure compression should be the same (section squashes uniformly)
+        P0_y = get_control_point(diagram_y, :pure_compression).Pn
+        @test P0_y ≈ ref.capacities.P0 rtol=0.05
+        
+        # Maximum moment capacity
+        φMn_max_y = maximum(pt.φMn for pt in diagram_y.points)
+        @test φMn_max_y ≈ ref.capacities.φMny_max rtol=0.10
+    end
+    
+    # =========================================================================
+    @testset "X-Axis vs Y-Axis Capacity Comparison" begin
+        # Generate diagrams for both axes
+        diagrams = generate_PM_diagrams_biaxial(section, mat; n_intermediate=15)
+        
+        # Pure compression should be equal
+        P0_x = get_control_point(diagrams.x, :pure_compression).Pn
+        P0_y = get_control_point(diagrams.y, :pure_compression).Pn
+        @test P0_x ≈ P0_y rtol=0.01
+        
+        # Maximum moment capacities
+        φMnx_max = maximum(pt.φMn for pt in diagrams.x.points)
+        φMny_max = maximum(pt.φMn for pt in diagrams.y.points)
+        
+        # Y-axis capacity must be less than X-axis (since b < h)
+        @test φMny_max < φMnx_max
+        
+        # Capacity ratio should roughly reflect aspect ratio
+        ratio = φMny_max / φMnx_max
+        @test ratio ≈ ref.capacities.capacity_ratio rtol=0.15
+        
+        # Verify against expected values
+        @test φMnx_max ≈ ref.capacities.φMnx_max rtol=0.10
+        @test φMny_max ≈ ref.capacities.φMny_max rtol=0.10
+    end
+    
+    # =========================================================================
+    @testset "Rectangular Biaxial Check" begin
+        result = check_biaxial_rectangular(
+            section, mat,
+            ref.demands.Pu,
+            ref.demands.Mux,
+            ref.demands.Muy;
+            method = :contour,
+            α = ref.bresler_contour.α
+        )
+        
+        # Should be adequate
+        @test result.adequate == ref.bresler_contour.adequate
+        
+        # Utilization should match expected
+        @test result.utilization ≈ ref.bresler_contour.util rtol=0.20
+        
+        # Capacities at Pu should match
+        @test result.φMnx_at_Pu ≈ ref.bresler_contour.φMnx_at_Pu rtol=0.10
+        @test result.φMny_at_Pu ≈ ref.bresler_contour.φMny_at_Pu rtol=0.10
+    end
+    
+    # =========================================================================
+    @testset "Auto-Detection (Square vs Rectangular)" begin
+        # Rectangular section should be detected as non-square
+        result_rect = check_biaxial_auto(
+            section, mat,
+            ref.demands.Pu,
+            ref.demands.Mux,
+            ref.demands.Muy
+        )
+        @test result_rect.is_square == false
+        
+        # Square section should be detected as square
+        section_square = RCColumnSection(
+            b = 20.0u"inch",
+            h = 20.0u"inch",
+            cover = 1.5u"inch",
+            bar_size = 9,
+            n_bars = 8,
+            tie_type = :tied
+        )
+        result_square = check_biaxial_auto(
+            section_square, mat,
+            ref.demands.Pu,
+            ref.demands.Mux,
+            ref.demands.Muy
+        )
+        @test result_square.is_square == true
+    end
+    
+    # =========================================================================
+    @testset "Capacity at Various Axial Loads" begin
+        diagrams = generate_PM_diagrams_biaxial(section, mat; n_intermediate=20)
+        
+        # At different axial loads, check that y-capacity < x-capacity
+        test_loads = [100.0, 300.0, 500.0, 700.0]
+        
+        for Pu in test_loads
+            φMnx = capacity_at_axial(diagrams.x, Pu)
+            φMny = capacity_at_axial(diagrams.y, Pu)
+            @test φMny < φMnx
+        end
+    end
+    
+    # =========================================================================
+    @testset "Edge Cases - Uniaxial Moments" begin
+        diagrams = generate_PM_diagrams_biaxial(section, mat)
+        Pu = 400.0
+        
+        # Pure x-axis moment (Muy = 0)
+        result_x_only = check_biaxial_rectangular(
+            section, mat, Pu, 200.0, 0.0;
+            method = :contour, α = 1.5
+        )
+        φMnx = capacity_at_axial(diagrams.x, Pu)
+        expected_util = (200.0 / φMnx)^1.5
+        @test result_x_only.utilization ≈ expected_util rtol=0.05
+        
+        # Pure y-axis moment (Mux = 0)
+        result_y_only = check_biaxial_rectangular(
+            section, mat, Pu, 0.0, 150.0;
+            method = :contour, α = 1.5
+        )
+        φMny = capacity_at_axial(diagrams.y, Pu)
+        expected_util_y = (150.0 / φMny)^1.5
+        @test result_y_only.utilization ≈ expected_util_y rtol=0.05
     end
 end

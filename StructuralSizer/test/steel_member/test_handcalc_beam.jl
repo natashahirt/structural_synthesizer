@@ -1,7 +1,6 @@
 using StructuralSynthesizer
 using StructuralSizer
-using StructuralBase
-using StructuralBase: StructuralUnits  # For u"ksi" etc.
+# Units are re-exported from StructuralSizer (via Asap)
 using Asap
 using Unitful
 using Test

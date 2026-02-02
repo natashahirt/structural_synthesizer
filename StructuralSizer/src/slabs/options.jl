@@ -10,9 +10,55 @@
 # Option structs
 # =============================================================================
 
-"""CIP (ACI 318) minimum thickness options for cast-in-place concrete slabs."""
+"""
+    CIPOptions
+
+CIP (ACI 318) options for cast-in-place concrete slabs.
+
+# Analysis Method Options
+- `analysis_method`: Analysis method for two-way slabs
+  - `:mddm` - Modified Direct Design Method (simplified coefficients, fastest)
+  - `:ddm` - Direct Design Method (full ACI tables, requires regular geometry)
+  - `:efm` - Equivalent Frame Method (most accurate, handles irregular geometry)
+  Default: `:ddm` for regular grids (compliant with ACI 8.10), `:efm` for irregular.
+
+# Slab Grouping Strategy
+- `grouping`: How to group slabs for envelope-based sizing
+  - `:individual` - Size each slab separately (most economical, complex forming)
+  - `:by_floor` - All slabs on same floor get same thickness (typical)
+  - `:building_wide` - All slabs in building get same thickness (simplest forming)
+  Default: `:by_floor`
+
+# Strength Reduction Factors (ACI 318-14 Table 21.2.1)
+- `φ_flexure`: Flexure in tension-controlled sections (default: 0.90)
+- `φ_shear`: Shear and torsion (default: 0.75)
+- `φ_compression`: Compression-controlled sections (default: 0.65)
+- `λ`: Lightweight concrete factor (default: 1.0 for normal weight)
+
+# Deflection Control
+- `deflection_limit`: Serviceability deflection limit
+  - `:L_240` - L/240 (floors with non-sensitive finishes)
+  - `:L_360` - L/360 (typical floors, ACI default)
+  - `:L_480` - L/480 (floors supporting sensitive elements)
+  Default: `:L_360`
+- `check_long_term`: Apply ACI λΔ multiplier for long-term deflection (default: true)
+
+# EFM-Specific Options
+- `efm_k_slab`: Stiffness factor for non-prismatic slab-beam (PCA Table A1, default: 4.127)
+- `efm_k_col`: Stiffness factor for column in joint (PCA Table A7, default: 4.74)
+- `efm_cof`: Carryover factor for non-prismatic slab-beam (default: 0.507)
+- `efm_max_iterations`: Max iterations for slab↔column sizing convergence (default: 5)
+- `efm_convergence_tol`: Thickness convergence tolerance as fraction (default: 0.05 = 5%)
+
+# Reference
+- ACI 318-14/19 Chapter 8 (Two-Way Slabs)
+- ACI 318-14 Table 21.2.1 (Strength Reduction Factors)
+- StructurePoint Design Examples
+"""
 Base.@kwdef struct CIPOptions
+    # ─── Support Conditions ───
     support::SupportCondition = BOTH_ENDS_CONT
+    
     # Reinforcement material used for ACI minimum thickness tables (via `material.Fy`).
     # Default corresponds to Grade 60 reinforcement.
     rebar_material::Metal = Rebar_60
@@ -22,6 +68,40 @@ Base.@kwdef struct CIPOptions
 
     # PT options
     has_drop_panels::Bool = false
+    
+    # ─── Analysis Method ───
+    # :mddm = Modified DDM (simplified coefficients)
+    # :ddm = Direct Design Method (full ACI tables)  
+    # :efm = Equivalent Frame Method (most accurate)
+    analysis_method::Symbol = :ddm
+    
+    # ─── Slab Grouping Strategy ───
+    # :individual = each slab sized separately
+    # :by_floor = all slabs on floor get max thickness
+    # :building_wide = all slabs in building get max thickness
+    grouping::Symbol = :by_floor
+    
+    # ─── Strength Reduction Factors (ACI 318-14 Table 21.2.1) ───
+    φ_flexure::Float64 = 0.90       # Tension-controlled sections (moment)
+    φ_shear::Float64 = 0.75         # Shear and torsion
+    φ_compression::Float64 = 0.65   # Compression-controlled sections
+    λ::Float64 = 1.0                # Lightweight concrete factor (1.0 = normal weight)
+    
+    # ─── Deflection Control ───
+    deflection_limit::Symbol = :L_360  # :L_240, :L_360, :L_480
+    check_long_term::Bool = true
+    
+    # ─── EFM Stiffness Factors ───
+    # From PCA Notes on ACI 318-11 Tables A1/A7
+    # These are defaults for typical flat plate geometry (c/l ≈ 0.08-0.10)
+    efm_k_slab::Float64 = 4.127     # Slab-beam stiffness factor
+    efm_k_col::Float64 = 4.74       # Column stiffness factor
+    efm_cof::Float64 = 0.507        # Carryover factor
+    efm_fem_factor::Float64 = 0.08429  # Fixed-end moment factor
+    
+    # ─── Iteration Control ───
+    efm_max_iterations::Int = 5
+    efm_convergence_tol::Float64 = 0.05  # 5% thickness change = converged
 end
 
 """Haile vault sizing options (unreinforced parabolic vault)."""
@@ -132,9 +212,9 @@ This is meant for UI/help; it does not validate values.
 required_floor_options(::AbstractFloorSystem) = Symbol[]
 
 required_floor_options(::OneWay) = [:cip_support, :cip_rebar_material]
-required_floor_options(::TwoWay) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam]
-required_floor_options(::FlatPlate) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam]
-required_floor_options(::FlatSlab) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam]
+required_floor_options(::TwoWay) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam, :cip_analysis_method]
+required_floor_options(::FlatPlate) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam, :cip_analysis_method, :cip_grouping]
+required_floor_options(::FlatSlab) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam, :cip_analysis_method, :cip_grouping]
 required_floor_options(::Waffle) = [:cip_support, :cip_rebar_material, :cip_has_edge_beam]
 required_floor_options(::PTBanded) = [:cip_support, :cip_has_drop_panels]
 

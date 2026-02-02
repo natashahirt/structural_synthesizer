@@ -298,3 +298,47 @@ function rebuild_stories!(skel::BuildingSkeleton{T}) where T
         end
     end
 end
+
+# =============================================================================
+# Geometry Query Helpers
+# =============================================================================
+# These wrap Meshes operations to avoid exposing Meshes types to downstream packages.
+
+"""
+    edge_length(skel, edge_idx)
+
+Return the length of the edge at `edge_idx` in the skeleton.
+Wraps `Meshes.measure` so downstream packages don't need Meshes as a dependency.
+"""
+edge_length(skel::BuildingSkeleton, edge_idx::Int) = Meshes.measure(skel.edges[edge_idx])
+
+"""
+    face_area(skel, face_idx)
+
+Return the area of the face at `face_idx` in the skeleton.
+"""
+face_area(skel::BuildingSkeleton, face_idx::Int) = Meshes.measure(skel.faces[face_idx])
+
+"""
+    vertex_coords(skel, vertex_idx)
+
+Return the coordinates of the vertex at `vertex_idx` as a NamedTuple (x, y, z).
+"""
+function vertex_coords(skel::BuildingSkeleton, vertex_idx::Int)
+    c = Meshes.coords(skel.vertices[vertex_idx])
+    return (x=c.x, y=c.y, z=c.z)
+end
+
+"""
+    edge_vertices(skel, edge_idx)
+
+Return the vertex indices (v1, v2) for the edge at `edge_idx`.
+"""
+edge_vertices(skel::BuildingSkeleton, edge_idx::Int) = skel.edge_indices[edge_idx]
+
+"""
+    face_vertices(skel, face_idx)
+
+Return the vertex indices for the face at `face_idx`.
+"""
+face_vertices(skel::BuildingSkeleton, face_idx::Int) = skel.face_vertex_indices[face_idx]
