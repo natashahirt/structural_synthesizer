@@ -458,6 +458,48 @@ function _compute_slab_volumes(result::R, floor_area, primary_mat, opts, floor_t
     return volumes
 end
 
+"""
+    update_slab_volumes!(struc::BuildingStructure; options::FloorOptions=FloorOptions())
+
+Recompute material volumes for all slabs based on their current results.
+
+Call this after `size_slabs!` to update the volumes with accurate material 
+quantities (including reinforcement) for EC calculations.
+
+# Example
+```julia
+size_slabs!(struc; options=opts)
+update_slab_volumes!(struc; options=opts)  # Now includes rebar volumes
+ec = compute_building_ec(struc)            # Accurate EC with rebar
+```
+"""
+function update_slab_volumes!(struc::BuildingStructure; 
+                              options::FloorOptions=FloorOptions(),
+                              primary_material=nothing)
+    for (i, slab) in enumerate(struc.slabs)
+        # Compute floor area from cells
+        floor_area = sum(struc.cells[idx].area for idx in slab.cell_indices)
+        
+        # Get primary material (default from options based on floor type)
+        mat = if isnothing(primary_material)
+            ft = slab.floor_type
+            if ft in (:flat_plate, :flat_slab, :two_way, :waffle, :pt_banded)
+                options.flat_plate.material.concrete
+            elseif ft == :one_way
+                options.one_way.material.concrete
+            else
+                options.flat_plate.material.concrete  # fallback
+            end
+        else
+            primary_material
+        end
+        
+        # Recompute volumes from current result
+        slab.volumes = _compute_slab_volumes(slab.result, floor_area, mat, options, slab.floor_type)
+    end
+    return struc
+end
+
 # =============================================================================
 # Slab grouping helpers
 # =============================================================================

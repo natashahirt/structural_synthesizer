@@ -389,6 +389,23 @@ function result_materials(r::CIPSlabResult, primary_mat, opts::FloorOptions)
     result_materials(r, primary_mat, opts, FlatPlate())
 end
 
+# FlatPlatePanelResult - uses flat_plate material settings (includes rebar for EC)
+function result_materials(::FlatPlatePanelResult, primary_mat, opts::FloorOptions, ::FlatPlate)
+    Dict{Symbol, AbstractMaterial}(
+        :concrete => opts.flat_plate.material.concrete,
+        :steel => opts.flat_plate.material.rebar
+    )
+end
+
+# Fallback for FlatPlatePanelResult without floor type
+function result_materials(r::FlatPlatePanelResult, primary_mat, opts::FloorOptions)
+    result_materials(r, primary_mat, opts, FlatPlate())
+end
+
+# Floor-type agnostic dispatch for FlatPlatePanelResult
+result_materials(r::FlatPlatePanelResult, pm, opts::FloorOptions, ::AbstractFloorSystem) = 
+    result_materials(r, pm, opts, FlatPlate())
+
 # Other result types (floor_type optional, ignored)
 result_materials(r::ProfileResult, pm, opts::FloorOptions, ::AbstractFloorSystem) = result_materials(r, pm, opts)
 result_materials(::ProfileResult, primary_mat, opts::FloorOptions) = Dict{Symbol, AbstractMaterial}(:concrete => primary_mat)

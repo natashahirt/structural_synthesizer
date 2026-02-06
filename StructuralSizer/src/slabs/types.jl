@@ -536,7 +536,9 @@ deflection_ratio(r::FlatPlatePanelResult) = r.deflection_check.ratio
 # Backward compatibility: h accessor
 Base.getproperty(r::FlatPlatePanelResult, s::Symbol) = 
     s === :h ? getfield(r, :thickness) : getfield(r, s)
-materials(::FlatPlatePanelResult) = (:concrete,)
+
+# Include both concrete and steel for EC calculations
+materials(::FlatPlatePanelResult) = (:concrete, :steel)
 
 # =============================================================================
 # Common Interface
@@ -593,6 +595,60 @@ _volume_impl(r::TimberPanelResult, ::Val{:timber}) = r.volume_per_area
 _volume_impl(r::TimberJoistResult, ::Val{:timber}) = r.volume_per_area
 _volume_impl(r::VaultResult, ::Val{:concrete}) = r.volume_per_area
 _volume_impl(r::ShapedSlabResult, ::Val{:concrete}) = r.volume_per_area
+
+# FlatPlatePanelResult: concrete is just thickness, steel calculated from reinforcement
+_volume_impl(r::FlatPlatePanelResult, ::Val{:concrete}) = r.volume_per_area
+_volume_impl(r::FlatPlatePanelResult, ::Val{:steel}) = _calc_rebar_volume_per_area(r)
+
+"""
+    _calc_rebar_volume_per_area(r::FlatPlatePanelResult) -> Length
+
+Calculate reinforcing steel volume per plan area for EC calculations.
+
+Approximates total rebar volume by:
+1. Summing As_provided from all strip reinforcement
+2. Estimating bar length based on span geometry
+3. Accounting for both directions and top/bottom layers
+
+# Returns
+Volume per plan area [m³/m² = m], same units as concrete volume_per_area.
+"""
+function _calc_rebar_volume_per_area(r::FlatPlatePanelResult)
+    l1 = r.l1
+    l2 = r.l2
+    panel_area = l1 * l2
+    
+    # Sum all reinforcement from column and middle strips
+    total_steel_volume = 0.0u"m^3"
+    
+    # Column strip reinforcement (runs parallel to l1)
+    for reinf in r.column_strip_reinf
+        As = uconvert(u"m^2", reinf.As_provided)
+        # Bars span full l1 length, width is column_strip_width
+        # Multiply by strip width since As is per unit width
+        bar_length = l1
+        strip_width = r.column_strip_width
+        total_steel_volume += As * bar_length * strip_width / (1.0u"m")
+    end
+    
+    # Middle strip reinforcement (runs parallel to l1)
+    for reinf in r.middle_strip_reinf
+        As = uconvert(u"m^2", reinf.As_provided)
+        bar_length = l1
+        strip_width = r.middle_strip_width
+        total_steel_volume += As * bar_length * strip_width / (1.0u"m")
+    end
+    
+    # Assume similar reinforcement in perpendicular direction (conservative)
+    # Real design would have direction-specific reinforcement
+    total_steel_volume *= 2.0
+    
+    # Add ~10% for lap splices, hooks, and integrity reinforcement
+    total_steel_volume *= 1.10
+    
+    # Return volume per plan area (same units as concrete)
+    return uconvert(u"m", total_steel_volume / panel_area)
+end
 
 """Get all material volumes as a dictionary."""
 function material_volumes(r::AbstractFloorResult)

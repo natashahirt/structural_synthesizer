@@ -535,6 +535,123 @@ function _get_release_symbol(el::Asap.Element{R}) where R
     return :fixedfixed  # fallback
 end
 
+"""
+    _get_slab_boundary_vertices(struc, slab) -> Vector{Int}
+
+Get the outer boundary vertex indices for a slab spanning one or more cells.
+Returns vertices in counter-clockwise order (convex hull for multi-cell slabs).
+
+For single-cell slabs, returns the face vertices directly.
+For multi-cell slabs, computes the convex hull of all vertices.
+"""
+function _get_slab_boundary_vertices(struc::BuildingStructure, slab::Slab)
+    skel = struc.skeleton
+    
+    # Single cell: return face vertices directly (already in correct order)
+    if length(slab.cell_indices) == 1
+        cell = struc.cells[first(slab.cell_indices)]
+        return skel.face_vertex_indices[cell.face_idx]
+    end
+    
+    # Multi-cell: collect all unique vertices and compute convex hull
+    all_vert_indices = Set{Int}()
+    z_coord = 0.0
+    
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        for vi in skel.face_vertex_indices[cell.face_idx]
+            push!(all_vert_indices, vi)
+            # Capture z coordinate
+            pt = skel.vertices[vi]
+            z_coord = ustrip(u"m", Meshes.coords(pt).z)
+        end
+    end
+    
+    # Build vertex index → 2D coords mapping
+    vert_idx_list = collect(all_vert_indices)
+    pts_2d = [(let c = Meshes.coords(skel.vertices[vi])
+               (ustrip(u"m", c.x), ustrip(u"m", c.y))
+               end) for vi in vert_idx_list]
+    
+    # Compute convex hull in CCW order
+    hull_pts_2d = _convex_hull_ccw(pts_2d)
+    
+    # Map hull points back to vertex indices
+    pt_to_idx = Dict(pts_2d[i] => vert_idx_list[i] for i in eachindex(pts_2d))
+    hull_vert_indices = [pt_to_idx[pt] for pt in hull_pts_2d]
+    
+    return hull_vert_indices
+end
+
+"""
+    _convex_hull_ccw(points) -> Vector{NTuple{2, Float64}}
+
+Compute convex hull in counter-clockwise order using Graham scan.
+"""
+function _convex_hull_ccw(points::Vector{<:NTuple{2}})
+    n = length(points)
+    n <= 3 && return points
+    
+    # Find bottom-left point (min y, then min x)
+    start_idx = argmin([(p[2], p[1]) for p in points])
+    start = points[start_idx]
+    
+    # Sort by polar angle from start point
+    others = [p for (i, p) in enumerate(points) if i != start_idx]
+    
+    function angle_key(p)
+        dx, dy = p[1] - start[1], p[2] - start[2]
+        return (atan(dy, dx), dx^2 + dy^2)
+    end
+    
+    sorted = sort(others, by=angle_key)
+    
+    # Graham scan
+    hull = [start]
+    for p in sorted
+        while length(hull) >= 2 && _cross_2d_asap(hull[end-1], hull[end], p) <= 0
+            pop!(hull)
+        end
+        push!(hull, p)
+    end
+    
+    return hull
+end
+
+"""Cross product of vectors (b-a) and (c-a) for convex hull computation."""
+function _cross_2d_asap(a::NTuple{2}, b::NTuple{2}, c::NTuple{2})
+    return (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1])
+end
+
+"""
+    _get_interior_column_nodes(struc, slab, boundary_vert_indices, nodes) -> Vector{Asap.Node}
+
+Find interior column vertices (not on slab boundary) and return their Node objects.
+These are passed directly to Asap.Shell via the `interior_nodes` parameter for proper
+node sharing between shell mesh and column elements.
+"""
+function _get_interior_column_nodes(struc::BuildingStructure, slab::Slab, 
+                                     boundary_vert_indices::Vector{Int}, 
+                                     nodes::Vector{Asap.Node})
+    skel = struc.skeleton
+    boundary_set = Set(boundary_vert_indices)
+    
+    # Collect all unique vertices from all cells in this slab
+    all_cell_verts = Set{Int}()
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        for vi in skel.face_vertex_indices[cell.face_idx]
+            push!(all_cell_verts, vi)
+        end
+    end
+    
+    # Interior vertices = all cell vertices - boundary vertices
+    interior_vert_indices = setdiff(all_cell_verts, boundary_set)
+    
+    # Return actual Node objects for interior columns
+    return [nodes[vi] for vi in interior_vert_indices]
+end
+
 # =============================================================================
 # Analysis Model Builder (Frame + Shell for Global Deflection)
 # =============================================================================
@@ -641,6 +758,7 @@ function build_analysis_model!(design::BuildingDesign;
     end
     
     # ─── 4. Create shell elements for slabs ───
+    # NOTE: Mesh entire slab boundary as one continuous shell, not per-cell
     shell_elements = Asap.ShellElement[]
     slab_shell_map = Dict{Int, Vector{Asap.ShellElement}}()  # slab_idx → shells
     
@@ -664,19 +782,44 @@ function build_analysis_model!(design::BuildingDesign;
         # Create shell section with proper density (enables self-weight)
         section = Asap.ShellSection(t, E_pa, 0.2; ρ=ρ_kgm3)
         
-        # Create shells for each cell face
-        slab_shells = Asap.ShellElement[]
-        face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
+        # Get the outer boundary of the entire slab (not individual cells)
+        boundary_vert_indices = _get_slab_boundary_vertices(struc, slab)
         
-        for face_idx in face_indices
-            vert_indices = skel.face_vertex_indices[face_idx]
-            corners = tuple([nodes[vi] for vi in vert_indices]...)
+        if length(boundary_vert_indices) >= 3
+            # Scale mesh density based on number of cells to maintain cell-level resolution
+            # For multi-cell slabs, increase n proportionally to approximate linear dimension
+            n_cells = length(slab.cell_indices)
+            scale_factor = ceil(Int, sqrt(n_cells))  # ~2x for 4 cells, ~3x for 9 cells
+            effective_n = mesh_density * scale_factor
             
-            face_shells = Asap.Shell(corners, section; n=mesh_density, 
+            # Find interior column nodes (not on boundary) - passed to Shell for node sharing
+            interior_nodes = _get_interior_column_nodes(struc, slab, boundary_vert_indices, nodes)
+            
+            @debug "Slab $slab_idx mesh" n_cells=n_cells scale_factor=scale_factor effective_n=effective_n n_corners=length(boundary_vert_indices) n_interior_nodes=length(interior_nodes)
+            
+            # Create shell mesh from entire slab boundary polygon
+            # Asap.Shell uses interior_nodes to share actual column Node objects with the mesh
+            corners = tuple([nodes[vi] for vi in boundary_vert_indices]...)
+            
+            slab_shells = Asap.Shell(corners, section; n=effective_n, 
                                      id=Symbol("slab_$(slab_idx)"),
-                                     edge_support_type=:free, 
-                                     interior_support_type=:free)
-            append!(slab_shells, face_shells)
+                                     interior_nodes=interior_nodes,
+                                     edge_support_type=:free)
+        else
+            # Fallback to per-cell meshing for degenerate cases
+            slab_shells = Asap.ShellElement[]
+            face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
+            
+            for face_idx in face_indices
+                vert_indices = skel.face_vertex_indices[face_idx]
+                corners = tuple([nodes[vi] for vi in vert_indices]...)
+                
+                face_shells = Asap.Shell(corners, section; n=mesh_density, 
+                                         id=Symbol("slab_$(slab_idx)"),
+                                         edge_support_type=:free, 
+                                         interior_support_type=:free)
+                append!(slab_shells, face_shells)
+            end
         end
         
         # Note: populate_globalID! is called by model.process! after nodes get their IDs

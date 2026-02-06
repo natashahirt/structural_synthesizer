@@ -484,13 +484,100 @@ using Unitful
             println("  MinWeight: $(round(result_wt.b_final, digits=1))×$(round(result_wt.h_final, digits=1))\", " *
                     "ρ=$(round(result_wt.ρ_opt, digits=3)), A=$(round(result_wt.area, digits=1)) in²")
             
-            # MinWeight should use higher ρ (steel is lighter than concrete per unit strength)
-            # This allows smaller sections
-            @test result_wt.ρ_opt >= result_vol.ρ_opt - 0.005  # MinWeight should use at least as much steel
+            # MinWeight prefers LESS steel because steel (490 pcf) > concrete (150 pcf)
+            # So MinWeight uses lower ρ and may need larger section for same capacity
+            @test result_wt.ρ_opt <= result_vol.ρ_opt + 0.01  # MinWeight should use less or equal steel
             
             # Both should be valid ACI solutions
             @test result_vol.b_final >= 12.0
             @test result_wt.b_final >= 12.0
+            
+            # Verify the objectives are actually different
+            @test abs(result_vol.ρ_opt - result_wt.ρ_opt) > 0.01  # Should have different ρ values
+        end
+        
+        @testset "All objectives comparison" begin
+            # Compare all 4 objectives: MinVolume, MinWeight, MinCarbon, MinCost
+            Pu_kip = 250.0
+            Mu_kipft = 100.0
+            geometry = ConcreteMemberGeometry(12.0; k=1.0, braced=true)
+            
+            # MinVolume: minimizes concrete area only
+            opts_vol = NLPColumnOptions(
+                grade = NWC_4000,
+                rebar_grade = Rebar_60,
+                min_dim = 12.0u"inch",
+                max_dim = 24.0u"inch",
+                objective = MinVolume(),
+                verbose = false
+            )
+            result_vol = size_column_nlp(Pu_kip, Mu_kipft, geometry, opts_vol)
+            
+            # MinWeight: minimizes concrete + steel weight
+            opts_wt = NLPColumnOptions(
+                grade = NWC_4000,
+                rebar_grade = Rebar_60,
+                min_dim = 12.0u"inch",
+                max_dim = 24.0u"inch",
+                objective = MinWeight(),
+                verbose = false
+            )
+            result_wt = size_column_nlp(Pu_kip, Mu_kipft, geometry, opts_wt)
+            
+            # MinCarbon: minimizes embodied carbon (concrete + steel)
+            opts_ec = NLPColumnOptions(
+                grade = NWC_4000,
+                rebar_grade = Rebar_60,
+                min_dim = 12.0u"inch",
+                max_dim = 24.0u"inch",
+                objective = MinCarbon(),
+                verbose = false
+            )
+            result_ec = size_column_nlp(Pu_kip, Mu_kipft, geometry, opts_ec)
+            
+            # MinCost: minimizes material cost (concrete + rebar)
+            opts_cost = NLPColumnOptions(
+                grade = NWC_4000,
+                rebar_grade = Rebar_60,
+                min_dim = 12.0u"inch",
+                max_dim = 24.0u"inch",
+                objective = MinCost(),
+                verbose = false
+            )
+            result_cost = size_column_nlp(Pu_kip, Mu_kipft, geometry, opts_cost)
+            
+            println("\nRC Column: All Objectives Comparison")
+            println("  MinVolume: $(round(result_vol.b_final, digits=1))×$(round(result_vol.h_final, digits=1))\", " *
+                    "ρ=$(round(result_vol.ρ_opt, digits=3)), A=$(round(result_vol.area, digits=1)) in²")
+            println("  MinWeight: $(round(result_wt.b_final, digits=1))×$(round(result_wt.h_final, digits=1))\", " *
+                    "ρ=$(round(result_wt.ρ_opt, digits=3)), A=$(round(result_wt.area, digits=1)) in²")
+            println("  MinCarbon: $(round(result_ec.b_final, digits=1))×$(round(result_ec.h_final, digits=1))\", " *
+                    "ρ=$(round(result_ec.ρ_opt, digits=3)), A=$(round(result_ec.area, digits=1)) in²")
+            println("  MinCost:   $(round(result_cost.b_final, digits=1))×$(round(result_cost.h_final, digits=1))\", " *
+                    "ρ=$(round(result_cost.ρ_opt, digits=3)), A=$(round(result_cost.area, digits=1)) in²")
+            
+            # Steel/Concrete ratios for each objective:
+            # - MinWeight: 490/150 ≈ 3.3× (steel heavier)
+            # - MinCarbon: 45/11 ≈ 4.1× (steel higher EC)  
+            # - MinCost: 490/4 ≈ 122× (steel much more expensive per volume)
+            println("  Note: Steel/Concrete ratios:")
+            println("    Weight: 3.3×, Carbon: 4.1×, Cost: ~122×")
+            
+            # All objectives that penalize steel should use less than MinVolume
+            @test result_wt.ρ_opt <= result_vol.ρ_opt + 0.01
+            @test result_ec.ρ_opt <= result_vol.ρ_opt + 0.01
+            @test result_cost.ρ_opt <= result_vol.ρ_opt + 0.01
+            
+            # MinCost has the highest steel penalty ratio, so should use least steel
+            # (or at least no more than others)
+            @test result_cost.ρ_opt <= result_wt.ρ_opt + 0.005
+            @test result_cost.ρ_opt <= result_ec.ρ_opt + 0.005
+            
+            # All should be valid ACI solutions
+            @test result_vol.b_final >= 12.0
+            @test result_wt.b_final >= 12.0
+            @test result_ec.b_final >= 12.0
+            @test result_cost.b_final >= 12.0
         end
     end
 

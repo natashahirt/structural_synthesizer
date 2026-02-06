@@ -108,7 +108,7 @@ visualize(struc, color_by=:tributary_vertex)
 visualize(design, show_sections=:solid)
 
 # 3. Deflected design
-visualize(design, mode=:deflected)
+visualize(design, mode=:deflected, color_by=:displacement_local)
 
 # =============================================================================
 # Embodied Carbon

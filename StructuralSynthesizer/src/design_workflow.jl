@@ -94,6 +94,9 @@ function design_building(struc::BuildingStructure, params::DesignParameters)
     # ─────────────────────────────────────────────────────────────────────────
     StructuralSizer.size_slabs!(struc; options=opts, verbose=false, max_iterations=20)
     
+    # Update slab volumes for accurate EC (includes rebar from reinforcement design)
+    update_slab_volumes!(struc; options=opts)
+    
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 5: Size foundations (if options provided)
     # ─────────────────────────────────────────────────────────────────────────

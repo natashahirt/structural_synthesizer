@@ -136,6 +136,7 @@ export initialize_cells!, initialize_slabs!
 export initialize_segments!, initialize_members!, update_bracing!
 export build_slab_groups!, build_cell_groups!, compute_cell_tributaries!
 export update_slab_loads!, update_all_slab_loads!
+export update_slab_volumes!
 
 # --- Member sizing ---
 export build_member_groups!, member_group_demands, size_members_discrete!

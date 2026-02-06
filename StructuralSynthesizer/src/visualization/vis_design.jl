@@ -122,7 +122,13 @@ This is the presentation-quality visualization for design output.
   - `:pass_fail` - binary green (ok) / red (not ok)
   - `:member_type` - color by beam/column/strut
   - `:section_type` - categorical by section name
-  - `:displacement` - (deflected mode only) displacement magnitude
+  - `:displacement_global` - (deflected mode only) total displacement magnitude in global
+    coordinates. Shows absolute movement of each point from original position.
+  - `:displacement_local` - (deflected mode only) element deflection relative to supports:
+    - Frames: endpoints stay at original position, shows chord-relative bending only
+    - Shells: support nodes (column tops) stay at original position, interior nodes
+      show deflection relative to supports. This isolates the slab's own deflection
+      pattern from the column deflections.
 - `utilization_limits::Tuple=(0.0, 1.0)`: Color range for utilization mode
 
 ## Frame Elements (sized mode)
@@ -247,6 +253,7 @@ function visualize(design::BuildingDesign;
     # Color data for deflected mode coloring
     all_colors = Float64[]
     crange = (0.0, 1.0)
+    has_displacement_coloring = false  # Track if any displacement coloring was applied
     
     # =========================================================================
     # MODE: DEFLECTED - deformed shape with lines and shell meshes
@@ -298,26 +305,51 @@ function visualize(design::BuildingDesign;
             all_points = Vector{GLMakie.Point3f}[]
             
             for (i, edisp) in enumerate(edisps)
-                pos = edisp.basepositions .+ deflection_scale .* edisp.uglobal
-                pts = [GLMakie.Point3f(pos[1, j], pos[2, j], pos[3, j]) for j in 1:size(pos, 2)]
-                push!(all_points, pts)
+                n_pts = size(edisp.uglobal, 2)
                 
-                if color_by == :displacement
-                    dvals = [norm(edisp.uglobal[:, j]) for j in 1:size(edisp.uglobal, 2)]
+                if color_by == :displacement_local
+                    # LOCAL mode: endpoints stay at original position, show chord-relative bending
+                    # This shows the element's own deflection without rigid body motion
+                    u_start = edisp.uglobal[:, 1]
+                    u_end = edisp.uglobal[:, end]
+                    
+                    pts = GLMakie.Point3f[]
+                    dvals = Float64[]
+                    for j in 1:n_pts
+                        t = (j - 1) / max(n_pts - 1, 1)
+                        u_chord = u_start .+ t .* (u_end .- u_start)
+                        u_local = edisp.uglobal[:, j] .- u_chord
+                        # Deform from original position using only local displacement
+                        pos = edisp.basepositions[:, j] .+ deflection_scale .* u_local
+                        push!(pts, GLMakie.Point3f(pos[1], pos[2], pos[3]))
+                        push!(dvals, norm(u_local))
+                    end
+                    push!(all_points, pts)
                     append!(all_colors, dvals)
+                else
+                    # GLOBAL mode: full displacement from original position
+                    pos = edisp.basepositions .+ deflection_scale .* edisp.uglobal
+                    pts = [GLMakie.Point3f(pos[1, j], pos[2, j], pos[3, j]) for j in 1:n_pts]
+                    push!(all_points, pts)
+                    
+                    if color_by == :displacement_global
+                        dvals = [norm(edisp.uglobal[:, j]) for j in 1:n_pts]
+                        append!(all_colors, dvals)
+                    end
                 end
             end
             
             # Compute color range
-            if color_by == :displacement && !isempty(all_colors)
+            if color_by in (:displacement_global, :displacement_local) && !isempty(all_colors)
                 crange = (minimum(all_colors), maximum(all_colors))
                 if crange[1] ≈ crange[2]
                     crange = (crange[1], crange[1] + 1.0)
                 end
+                has_displacement_coloring = true
             end
             
             # Draw deflected elements
-            use_displacement_coloring = color_by == :displacement && !isempty(all_colors)
+            use_displacement_coloring = color_by in (:displacement_global, :displacement_local) && !isempty(all_colors)
             color_idx = 1
             
             for (i, pts) in enumerate(all_points)
@@ -354,13 +386,66 @@ function visualize(design::BuildingDesign;
         if show_slabs && Asap.has_shell_elements(model)
             shell_disp_colors = Float64[]  # For displacement coloring
             
+            # For local mode: identify support nodes (shared with frame elements)
+            # These are nodes that appear in both shell and frame elements
+            support_nodes = Set{Asap.Node}()
+            if color_by == :displacement_local
+                for el in model.elements
+                    push!(support_nodes, el.nodeStart)
+                    push!(support_nodes, el.nodeEnd)
+                end
+            end
+            
+            # Group shells by slab ID and compute per-slab support displacement
+            # This ensures each slab uses its own supports as reference
+            slab_support_disp = Dict{Symbol, Vector{Float64}}()
+            if color_by == :displacement_local
+                # Group shells by slab
+                slab_shells = Dict{Symbol, Vector{typeof(first(model.shell_elements))}}()
+                for shell in model.shell_elements
+                    slab_id = shell.id
+                    if !haskey(slab_shells, slab_id)
+                        slab_shells[slab_id] = []
+                    end
+                    push!(slab_shells[slab_id], shell)
+                end
+                
+                # For each slab, find its support nodes and compute average displacement
+                for (slab_id, shells) in slab_shells
+                    slab_support_nodes = Set{Asap.Node}()
+                    for shell in shells
+                        for node in shell.nodes
+                            if node in support_nodes
+                                push!(slab_support_nodes, node)
+                            end
+                        end
+                    end
+                    
+                    # Compute average displacement of this slab's supports
+                    if !isempty(slab_support_nodes)
+                        avg_disp = [0.0, 0.0, 0.0]
+                        for node in slab_support_nodes
+                            disp = Asap.to_displacement_vec(node.displacement)
+                            avg_disp .+= disp[1:3]
+                        end
+                        avg_disp ./= length(slab_support_nodes)
+                        slab_support_disp[slab_id] = avg_disp
+                    else
+                        slab_support_disp[slab_id] = [0.0, 0.0, 0.0]
+                    end
+                end
+            end
+            
             # Compute deflection scale from shells if not set by frame elements
             if deflection_scale === :auto || deflection_scale == 1.0
                 max_shell_disp = 0.0
                 for shell in model.shell_elements
+                    slab_ref = get(slab_support_disp, shell.id, [0.0, 0.0, 0.0])
                     for node in shell.nodes
                         disp = Asap.to_displacement_vec(node.displacement)
-                        max_shell_disp = max(max_shell_disp, norm(disp[1:3]))
+                        # For local mode, measure relative to this slab's supports
+                        d = color_by == :displacement_local ? disp[1:3] .- slab_ref : disp[1:3]
+                        max_shell_disp = max(max_shell_disp, norm(d))
                     end
                 end
                 if max_shell_disp > 1e-12
@@ -376,16 +461,35 @@ function visualize(design::BuildingDesign;
             
             for shell in model.shell_elements
                 base_idx = length(shell_verts)
+                slab_ref = get(slab_support_disp, shell.id, [0.0, 0.0, 0.0])
                 
-                # Add displaced vertices for this triangle
                 for node in shell.nodes
                     pos = [ustrip(u"m", node.position[j]) for j in 1:3]
                     disp = Asap.to_displacement_vec(node.displacement)
-                    deformed = pos .+ deflection_scale .* disp[1:3]
-                    push!(shell_verts, GLMakie.Point3f(deformed...))
                     
-                    if color_by == :displacement
-                        push!(shell_disp_colors, norm(disp[1:3]))
+                    if color_by == :displacement_local
+                        # LOCAL mode: support nodes stay at original position,
+                        # interior nodes show displacement relative to THIS SLAB's supports
+                        is_support = node in support_nodes
+                        if is_support
+                            # Support node: stays at original position
+                            push!(shell_verts, GLMakie.Point3f(pos...))
+                            push!(shell_disp_colors, 0.0)
+                        else
+                            # Interior node: show displacement relative to slab's supports
+                            local_disp = disp[1:3] .- slab_ref
+                            deformed = pos .+ deflection_scale .* local_disp
+                            push!(shell_verts, GLMakie.Point3f(deformed...))
+                            push!(shell_disp_colors, norm(local_disp))
+                        end
+                    else
+                        # GLOBAL mode: full displacement from original position
+                        deformed = pos .+ deflection_scale .* disp[1:3]
+                        push!(shell_verts, GLMakie.Point3f(deformed...))
+                        
+                        if color_by == :displacement_global
+                            push!(shell_disp_colors, norm(disp[1:3]))
+                        end
                     end
                 end
                 
@@ -394,7 +498,7 @@ function visualize(design::BuildingDesign;
             end
             
             if !isempty(shell_verts) && !isempty(shell_faces)
-                if color_by == :displacement && !isempty(shell_disp_colors)
+                if color_by in (:displacement_global, :displacement_local) && !isempty(shell_disp_colors)
                     # Compute combined color range (frames + shells)
                     shell_crange = (minimum(shell_disp_colors), maximum(shell_disp_colors))
                     combined_crange = if !isempty(all_colors)
@@ -406,6 +510,7 @@ function visualize(design::BuildingDesign;
                         combined_crange = (combined_crange[1], combined_crange[1] + 1.0)
                     end
                     crange = combined_crange  # Update for colorbar
+                    has_displacement_coloring = true
                     
                     GLMakie.mesh!(ax, shell_verts, shell_faces,
                                   color = shell_disp_colors,
@@ -546,11 +651,18 @@ function visualize(design::BuildingDesign;
     row_idx = 1
     
     # Colorbar based on mode and coloring
-    if mode == :deflected && color_by == :displacement && !isempty(all_colors)
+    if mode == :deflected && color_by == :displacement_global && has_displacement_coloring
         GLMakie.Colorbar(sidebar[row_idx, 1], 
             limits = crange, 
             colormap = :turbo,
-            label = "Displacement [m]")
+            label = "Global Displacement [m]")
+        row_idx += 1
+    elseif mode == :deflected && color_by == :displacement_local && has_displacement_coloring
+        # Frames: chord-relative; Shells: relative to support nodes (column tops)
+        GLMakie.Colorbar(sidebar[row_idx, 1], 
+            limits = crange, 
+            colormap = :turbo,
+            label = "Local Deflection [m]\n(relative to supports)")
         row_idx += 1
     elseif color_by == :utilization
         GLMakie.Colorbar(sidebar[row_idx, 1], 
