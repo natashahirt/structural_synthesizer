@@ -42,7 +42,7 @@ function AISCChecker(;
     max_depth = Inf,
     prefer_penalty = 1.0
 )
-    max_d = max_depth isa Unitful.Quantity ? ustrip(uconvert(u"m", max_depth)) : Float64(max_depth)
+    max_d = to_meters(max_depth)
     AISCChecker(ϕ_b, ϕ_c, ϕ_v, ϕ_t, deflection_limit, max_d, prefer_penalty)
 end
 
@@ -104,59 +104,52 @@ Not all steel section types store this with the same field name:
 - `ISymmSection` / `HSSRectSection`: `Ix`
 - `HSSRoundSection`: `I` (since Ix=Iy)
 """
-@inline function _Ix_for_deflection(s::AbstractSection)
-    if hasproperty(s, :Ix)
-        return getproperty(s, :Ix)
-    elseif hasproperty(s, :I)
-        return getproperty(s, :I)
-    else
-        error("Section $(typeof(s)) does not define `Ix` or `I` for deflection scaling.")
-    end
-end
+@inline _Ix_for_deflection(s::AbstractSection) = Ix(s)
 
 # ==============================================================================
 # Interface Implementation
 # ==============================================================================
 
 """
-    precompute_capacities!(checker::AISCChecker, cache, catalogue, material, geometries)
+    precompute_capacities!(checker::AISCChecker, cache, catalog, material, geometries)
 
 Precompute length-independent capacities for all sections.
 """
 function precompute_capacities!(
     checker::AISCChecker,
     cache::AISCCapacityCache,
-    catalogue::AbstractVector{<:AbstractSection},
+    catalog::AbstractVector{<:AbstractSection},
     material::StructuralSteel,
     objective::AbstractObjective
 )
-    n = length(catalogue)
+    n = length(catalog)
     
     # Determine target unit for objective
-    ref_obj = objective_value(objective, catalogue[1], material, 1.0u"m")
-    ref_unit = ref_obj isa Unitful.Quantity ? unit(ref_obj) : Unitful.NoUnits
+    ref_obj = objective_value(objective, catalog[1], material, 1.0u"m")
+    ref_unit = unit(ref_obj)
     
-    for j in 1:n
-        s = catalogue[j]
+    # Thread-safe: each iteration writes to distinct cache indices
+    Threads.@threads for j in 1:n
+        s = catalog[j]
         
         # Shear capacities (length-independent for rolled I-shapes)
-        cache.ϕVn_strong[j] = ustrip(uconvert(u"N", get_ϕVn(s, material; axis=:strong, ϕ=checker.ϕ_v)))
-        cache.ϕVn_weak[j] = ustrip(uconvert(u"N", get_ϕVn(s, material; axis=:weak, ϕ=checker.ϕ_v)))
+        cache.ϕVn_strong[j] = ustrip(u"N", get_ϕVn(s, material; axis=:strong, ϕ=checker.ϕ_v))
+        cache.ϕVn_weak[j] = ustrip(u"N", get_ϕVn(s, material; axis=:weak, ϕ=checker.ϕ_v))
         
         # Weak-axis flexure (length-independent for I-shapes)
-        cache.ϕMn_weak[j] = ustrip(uconvert(u"N*m", get_ϕMn(s, material; axis=:weak, ϕ=checker.ϕ_b)))
+        cache.ϕMn_weak[j] = ustrip(u"N*m", get_ϕMn(s, material; axis=:weak, ϕ=checker.ϕ_b))
         
         # Tension capacity
-        cache.ϕPn_tension[j] = ustrip(uconvert(u"N", get_ϕPn_tension(s, material)))
+        cache.ϕPn_tension[j] = ustrip(u"N", get_ϕPn_tension(s, material))
         
         # Geometric properties
-        cache.Ix[j] = ustrip(uconvert(u"m^4", _Ix_for_deflection(s)))
-        cache.depths[j] = ustrip(uconvert(u"m", section_depth(s)))
+        cache.Ix[j] = ustrip(u"m^4", _Ix_for_deflection(s))
+        cache.depths[j] = ustrip(u"m", section_depth(s))
         
         # Objective coefficient (value per meter)
         val = objective_value(objective, s, material, 1.0u"m")
         if ref_unit != Unitful.NoUnits
-            cache.obj_coeffs[j] = ustrip(uconvert(ref_unit, val))
+            cache.obj_coeffs[j] = ustrip(ref_unit, val)
         else
             cache.obj_coeffs[j] = val
         end
@@ -194,7 +187,7 @@ function _get_ϕPn_cached!(
     val = get(dict, key, nothing)
     if isnothing(val)
         Lc = Lc_m * u"m"
-        val = ustrip(uconvert(u"N", get_ϕPn(section, material, Lc; axis=axis)))
+        val = ustrip(u"N", get_ϕPn(section, material, Lc; axis=axis))
         dict[key] = val
     end
     return val
@@ -221,7 +214,7 @@ function _get_ϕMnx_cached!(
     val = get(cache.ϕMn_strong, key, nothing)
     if isnothing(val)
         Lb = Lb_m * u"m"
-        val = ustrip(uconvert(u"N*m", get_ϕMn(section, material; Lb=Lb, Cb=Cb, axis=:strong, ϕ=ϕ_b)))
+        val = ustrip(u"N*m", get_ϕMn(section, material; Lb=Lb, Cb=Cb, axis=:strong, ϕ=ϕ_b))
         cache.ϕMn_strong[key] = val
     end
     return val
@@ -240,25 +233,29 @@ applied externally to Mlt before creating the demand (not yet integrated).
 function is_feasible(
     checker::AISCChecker,
     cache::AISCCapacityCache,
-    j::Int,  # Section index in catalogue
+    j::Int,  # Section index in catalog
     section::AbstractSection,
     material::StructuralSteel,
     demand::MemberDemand,
     geometry::SteelMemberGeometry
 )::Bool
-    # Extract demand values (SI: N, N*m)
-    Pu_c = demand.Pu_c isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Pu_c)) : Float64(demand.Pu_c)
-    Pu_t = demand.Pu_t isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Pu_t)) : Float64(demand.Pu_t)
-    Mux = demand.Mux isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.Mux)) : Float64(demand.Mux)
-    Muy = demand.Muy isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.Muy)) : Float64(demand.Muy)
-    M1x = demand.M1x isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.M1x)) : Float64(demand.M1x)
-    M2x = demand.M2x isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.M2x)) : Float64(demand.M2x)
-    M1y = demand.M1y isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.M1y)) : Float64(demand.M1y)
-    M2y = demand.M2y isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.M2y)) : Float64(demand.M2y)
-    Vus = demand.Vu_strong isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Vu_strong)) : Float64(demand.Vu_strong)
-    Vuw = demand.Vu_weak isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Vu_weak)) : Float64(demand.Vu_weak)
-    δ_max = demand.δ_max isa Unitful.Quantity ? ustrip(uconvert(u"m", demand.δ_max)) : Float64(demand.δ_max)
-    I_ref = demand.I_ref isa Unitful.Quantity ? ustrip(uconvert(u"m^4", demand.I_ref)) : Float64(demand.I_ref)
+    # Extract demand values (SI: N, N·m)
+    Pu_c = to_newtons(demand.Pu_c)
+    Pu_t = to_newtons(demand.Pu_t)
+    Mux = to_newton_meters(demand.Mux)
+    Muy = to_newton_meters(demand.Muy)
+    M1x = to_newton_meters(demand.M1x)
+    M2x = to_newton_meters(demand.M2x)
+    M1y = to_newton_meters(demand.M1y)
+    M2y = to_newton_meters(demand.M2y)
+    Vus = to_newtons(demand.Vu_strong)
+    Vuw = to_newtons(demand.Vu_weak)
+    δ_max = to_meters(demand.δ_max)
+    I_ref = to_meters_fourth(demand.I_ref)
+
+    # Strip geometry to Float64 meters for internal computation
+    L_m = to_meters(geometry.L)
+    Lb_m = to_meters(geometry.Lb)
     
     # --- Sway Frame Warning ---
     # B2 (P-Δ) amplification is not yet implemented for sway frames
@@ -275,11 +272,11 @@ function is_feasible(
     cache.ϕVn_weak[j] >= Vuw || return false
     
     # --- Strong-Axis Flexure (with LTB) ---
-    ϕMnx = _get_ϕMnx_cached!(cache, j, geometry.Lb, geometry.Cb, section, material, checker.ϕ_b)
+    ϕMnx = _get_ϕMnx_cached!(cache, j, Lb_m, geometry.Cb, section, material, checker.ϕ_b)
     
     # --- Compression Capacity ---
-    Lc_x = geometry.Kx * geometry.L
-    Lc_y = geometry.Ky * geometry.L
+    Lc_x = geometry.Kx * L_m
+    Lc_y = geometry.Ky * L_m
     ϕPn_x = _get_ϕPn_cached!(cache, :strong, j, Lc_x, section, material)
     ϕPn_y = _get_ϕPn_cached!(cache, :weak, j, Lc_y, section, material)
     ϕPn_z = _get_ϕPn_cached!(cache, :torsional, j, Lc_y, section, material)
@@ -292,19 +289,15 @@ function is_feasible(
     
     if Pu_c > 0.0
         # Get section properties for Pe1 calculation (SI units: Pa, m⁴)
-        E = ustrip(uconvert(u"Pa", material.E))  # Pa = N/m²
+        E = to_pascals(material.E)
         Ix = cache.Ix[j]  # Already in m⁴
         
-        # For weak-axis I, we need Iy - fetch it
-        Iy = if hasproperty(section, :Iy)
-            ustrip(uconvert(u"m^4", getproperty(section, :Iy)))
-        else
-            Ix  # Fallback for symmetric sections (e.g., round HSS)
-        end
+        # For weak-axis I, we need Iy
+        Iy = to_meters_fourth(StructuralSizer.Iy(section))
         
         # Effective lengths for P-δ (no lateral translation, K typically 1.0)
-        Lc1_x = geometry.Kx * geometry.L  # m
-        Lc1_y = geometry.Ky * geometry.L  # m
+        Lc1_x = geometry.Kx * L_m
+        Lc1_y = geometry.Ky * L_m
         
         # Euler buckling loads (N)
         Pe1_x = π^2 * E * Ix / Lc1_x^2
@@ -340,7 +333,7 @@ function is_feasible(
     # --- Deflection Check (Optional) ---
     if !isnothing(checker.deflection_limit) && I_ref > 0 && δ_max > 0
         δ_scaled = δ_max * I_ref / cache.Ix[j]
-        δ_ratio = δ_scaled / geometry.L
+        δ_ratio = δ_scaled / L_m
         δ_ratio <= checker.deflection_limit || return false
     end
     
@@ -366,15 +359,15 @@ function get_feasibility_error_msg(
     demand::MemberDemand,
     geometry::SteelMemberGeometry
 )
-    Pu_c = demand.Pu_c isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Pu_c)) : demand.Pu_c
-    Pu_t = demand.Pu_t isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Pu_t)) : demand.Pu_t
-    Mux = demand.Mux isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.Mux)) : demand.Mux
-    Muy = demand.Muy isa Unitful.Quantity ? ustrip(uconvert(u"N*m", demand.Muy)) : demand.Muy
-    Vus = demand.Vu_strong isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Vu_strong)) : demand.Vu_strong
-    Vuw = demand.Vu_weak isa Unitful.Quantity ? ustrip(uconvert(u"N", demand.Vu_weak)) : demand.Vu_weak
+    Pu_c = to_newtons(demand.Pu_c)
+    Pu_t = to_newtons(demand.Pu_t)
+    Mux = to_newton_meters(demand.Mux)
+    Muy = to_newton_meters(demand.Muy)
+    Vus = to_newtons(demand.Vu_strong)
+    Vuw = to_newtons(demand.Vu_weak)
     
     "No feasible sections: Pu_c=$(Pu_c) N, Pu_t=$(Pu_t) N, " *
-    "Mux=$(Mux) N*m, Muy=$(Muy) N*m, " *
+    "Mux=$(Mux) N·m, Muy=$(Muy) N·m, " *
     "Vus=$(Vus) N, Vuw=$(Vuw) N, " *
-    "L=$(geometry.L) m, Lb=$(geometry.Lb) m"
+    "L=$(geometry.L), Lb=$(geometry.Lb)"
 end

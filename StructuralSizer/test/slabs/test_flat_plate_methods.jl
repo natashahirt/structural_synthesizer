@@ -64,7 +64,7 @@ using StructuralSizer: kip, ksi, psf, ksf, pcf
             14.0u"ft",          # l2
             16.67u"ft",         # ln
             1.33u"ft",          # c_avg (16 inch = 1.33 ft)
-            [26.0, 70.0],       # column_moments
+            [26kip*u"ft", 70kip*u"ft"],  # column_moments
             [25kip, 25kip],     # column_shears
             [26kip*u"ft", 0kip*u"ft"], # unbalanced_moments
             50kip               # Vu_max

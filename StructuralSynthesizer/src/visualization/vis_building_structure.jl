@@ -192,14 +192,14 @@ function visualize(struc::BuildingStructure;
                 eforce = eforces[i]
                 section = edisp.element.section
                 
-                # Extract section properties (fallback to unit values if missing)
-                A = hasproperty(section, :area) ? section.area : 1.0
-                Sx = hasproperty(section, :Sx) ? section.Sx : 1.0
-                Sy = hasproperty(section, :Sy) ? section.Sy : 1.0
+                # Extract section properties via accessor functions
+                A = StructuralSizer.section_area(section)
+                Sx_val = StructuralSizer.Sx(section)
+                Sy_val = StructuralSizer.Sy(section)
                 
                 # Combined stress approximation: σ = |P/A| + |Mz/Sx| + |My/Sy|
                 # Asap.InternalForces (dispatches to ElementInternalForces) contains vectors P, My, Vy, Mz, Vz
-                svals = [abs(eforce.P[j]/A) + abs(eforce.Mz[j]/Sx) + abs(eforce.My[j]/Sy) for j in 1:length(eforce.P)]
+                svals = [abs(eforce.P[j]/A) + abs(eforce.Mz[j]/Sx_val) + abs(eforce.My[j]/Sy_val) for j in 1:length(eforce.P)]
                 append!(all_colors, svals)
             end
         end
@@ -453,7 +453,7 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
                 v_indices = skel.face_vertex_indices[face_idx]
                 if !isempty(v_indices)
                     first_vert = skel.vertices[v_indices[1]]
-                    z_coord = Float64(ustrip(u"m", Meshes.coords(first_vert).z))
+                    z_coord = ustrip(u"m", Meshes.coords(first_vert).z)
                 end
             end
             
@@ -479,7 +479,7 @@ function _draw_vertex_tributary_areas!(ax, struc::BuildingStructure, leg_elems, 
         # Draw column marker at column vertex z
         v = skel.vertices[col.vertex_idx]
         c = Meshes.coords(v)
-        z_col = Float64(ustrip(u"m", c.z))
+        z_col = ustrip(u"m", c.z)
         pt = GLMakie.Point3f(ustrip(u"m", c.x), ustrip(u"m", c.y), z_col)
         GLMakie.scatter!(ax, [pt], color = :black, markersize = 10, marker = :rect)
     end

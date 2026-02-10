@@ -131,11 +131,17 @@ function compute_element_ec_member(m::AbstractMember, element_type::Symbol, idx:
 end
 
 """
-    ec_summary(struc::BuildingStructure)
+    ec_summary(design::BuildingDesign)
+    ec_summary(struc::BuildingStructure; du=imperial)
 
 Print a summary of embodied carbon for a building structure.
+Display units controlled by `du` (default: `imperial`).
 """
-function ec_summary(struc::BuildingStructure)
+function ec_summary(design::BuildingDesign)
+    ec_summary(design.structure; du=design.params.display_units)
+end
+
+function ec_summary(struc::BuildingStructure; du::DisplayUnits=imperial)
     ec = compute_building_ec(struc)
     
     println("\n=== Embodied Carbon Summary ===")
@@ -151,7 +157,7 @@ function ec_summary(struc::BuildingStructure)
     println()
     
     # Intensity
-    Printf.@printf("Floor Area:    %10.1f m²\n", ustrip(u"m^2", ec.floor_area))
+    Printf.@printf("Floor Area:    %10.1f %s\n", ustrip(du.units[:area], ec.floor_area), du.units[:area])
     Printf.@printf("EC Intensity:  %10.1f kgCO₂e/m²\n", ec.ec_per_floor_area)
     
     return ec

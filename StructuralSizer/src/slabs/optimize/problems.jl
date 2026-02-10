@@ -385,13 +385,11 @@ function build_result(
     units::NamedTuple{(:length, :pressure)}
 )
     h, t = x
-    L_unit = units.length
-    F_unit = units.pressure
     
-    # Convert to user's units
-    thickness = uconvert(L_unit, t * u"m")
-    rise = uconvert(L_unit, eval_result.final_rise * u"m")
-    arc_length = uconvert(L_unit, eval_result.arc_length * u"m")
+    # Normalize to coherent SI (m, kPa)
+    thickness = t * u"m"
+    rise = eval_result.final_rise * u"m"
+    arc_length = eval_result.arc_length * u"m"
     
     # Convert to Unitful for vault analysis functions
     span_u = p.span_m * u"m"
@@ -420,9 +418,9 @@ function build_result(
     thrust_dead = sym.thrust / trib_u  # Force / Length = Force/Length
     thrust_live = sym_live.thrust / trib_u
     
-    # Volume and self-weight
-    volume_per_area = uconvert(L_unit, eval_result.arc_length * t * u"m")
-    self_weight = uconvert(F_unit, sym.self_weight)
+    # Volume and self-weight (coherent SI)
+    volume_per_area = eval_result.arc_length * t * u"m"
+    self_weight = uconvert(u"kPa", sym.self_weight)
     
     # Build check tuples
     stress_check = (
@@ -467,7 +465,7 @@ end
 # ==============================================================================
 # Objective Value Computation (extends optimize/core/objectives.jl)
 # ==============================================================================
-# Note: These are kept for compatibility but the solver now uses _convert_objective
+# Kept for compatibility; the solver uses _convert_objective
 # for efficiency during grid search.
 
 """Volume-based objective for vault: arc_length × thickness × trib_depth."""
@@ -491,10 +489,10 @@ function objective_value(::MinCarbon, p::VaultNLPProblem, x::Vector{Float64})
     return weight * ecc
 end
 
-"""Cost-based objective for vault: volume × material cost per m³."""
+"""Cost-based objective for vault: volume × density × unit cost."""
 function objective_value(::MinCost, p::VaultNLPProblem, x::Vector{Float64})
+    isnan(p.material.cost) && error("MinCost requires material.cost to be set (material has cost=NaN)")
     vol = objective_value(MinVolume(), p, x)
-    # Use material cost if available, otherwise estimate from typical concrete
-    cost_per_m3 = hasproperty(p.material, :cost) ? p.material.cost : 150.0  # $/m³ default
-    return vol * cost_per_m3
+    density = ustrip(u"kg/m^3", p.material.ρ)
+    return vol * density * p.material.cost  # m³ × kg/m³ × $/kg = $
 end

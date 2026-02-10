@@ -39,8 +39,8 @@ end
     end
     
     @testset "Material Constants" begin
-        # β1 calculation
-        β₁ = StructuralSizer.beta1(mat.fc)
+        # β1 calculation (pass NamedTuple so beta1 knows fc is in ksi)
+        β₁ = StructuralSizer.beta1(mat)
         @test β₁ ≈ SP_CIRCULAR_20_PROPERTIES.β1 atol=0.001
         
         # Yield strain

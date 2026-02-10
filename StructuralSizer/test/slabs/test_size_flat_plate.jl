@@ -100,7 +100,11 @@ mutable struct MutableColumn
     c1::typeof(1.0u"inch")
     c2::typeof(1.0u"inch")
     base::MutableBase
+    shape::Symbol
 end
+
+# Convenience constructor with default rectangular shape
+MutableColumn(v, pos, s, c1, c2, base) = MutableColumn(v, pos, s, c1, c2, base, :rectangular)
 
 # =============================================================================
 # Unit Tests for Helper Functions
@@ -188,15 +192,16 @@ end
         
         @test opts.φ_flexure == 0.90
         @test opts.φ_shear == 0.75
-        @test opts.λ == 1.0
+        # λ defaults to nothing → pipeline reads material.concrete.λ (1.0 for NWC)
+        @test isnothing(opts.λ)
+        @test opts.material.concrete.λ == 1.0
         @test opts.analysis_method == :ddm
         @test opts.deflection_limit == :L_360
         @test opts.has_edge_beam == false
-        @test opts.has_drop_panels == false
     end
     
     @testset "Lightweight Concrete Options" begin
-        opts = FlatPlateOptions(λ = 0.85)  # Sand-lightweight
+        opts = FlatPlateOptions(λ = 0.85)  # Sand-lightweight (explicit override)
         @test opts.λ == 0.85
     end
     
@@ -276,19 +281,137 @@ end
             14u"ft",            # l2
             7u"inch",           # h
             94u"kip*ft",        # M0
+            193.0u"psf",        # qu
             7u"ft",             # column_strip_width
             [sr, sr, sr],       # column_strip_reinf
             7u"ft",             # middle_strip_width
             [sr, sr],           # middle_strip_reinf
-            (passes=true, max_ratio=0.85, details=Dict()),  # punching_check
-            (passes=true, Δ_total=0.25u"inch", Δ_limit=0.90u"inch", ratio=0.28)  # deflection_check
+            (ok=true, max_ratio=0.85, details=Dict()),  # punching_check
+            (ok=true, Δ_total=0.25u"inch", Δ_limit=0.90u"inch", ratio=0.28)  # deflection_check
         )
         
         @test result.h == 7u"inch"
-        @test result.punching_check.passes == true
-        @test result.deflection_check.passes == true
+        @test result.punching_check.ok == true
+        @test result.deflection_check.ok == true
         @test length(result.column_strip_reinf) == 3
         @test length(result.middle_strip_reinf) == 2
+    end
+end
+
+# =============================================================================
+# Circular Column Tests
+# =============================================================================
+
+@testset "Flat Plate Pipeline — Circular Column Support" begin
+
+    @testset "MutableColumn with shape field" begin
+        # Rectangular (default)
+        col_rect = MutableColumn(1, :interior, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"))
+        @test col_rect.shape == :rectangular
+        @test hasproperty(col_rect, :shape)
+
+        # Circular (explicit)
+        col_circ = MutableColumn(1, :interior, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :circular)
+        @test col_circ.shape == :circular
+        @test col_circ.c1 == 16u"inch"
+        @test col_circ.c2 == 16u"inch"
+    end
+
+    @testset "check_punching_for_column — Circular Interior" begin
+        fc = 4000u"psi"
+        h = 7u"inch"
+        d = 5.75u"inch"
+
+        # Interior circular column
+        col = MutableColumn(1, :interior, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :circular)
+
+        Vu = 48u"kip"
+        Mub = 5u"kip*ft"
+
+        result = StructuralSizer.check_punching_for_column(col, Vu, Mub, d, h, fc; verbose=true)
+
+        @test haskey(result, :ok) || hasproperty(result, :ok)
+        @test result.ok == true
+        @test result.ratio < 1.0
+        @test result.ratio > 0.0
+        @test ustrip(u"inch", result.b0) ≈ π * (16 + 5.75) rtol=0.01
+
+        println("\n=== Circular Interior Punching ===")
+        println("b₀ = $(round(ustrip(u"inch", result.b0), digits=2)) in (expected: $(round(π*(16+5.75), digits=2)))")
+        println("vu = $(round(ustrip(u"psi", result.vu), digits=1)) psi")
+        println("φvc = $(round(ustrip(u"psi", result.φvc), digits=1)) psi")
+        println("ratio = $(round(result.ratio, digits=3))")
+    end
+
+    @testset "check_punching_for_column — Circular Edge" begin
+        fc = 4000u"psi"
+        h = 7u"inch"
+        d = 5.75u"inch"
+
+        # Edge circular column → converted to equivalent square
+        col = MutableColumn(1, :edge, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :circular)
+
+        Vu = 22u"kip"
+        Mub = 30u"kip*ft"
+
+        result = StructuralSizer.check_punching_for_column(col, Vu, Mub, d, h, fc; verbose=true)
+
+        @test result.ok == true || result.ok == false  # Just verify it doesn't error
+        @test result.ratio > 0.0
+        @test ustrip(u"inch", result.b0) > 0
+
+        println("\n=== Circular Edge Punching (equiv. square) ===")
+        println("b₀ = $(round(ustrip(u"inch", result.b0), digits=2)) in")
+        println("ratio = $(round(result.ratio, digits=3))")
+    end
+
+    @testset "check_punching_for_column — Circular Corner" begin
+        fc = 4000u"psi"
+        h = 7u"inch"
+        d = 5.75u"inch"
+
+        # Corner circular column → converted to equivalent square
+        col = MutableColumn(1, :corner, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :circular)
+
+        Vu = 12u"kip"
+        Mub = 15u"kip*ft"
+
+        result = StructuralSizer.check_punching_for_column(col, Vu, Mub, d, h, fc; verbose=true)
+
+        @test result.ratio > 0.0
+        @test ustrip(u"inch", result.b0) > 0
+
+        println("\n=== Circular Corner Punching (equiv. square) ===")
+        println("b₀ = $(round(ustrip(u"inch", result.b0), digits=2)) in")
+        println("ratio = $(round(result.ratio, digits=3))")
+    end
+
+    @testset "Circular vs Rectangular — Consistency" begin
+        fc = 4000u"psi"
+        h = 7u"inch"
+        d = 5.75u"inch"
+        Vu = 48u"kip"
+        Mub = 5u"kip*ft"
+
+        col_rect = MutableColumn(1, :interior, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :rectangular)
+        col_circ = MutableColumn(1, :interior, 1, 16u"inch", 16u"inch", MutableBase(9u"ft"), :circular)
+
+        r_rect = StructuralSizer.check_punching_for_column(col_rect, Vu, Mub, d, h, fc)
+        r_circ = StructuralSizer.check_punching_for_column(col_circ, Vu, Mub, d, h, fc)
+
+        # Both should produce valid results
+        @test r_rect.ratio > 0
+        @test r_circ.ratio > 0
+
+        # Circular has less perimeter → higher stress → higher ratio
+        @test r_circ.ratio > r_rect.ratio
+
+        # Difference should be moderate
+        @test r_circ.ratio / r_rect.ratio < 2.0
+
+        println("\n=== Circular vs Rectangular Comparison ===")
+        println("Rectangular: ratio = $(round(r_rect.ratio, digits=3)), b₀ = $(round(ustrip(u"inch", r_rect.b0), digits=1)) in")
+        println("Circular:    ratio = $(round(r_circ.ratio, digits=3)), b₀ = $(round(ustrip(u"inch", r_circ.b0), digits=1)) in")
     end
 end
 

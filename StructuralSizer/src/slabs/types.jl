@@ -68,41 +68,6 @@ struct DLT <: AbstractTimberFloor end
 struct NLT <: AbstractTimberFloor end
 struct MassTimberJoist <: AbstractTimberFloor end
 
-# =============================================================================
-# Symbol → Type conversion
-# =============================================================================
-
-"""
-    floor_system(sym::Symbol) -> AbstractFloorSystem
-
-Convert a floor type symbol to its corresponding type instance.
-
-# Examples
-```julia
-floor_system(:flat_plate)  # → FlatPlate()
-floor_system(:vault)       # → Vault()
-floor_system(:one_way)     # → OneWay()
-```
-"""
-function floor_system(sym::Symbol)::AbstractFloorSystem
-    sym == :flat_plate && return FlatPlate()
-    sym == :flat_slab && return FlatSlab()
-    sym == :one_way && return OneWay()
-    sym == :two_way && return TwoWay()
-    sym == :pt_banded && return PTBanded()
-    sym == :waffle && return Waffle()
-    sym == :hollow_core && return HollowCore()
-    sym == :vault && return Vault()
-    sym == :composite_deck && return CompositeDeck()
-    sym == :non_composite_deck && return NonCompositeDeck()
-    sym == :joist_roof_deck && return JoistRoofDeck()
-    sym == :clt && return CLT()
-    sym == :dlt && return DLT()
-    sym == :nlt && return NLT()
-    sym == :mass_timber_joist && return MassTimberJoist()
-    error("Unknown floor system symbol: $sym")
-end
-
 # --- Custom/Shaped ---
 struct ShapedSlab <: AbstractConcreteSlab
     sizing_fn::Function  # (span_x, span_y, load, material) → ShapedSlabResult
@@ -465,6 +430,9 @@ struct FlatPlatePanelResult{L<:Asap.Length, F<:Asap.Pressure, M<:Asap.Moment} <:
     volume_per_area::L        # Concrete volume per plan area [m]
     self_weight::F            # Self-weight pressure
     
+    # Loads
+    qu::F                     # Factored uniform load (1.2D + 1.6L)
+    
     # Geometry
     l1::L                     # Span in direction 1
     l2::L                     # Span in direction 2
@@ -485,33 +453,32 @@ struct FlatPlatePanelResult{L<:Asap.Length, F<:Asap.Pressure, M<:Asap.Moment} <:
     deflection_check::NamedTuple
 end
 
-# Convenience constructor from old format (h-based)
-# Accepts mixed length units and normalizes to meters internally
+# Convenience constructor from h-based inputs.
+# Accepts mixed length units and normalizes to coherent SI internally.
 function FlatPlatePanelResult(
     l1::Asap.Length, l2::Asap.Length, h::Asap.Length, M0::M,
+    qu::Asap.Pressure,
     cs_width::Asap.Length, cs_reinf::Vector{<:StripReinforcement},
     ms_width::Asap.Length, ms_reinf::Vector{<:StripReinforcement},
     punching::NamedTuple, deflection::NamedTuple;
-    γ_concrete = 150.0u"lbf/ft^3"  # Weight density (force/volume)
+    γ_concrete = NWC_4000.ρ * GRAVITY
 ) where {M<:Asap.Moment}
-    # Normalize all lengths to meters for consistent storage
     L = typeof(1.0u"m")
     
-    thickness_m = uconvert(u"m", h)
-    l1_m = uconvert(u"m", l1)
-    l2_m = uconvert(u"m", l2)
-    cs_width_m = uconvert(u"m", cs_width)
-    ms_width_m = uconvert(u"m", ms_width)
+    thickness_m  = uconvert(u"m", h)
+    l1_m         = uconvert(u"m", l1)
+    l2_m         = uconvert(u"m", l2)
+    cs_width_m   = uconvert(u"m", cs_width)
+    ms_width_m   = uconvert(u"m", ms_width)
+    M0_si        = uconvert(u"kN*m", M0)
+    qu_si        = uconvert(u"kPa", qu)
+
+    sw = uconvert(u"kPa", γ_concrete * h)
+    vol_per_area = thickness_m
     
-    # Compute self-weight: weight density × thickness = pressure
-    sw = uconvert(u"lbf/ft^2", γ_concrete * h)
-    vol_per_area = thickness_m  # m³/m² = m
-    
-    return FlatPlatePanelResult{L, typeof(sw), M}(
-        thickness_m,
-        vol_per_area,
-        sw,
-        l1_m, l2_m, M0,
+    return FlatPlatePanelResult{L, typeof(sw), typeof(M0_si)}(
+        thickness_m, vol_per_area, sw, qu_si,
+        l1_m, l2_m, M0_si,
         cs_width_m, cs_reinf,
         ms_width_m, ms_reinf,
         punching, deflection
@@ -522,10 +489,10 @@ end
 total_depth(r::FlatPlatePanelResult) = r.thickness
 
 """Quick check: does deflection pass?"""
-deflection_ok(r::FlatPlatePanelResult) = r.deflection_check.passes
+deflection_ok(r::FlatPlatePanelResult) = r.deflection_check.ok
 
 """Quick check: does punching shear pass?"""
-punching_ok(r::FlatPlatePanelResult) = r.punching_check.passes
+punching_ok(r::FlatPlatePanelResult) = r.punching_check.ok
 
 """Maximum punching utilization ratio across all columns."""
 max_punching_ratio(r::FlatPlatePanelResult) = r.punching_check.max_ratio
@@ -758,7 +725,7 @@ required_materials(::ShapedSlab) = ()  # user-defined
 # Symbol ↔ Type Mapping
 # =============================================================================
 
-const FLOOR_TYPE_MAP = Dict{Symbol, AbstractFloorSystem}(
+const floor_type_map = Dict{Symbol, AbstractFloorSystem}(
     :one_way => OneWay(),
     :two_way => TwoWay(),
     :flat_plate => FlatPlate(),
@@ -777,21 +744,21 @@ const FLOOR_TYPE_MAP = Dict{Symbol, AbstractFloorSystem}(
     :grade => Grade(),
 )
 
-const FLOOR_SYMBOL_MAP = Dict{Type, Symbol}(
-    typeof(v) => k for (k, v) in pairs(FLOOR_TYPE_MAP)
+const floor_symbol_map = Dict{Type, Symbol}(
+    typeof(v) => k for (k, v) in pairs(floor_type_map)
 )
 
 """Convert symbol to floor type for dispatch."""
 function floor_type(s::Symbol)
-    haskey(FLOOR_TYPE_MAP, s) || throw(KeyError("Unknown floor type: $s"))
-    return FLOOR_TYPE_MAP[s]
+    haskey(floor_type_map, s) || throw(KeyError("Unknown floor type: $s"))
+    return floor_type_map[s]
 end
 
 """Convert floor type to symbol for storage."""
 function floor_symbol(t::AbstractFloorSystem)
     T = typeof(t)
-    haskey(FLOOR_SYMBOL_MAP, T) || throw(KeyError("Unknown floor type: $T"))
-    return FLOOR_SYMBOL_MAP[T]
+    haskey(floor_symbol_map, T) || throw(KeyError("Unknown floor type: $T"))
+    return floor_symbol_map[T]
 end
 
 """Infer slab type from aspect ratio."""

@@ -73,7 +73,7 @@ end
 function precompute_capacities!(
     checker::NDSChecker,
     cache,
-    catalogue,
+    catalog,
     material::Timber,
     objective::AbstractObjective
 )

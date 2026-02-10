@@ -8,12 +8,12 @@
 # Key Generation
 # =============================================================================
 
-"""Round point coordinates for hash key (handles Unitful quantities)."""
+"""Round point coordinates for hash key (handles both Unitful and plain Float64)."""
 @inline function _coord_key(pt::Meshes.Point)::NTuple{3, Float64}
     c = Meshes.coords(pt)
-    x = c.x isa Unitful.Quantity ? ustrip(c.x) : Float64(c.x)
-    y = c.y isa Unitful.Quantity ? ustrip(c.y) : Float64(c.y)
-    z = c.z isa Unitful.Quantity ? ustrip(c.z) : Float64(c.z)
+    x = to_meters(c.x)
+    y = to_meters(c.y)
+    z = to_meters(c.z)
     (round(x, digits=COORD_DIGITS),
      round(y, digits=COORD_DIGITS),
      round(z, digits=COORD_DIGITS))

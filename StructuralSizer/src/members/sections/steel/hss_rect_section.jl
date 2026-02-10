@@ -4,11 +4,6 @@
 
 using Asap: Length, Area, Volume, SecondMomentOfArea
 
-const LengthQ_HSS = Length
-const AreaQ_HSS   = Area
-const ModQ_HSS    = Volume   # Section modulus has L³ dimension
-const InertQ_HSS  = SecondMomentOfArea  # Second moment of area L⁴
-
 """
     HSSRectSection <: AbstractRectHollowSection
 
@@ -35,13 +30,13 @@ mutable struct HSSRectSection <: AbstractRectHollowSection
     name::Union{String, Nothing}
     
     # Input geometry
-    H::LengthQ_HSS      # Outside height
-    B::LengthQ_HSS      # Outside width
-    t::LengthQ_HSS      # Design wall thickness
+    H::Length      # Outside height
+    B::Length      # Outside width
+    t::Length      # Design wall thickness
     
     # Derived geometry (AISC convention: clear dimensions use 3t)
-    h::LengthQ_HSS      # Clear web height = H - 3t
-    b::LengthQ_HSS      # Clear flange width = B - 3t
+    h::Length      # Clear web height = H - 3t
+    b::Length      # Clear flange width = B - 3t
     λ_f::Float64        # Flange slenderness b/t
     λ_w::Float64        # Web slenderness h/t
     H_t::Float64        # H/t ratio (for compact checks)
@@ -51,16 +46,16 @@ mutable struct HSSRectSection <: AbstractRectHollowSection
     material::Union{Metal, Nothing}
     
     # Section properties
-    A::AreaQ_HSS
-    Ix::InertQ_HSS
-    Iy::InertQ_HSS
-    Sx::ModQ_HSS
-    Sy::ModQ_HSS
-    Zx::ModQ_HSS
-    Zy::ModQ_HSS
-    J::InertQ_HSS
-    rx::LengthQ_HSS
-    ry::LengthQ_HSS
+    A::Area
+    Ix::SecondMomentOfArea
+    Iy::SecondMomentOfArea
+    Sx::SectionModulus
+    Sy::SectionModulus
+    Zx::SectionModulus
+    Zy::SectionModulus
+    J::SecondMomentOfArea
+    rx::Length
+    ry::Length
     
     # AISC preferred (bolded) section flag
     is_preferred::Bool
@@ -111,6 +106,10 @@ end
 section_area(s::HSSRectSection) = s.A
 section_depth(s::HSSRectSection) = s.H
 section_width(s::HSSRectSection) = s.B
+Ix(s::HSSRectSection) = s.Ix
+Iy(s::HSSRectSection) = s.Iy
+Sx(s::HSSRectSection) = s.Sx
+Sy(s::HSSRectSection) = s.Sy
 
 # --- Geometry computation ---
 

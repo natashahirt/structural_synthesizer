@@ -12,69 +12,36 @@
 #
 # εcu = 0.003 is the standard ACI 318-19 value for normal concrete.
 
+"""ACI 318-19 §19.2.2.1: Ec = 57000√f'c psi (normal weight concrete)."""
+_aci_Ec(fc′) = 57000 * sqrt(ustrip(u"psi", fc′)) * u"psi"
+
 # ==============================================================================
 # Standard OPC Concrete (by compressive strength in psi)
 # ==============================================================================
 
-# 3000 psi (~20 MPa) - lower strength for non-critical applications
-const NWC_3000 = Concrete(
-    26.0u"GPa",         # E (57000√3000 psi ≈ 26 GPa)
-    20.7u"MPa",         # fc′ (3000 psi ≈ 21 MPa)
-    2380.0u"kg/m^3",    # ρ
-    0.20,               # ν
-    0.130;              # ecc - slightly lower cement content
-    εcu = 0.003         # ACI ultimate strain
-)
+const NWC_3000 = let fc = 3000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.130)
+end
 
-# 4000 psi (~28 MPa) - standard for columns and beams
-const NWC_4000 = Concrete(
-    29.0u"GPa",         # E (57000√4000 psi ≈ 29 GPa)
-    27.6u"MPa",         # fc′ (4000 psi ≈ 28 MPa)
-    2380.0u"kg/m^3",    # ρ  (from ICE)
-    0.20,               # ν
-    0.138;              # ecc [kgCO₂e/kg] - ICE: OPC 300kg cement/m³
-    εcu = 0.003
-)
+const NWC_4000 = let fc = 4000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.138)
+end
 
-# 5000 psi (~35 MPa) - higher strength for columns
-const NWC_5000 = Concrete(
-    32.0u"GPa",         # E (57000√5000 psi ≈ 32 GPa)
-    34.5u"MPa",         # fc′ (5000 psi ≈ 34.5 MPa)
-    2385.0u"kg/m^3",    # ρ
-    0.20,               # ν
-    0.155;              # ecc - moderate
-    εcu = 0.003
-)
+const NWC_5000 = let fc = 5000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2385.0u"kg/m^3", 0.20, 0.155)
+end
 
-# 6000 psi (~41 MPa) - high strength for columns
-const NWC_6000 = Concrete(
-    35.0u"GPa",         # E (57000√6000 psi ≈ 35 GPa)
-    41.4u"MPa",         # fc′ (6000 psi ≈ 41 MPa)
-    2385.0u"kg/m^3",    # ρ  (from ICE)
-    0.20,               # ν
-    0.173;              # ecc [kgCO₂e/kg] - ICE: 40/50 MPa
-    εcu = 0.003
-)
+const NWC_6000 = let fc = 6000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2385.0u"kg/m^3", 0.20, 0.173)
+end
 
-# Low-carbon: 50% GGBS cement replacement
-const NWC_GGBS = Concrete(
-    29.0u"GPa",         # E
-    27.6u"MPa",         # fc′ (~28 MPa typical)
-    2380.0u"kg/m^3",    # ρ
-    0.20,               # ν
-    0.099;              # ecc [kgCO₂e/kg] - ICE: 50% GGBS
-    εcu = 0.003
-)
+const NWC_GGBS = let fc = 4000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.099)
+end
 
-# Low-carbon: 30% PFA cement replacement
-const NWC_PFA = Concrete(
-    29.0u"GPa",         # E
-    27.6u"MPa",         # fc′ (~28 MPa typical)
-    2380.0u"kg/m^3",    # ρ
-    0.20,               # ν
-    0.112;              # ecc [kgCO₂e/kg] - ICE: 30% PFA
-    εcu = 0.003
-)
+const NWC_PFA = let fc = 4000u"psi"
+    Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.112)
+end
 
 # ==============================================================================
 # Reinforced Concrete Material Presets
@@ -157,40 +124,36 @@ const Earthen_8000 = Concrete(
 )
 
 # ==============================================================================
-# Display Names
+# Registry
 # ==============================================================================
 
-"""Get short display name for a concrete material."""
-function material_name(mat::Concrete)
-    # Standard concrete
-    mat === NWC_3000 && return "NWC_3000"
-    mat === NWC_4000 && return "NWC_4000"
-    mat === NWC_5000 && return "NWC_5000"
-    mat === NWC_6000 && return "NWC_6000"
-    mat === NWC_GGBS && return "NWC_GGBS"
-    mat === NWC_PFA && return "NWC_PFA"
-    # Earthen materials
-    mat === Earthen_500 && return "Earthen_500"
-    mat === Earthen_1000 && return "Earthen_1000"
-    mat === Earthen_2000 && return "Earthen_2000"
-    mat === Earthen_4000 && return "Earthen_4000"
-    mat === Earthen_8000 && return "Earthen_8000"
-    # Fallback: show fc' in psi
-    fc_psi = round(ustrip(psi, mat.fc′), digits=0)
-    return "Concrete ($(Int(fc_psi)) psi)"
+register_material!(NWC_3000, "NWC_3000")
+register_material!(NWC_4000, "NWC_4000")
+register_material!(NWC_5000, "NWC_5000")
+register_material!(NWC_6000, "NWC_6000")
+register_material!(NWC_GGBS, "NWC_GGBS")
+register_material!(NWC_PFA, "NWC_PFA")
+register_material!(Earthen_500, "Earthen_500")
+register_material!(Earthen_1000, "Earthen_1000")
+register_material!(Earthen_2000, "Earthen_2000")
+register_material!(Earthen_4000, "Earthen_4000")
+register_material!(Earthen_8000, "Earthen_8000")
+register_material!(RC_3000_60, "RC_3000_60")
+register_material!(RC_4000_60, "RC_4000_60")
+register_material!(RC_5000_60, "RC_5000_60")
+register_material!(RC_6000_60, "RC_6000_60")
+register_material!(RC_5000_75, "RC_5000_75")
+register_material!(RC_6000_75, "RC_6000_75")
+register_material!(RC_GGBS_60, "RC_GGBS_60")
+
+# Fallback display names for unregistered materials
+function _fallback_material_name(mat::Concrete)
+    fc_psi = round(Int, ustrip(psi, mat.fc′))
+    "Concrete ($(fc_psi) psi)"
 end
 
-"""Get short display name for a reinforced concrete material."""
-function material_name(mat::ReinforcedConcreteMaterial)
-    mat === RC_3000_60 && return "RC_3000_60"
-    mat === RC_4000_60 && return "RC_4000_60"
-    mat === RC_5000_60 && return "RC_5000_60"
-    mat === RC_6000_60 && return "RC_6000_60"
-    mat === RC_5000_75 && return "RC_5000_75"
-    mat === RC_6000_75 && return "RC_6000_75"
-    mat === RC_GGBS_60 && return "RC_GGBS_60"
-    # Fallback: use ksi unit from Asap
-    conc_name = material_name(mat.concrete)
-    fy_ksi_val = round(Int, ustrip(ksi, mat.rebar.Fy))
-    return "$(conc_name) + Gr$(fy_ksi_val)"
+function _fallback_material_name(mat::ReinforcedConcreteMaterial)
+    conc = material_name(mat.concrete)
+    fy = round(Int, ustrip(ksi, mat.rebar.Fy))
+    "$(conc) + Gr$(fy)"
 end

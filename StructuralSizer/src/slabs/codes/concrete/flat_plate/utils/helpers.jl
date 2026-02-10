@@ -12,6 +12,25 @@
 # =============================================================================
 
 # =============================================================================
+# Column Accessor Functions
+# =============================================================================
+# These provide a stable interface for column properties that may or may not
+# exist on the input object (e.g., NamedTuple from standalone tests vs. a full
+# Column struct from StructuralSynthesizer).
+
+"""Column cross-section shape (`:rectangular` or `:circular`)."""
+col_shape(col)::Symbol = hasproperty(col, :shape) ? col.shape : :rectangular
+
+"""Skeleton vertex index for the column (0 = not available)."""
+col_vertex_idx(col)::Int = hasproperty(col, :vertex_idx) ? col.vertex_idx : 0
+
+"""Story index for the column (default 1)."""
+col_story(col)::Int = hasproperty(col, :story) ? col.story : 1
+
+"""Boundary edge directions for the column (empty = interior)."""
+col_boundary_edge_dirs(col) = hasproperty(col, :boundary_edge_dirs) ? col.boundary_edge_dirs : NTuple{2, Float64}[]
+
+# =============================================================================
 # Analysis Method Utilities
 # =============================================================================
 
@@ -20,6 +39,9 @@ method_name(method::DDM) = method.variant == :simplified ? "MDDM (Simplified)" :
 
 """Display name for EFM analysis method."""
 method_name(method::EFM) = "EFM (ACI 8.11, $(method.solver == :asap ? "ASAP FEM" : "Hardy Cross"))"
+
+"""Display name for FEA analysis method."""
+method_name(method::FEA) = "FEA (Shell + Springs, edge=$(method.target_edge))"
 
 """
     round_up_thickness(h, increment) -> Length
@@ -77,10 +99,10 @@ Build a FrameLine from columns and tributary width for EFM analysis.
 - `direction`: Frame direction (:x or :y)
 """
 function build_frame_line(struc, columns, l2, direction::Symbol=:x)
-    # Position accessor: gets (x, y) from skeleton vertex
+    vc = struc.skeleton.geometry.vertex_coords
+    # Position accessor: reads from cached coordinate matrix
     function get_position(col)
-        coords = Meshes.coords(struc.skeleton.vertices[col.vertex_idx])
-        (ustrip(u"m", coords.x), ustrip(u"m", coords.y))
+        (vc[col.vertex_idx, 1], vc[col.vertex_idx, 2])
     end
     
     # Width accessor: returns column width in frame direction
@@ -219,14 +241,14 @@ end
 
 Enforce that DDM is valid for the given geometry. Throws if not applicable.
 """
-function enforce_method_applicability(method::DDM, struc, slab, columns; verbose::Bool=false)
+function enforce_method_applicability(method::DDM, struc, slab, columns; verbose::Bool=false, ρ_concrete::Density = NWC_4000.ρ)
     if verbose
         @debug "───────────────────────────────────────────────────────────────────"
         @debug "CHECKING DDM APPLICABILITY (ACI 318-19 §8.10.2)"
         @debug "───────────────────────────────────────────────────────────────────"
     end
     
-    result = check_ddm_applicability(struc, slab, columns; throw_on_failure=true)
+    result = check_ddm_applicability(struc, slab, columns; throw_on_failure=true, ρ_concrete=ρ_concrete)
     
     if verbose && result.ok
         @debug "DDM applicability check: ✓ PASSED"
@@ -238,7 +260,7 @@ end
 
 Enforce that EFM is valid for the given geometry. Throws if not applicable.
 """
-function enforce_method_applicability(method::EFM, struc, slab, columns; verbose::Bool=false)
+function enforce_method_applicability(method::EFM, struc, slab, columns; verbose::Bool=false, kwargs...)
     if verbose
         @debug "───────────────────────────────────────────────────────────────────"
         @debug "CHECKING EFM APPLICABILITY (ACI 318-19 §8.11)"
@@ -252,11 +274,21 @@ function enforce_method_applicability(method::EFM, struc, slab, columns; verbose
     end
 end
 
-# =============================================================================
-# Exports
-# =============================================================================
+"""
+    enforce_method_applicability(method::FEA, struc, slab, columns; verbose=false)
 
-export method_name, round_up_thickness
-export find_supporting_columns, build_frame_line, build_frame_lines_both_directions
-export compute_column_axial_loads, update_asap_column_sections!
-export check_pattern_loading_requirement, enforce_method_applicability
+FEA has no geometric restrictions — always applicable.
+"""
+function enforce_method_applicability(method::FEA, struc, slab, columns; verbose::Bool=false, kwargs...)
+    n_cols = length(columns)
+    if n_cols < 2
+        error("FEA requires at least 2 supporting columns; found $n_cols")
+    end
+    if verbose
+        @debug "───────────────────────────────────────────────────────────────────"
+        @debug "FEA APPLICABILITY: ✓ No geometric restrictions"
+        @debug "  $(n_cols) columns, target edge = $(method.target_edge)"
+        @debug "───────────────────────────────────────────────────────────────────"
+    end
+end
+

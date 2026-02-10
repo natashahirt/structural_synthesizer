@@ -219,6 +219,50 @@ function to_asap_section(sec::RCBeamSection, mat::Concrete; I_factor::Real=0.35)
     Asap.Section(A*u"m^2", E, G, Ix*u"m^4", Iy*u"m^4", J*u"m^4", ρ)
 end
 
+"""
+    to_asap_section(sec::RCTBeamSection, mat::Concrete; I_factor=0.35)
+
+Convert RC T-beam section to Asap.Section for FEA stiffness.
+Uses T-shaped gross section properties with ACI 318-14 §6.6.3.1.1 reduction.
+"""
+function to_asap_section(sec::RCTBeamSection, mat::Concrete; I_factor::Real=0.35)
+    bw = ustrip(u"m", sec.bw)
+    bf = ustrip(u"m", sec.bf)
+    hf = ustrip(u"m", sec.hf)
+    h  = ustrip(u"m", sec.h)
+    hw = h - hf  # web height below flange
+
+    # Gross T-shape area
+    Af = bf * hf
+    Aw = bw * hw
+    A  = Af + Aw
+
+    # Centroid from top
+    ȳ = (Af * hf / 2 + Aw * (hf + hw / 2)) / A
+
+    # Strong-axis Ig (parallel-axis theorem)
+    Ig_f = bf * hf^3 / 12 + Af * (ȳ - hf / 2)^2
+    Ig_w = bw * hw^3 / 12 + Aw * (hf + hw / 2 - ȳ)^2
+    Ig_x = Ig_f + Ig_w
+
+    # Weak-axis Ig (both rectangles centered on web)
+    Ig_y = hf * bf^3 / 12 + hw * bw^3 / 12
+
+    # Effective (reduced for cracking)
+    Ix = I_factor * Ig_x
+    Iy = I_factor * Ig_y
+
+    # Torsional constant (sum-of-rectangles approximation)
+    J = I_factor * (bf * hf^3 + hw * bw^3) / 3
+
+    E = mat.E
+    ν = mat.ν
+    G = E / (2 * (1 + ν))
+    ρ = mat.ρ
+
+    Asap.Section(A*u"m^2", E, G, Ix*u"m^4", Iy*u"m^4", J*u"m^4", ρ)
+end
+
 # -----------------------------------------------------------------------------
 # Timber sections
 # -----------------------------------------------------------------------------

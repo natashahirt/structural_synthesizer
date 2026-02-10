@@ -6,17 +6,7 @@
 module Constants
 
 using Unitful
-using Asap: Torque, Force, Length, Pressure, Area
-
-# =============================================================================
-# Embodied Carbon Coefficients (kgCO2e/kg)
-# =============================================================================
-
-const ECC_STEEL = 1.22
-const ECC_CONCRETE = 0.152
-const ECC_REBAR = 0.854
-
-export ECC_STEEL, ECC_CONCRETE, ECC_REBAR
+using Asap: Torque, Force, Length, Pressure, Area, psf
 
 # =============================================================================
 # Solver/Optimization Constants
@@ -27,30 +17,68 @@ const BIG_M = 1e9
 export BIG_M
 
 # =============================================================================
-# Load Factors (ASCE 7 Strength)
+# ACI 318-19 Code Constants
 # =============================================================================
-# Note: For more flexible load combinations, see StructuralSynthesizer.LoadCombination
 
-const DL_FACTOR = 1.2
-const LL_FACTOR = 1.6
+# §24.3.2 — Crack control stress limit (psi)
+const ACI_CRACK_CONTROL_FS_PSI = 40000
 
-export DL_FACTOR, LL_FACTOR
+export ACI_CRACK_CONTROL_FS_PSI
 
 # =============================================================================
-# Standard Building Loads
+# PCA Notes on ACI 318-11 — Stiffness Factors
 # =============================================================================
-# Conversion: 1 psf = 0.04788025898 kN/m²
+# Used in Equivalent Frame Method (EFM) for flat plate analysis.
 
-const _PSF_TO_KNM2 = 0.04788025898
+# Table A1: Slab-beam stiffness factor for c/l ≈ 0.08–0.10 (typical flat plate)
+const PCA_K_SLAB = 4.127
+# Table A7: Column stiffness factor for ta/tb = 1, H/Hc ≈ 1.07
+const PCA_K_COL = 4.74
+# Table A1: Fixed-end moment coefficient
+const PCA_M_FACTOR = 0.08429
+# Table A1: Carry-over factor (non-prismatic slab-beam)
+const PCA_COF = 0.507
 
-const LL_GRADE  = (100.0 * _PSF_TO_KNM2)u"kN/m^2"  # 100 psf
-const LL_FLOOR  = (80.0  * _PSF_TO_KNM2)u"kN/m^2"  #  80 psf
-const LL_ROOF   = (20.0  * _PSF_TO_KNM2)u"kN/m^2"  #  20 psf
-const SDL_FLOOR = (15.0  * _PSF_TO_KNM2)u"kN/m^2"  #  15 psf
-const SDL_ROOF  = (15.0  * _PSF_TO_KNM2)u"kN/m^2"  #  15 psf
-const SDL_WALL  = (10.0  * _PSF_TO_KNM2)u"kN/m^2"  #  10 psf
+export PCA_K_SLAB, PCA_K_COL, PCA_M_FACTOR, PCA_COF
 
-export LL_GRADE, LL_FLOOR, LL_ROOF, SDL_FLOOR, SDL_ROOF, SDL_WALL
+# =============================================================================
+# PCA Notes on ACI 318-11 — Non-Prismatic Factors (Flat Slab)
+# =============================================================================
+# For flat slabs with drop panels, the non-prismatic section behaviour
+# (varying k, COF, FEM) is handled by the ASAP elastic solver, which models
+# actual varying I values directly.  Hardy Cross moment distribution is NOT
+# used for flat slabs.
+#
+# The constants below are retained ONLY for validation / unit-test purposes.
+# They are NOT used in production analysis.  See efm.jl for the ASAP-only
+# EFM path for flat slabs.
+#
+# Reference values from StructurePoint DE-Two-Way-Flat-Slab (ACI 318-14):
+#   c/l = 20/(30×12) = 0.056, a/l ≈ 5/30 = 0.167
+# =============================================================================
+
+# ── Slab-beam (PCA Tables A2, A3, A5) ──
+const PCA_K_SLAB_NP     = 5.587   # stiffness factor
+const PCA_COF_NP        = 0.578   # carryover factor
+const PCA_M_NP_UNIFORM  = 0.0915  # FEM coefficient, uniform load
+const PCA_M_NP_NEAR     = 0.0163  # FEM coefficient, near-end drop patch
+const PCA_M_NP_FAR      = 0.002   # FEM coefficient, far-end drop patch
+
+# ── Column (PCA Table A7) ──
+const PCA_K_COL_NP_BOTTOM   = 5.318  # bottom column (ta/tb ≈ 1.85)
+const PCA_K_COL_NP_TOP      = 4.879  # top column (ta/tb ≈ 0.54)
+const PCA_COF_COL_NP_BOTTOM = 0.545
+const PCA_COF_COL_NP_TOP    = 0.595
+
+export PCA_K_SLAB_NP, PCA_COF_NP
+export PCA_M_NP_UNIFORM, PCA_M_NP_NEAR, PCA_M_NP_FAR
+export PCA_K_COL_NP_BOTTOM, PCA_K_COL_NP_TOP
+export PCA_COF_COL_NP_BOTTOM, PCA_COF_COL_NP_TOP
+
+# =============================================================================
+# Load factors: use LoadCombination from loads/combinations.jl
+# (DL_FACTOR / LL_FACTOR removed — replaced by default_combo.D / .L)
+# =============================================================================
 
 # =============================================================================
 # Standard Units (for consistent internal representation)
@@ -64,31 +92,5 @@ const STANDARD_PRESSURE = u"kN/m^2"
 export STANDARD_LENGTH, STANDARD_AREA, STANDARD_FORCE, STANDARD_PRESSURE
 
 # =============================================================================
-# Unit Conversion Pass-Through for Real Types
-# =============================================================================
-# Asap already provides pass-through methods for Real types (to_kip, to_newtons, etc.)
-# These are imported above via the @reexport in StructuralSizer.jl main module.
-# No need to redefine them here - just ensure they're accessible.
-
-# =============================================================================
 # Vector Helpers
-# =============================================================================
-
-"""
-    zeros_like(v::Vector) -> Vector
-
-Create zero vector matching the units of the input vector.
-If input has Unitful quantities, output has same units.
-If input is plain numbers, output is plain zeros.
-"""
-function zeros_like(v::Vector)
-    if !isempty(v) && v[1] isa Unitful.Quantity
-        return zeros(length(v)) .* unit(v[1])
-    else
-        return zeros(length(v))
-    end
-end
-
-export zeros_like
-
 end # module

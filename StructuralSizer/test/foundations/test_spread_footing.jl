@@ -5,7 +5,7 @@
     
     @testset "Basic sizing (500 kN)" begin
         demand = FoundationDemand(1; Pu=500.0u"kN")
-        result = design_spread_footing(demand, MEDIUM_SAND, NWC_4000, Rebar_60; pier_width=0.3u"m")
+        result = design_spread_footing(demand, medium_sand, NWC_4000, Rebar_60; pier_width=0.3u"m")
         
         # Check dimensions are reasonable
         @test 2.0u"m" < result.B < 2.5u"m"  # Width ~2.24m
@@ -26,7 +26,7 @@
     
     @testset "Heavy load (1500 kN)" begin
         demand = FoundationDemand(1; Pu=1500.0u"kN")
-        result = design_spread_footing(demand, MEDIUM_SAND, NWC_4000, Rebar_60; pier_width=0.4u"m")
+        result = design_spread_footing(demand, medium_sand, NWC_4000, Rebar_60; pier_width=0.4u"m")
         
         # Larger load → larger footing
         @test 3.5u"m" < result.B < 4.5u"m"  # Width ~3.87m
@@ -37,15 +37,15 @@
     @testset "Soil conditions affect sizing" begin
         demand = FoundationDemand(1; Pu=800.0u"kN")
         
-        r_loose = design_spread_footing(demand, LOOSE_SAND, NWC_4000, Rebar_60; pier_width=0.35u"m")
-        r_medium = design_spread_footing(demand, MEDIUM_SAND, NWC_4000, Rebar_60; pier_width=0.35u"m")
-        r_dense = design_spread_footing(demand, DENSE_SAND, NWC_4000, Rebar_60; pier_width=0.35u"m")
-        r_clay = design_spread_footing(demand, STIFF_CLAY, NWC_4000, Rebar_60; pier_width=0.35u"m")
+        r_loose = design_spread_footing(demand, loose_sand, NWC_4000, Rebar_60; pier_width=0.35u"m")
+        r_medium = design_spread_footing(demand, medium_sand, NWC_4000, Rebar_60; pier_width=0.35u"m")
+        r_dense = design_spread_footing(demand, dense_sand, NWC_4000, Rebar_60; pier_width=0.35u"m")
+        r_clay = design_spread_footing(demand, stiff_clay, NWC_4000, Rebar_60; pier_width=0.35u"m")
         
         # Weaker soil → larger footing
         @test r_loose.B > r_medium.B > r_dense.B
         
-        # Same bearing capacity → same size (MEDIUM_SAND and STIFF_CLAY both qa=150 kPa)
+        # Same bearing capacity → same size (medium_sand and stiff_clay both qa=150 kPa)
         @test r_medium.B ≈ r_clay.B rtol=0.01
         
         # Concrete volume scales with footing size
@@ -54,13 +54,13 @@
     
     @testset "Soil presets have correct properties" begin
         # Bearing capacities
-        @test LOOSE_SAND.qa == 75.0u"kPa"
-        @test MEDIUM_SAND.qa == 150.0u"kPa"
-        @test DENSE_SAND.qa == 300.0u"kPa"
-        @test STIFF_CLAY.qa == 150.0u"kPa"
+        @test loose_sand.qa == 75.0u"kPa"
+        @test medium_sand.qa == 150.0u"kPa"
+        @test dense_sand.qa == 300.0u"kPa"
+        @test stiff_clay.qa == 150.0u"kPa"
         
         # All soils have required properties
-        for soil in [LOOSE_SAND, MEDIUM_SAND, DENSE_SAND, SOFT_CLAY, STIFF_CLAY, HARD_CLAY]
+        for soil in [loose_sand, medium_sand, dense_sand, soft_clay, stiff_clay, hard_clay]
             @test soil.qa > 0.0u"kPa"
             @test soil.γ > 0.0u"kN/m^3"
             @test soil.Es > 0.0u"MPa"
@@ -69,7 +69,7 @@
     
     @testset "Result type interface" begin
         demand = FoundationDemand(1; Pu=600.0u"kN")
-        result = design_spread_footing(demand, MEDIUM_SAND, NWC_4000, Rebar_60)
+        result = design_spread_footing(demand, medium_sand, NWC_4000, Rebar_60)
         
         # Interface functions work
         @test concrete_volume(result) == result.concrete_volume
@@ -84,7 +84,7 @@
     @testset "Zero/minimal load" begin
         # Minimal load should still produce valid footing (min size governed by pier + projection)
         demand = FoundationDemand(1; Pu=10.0u"kN")
-        result = design_spread_footing(demand, MEDIUM_SAND, NWC_4000, Rebar_60; pier_width=0.3u"m")
+        result = design_spread_footing(demand, medium_sand, NWC_4000, Rebar_60; pier_width=0.3u"m")
         
         # Should be at least pier + 2×0.15m projection
         @test result.B >= 0.6u"m"

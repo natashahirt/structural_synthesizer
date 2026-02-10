@@ -1,46 +1,128 @@
 # Main test runner for StructuralSizer
-# Run with: julia --project=. test/runtests.jl
+# Run with: julia --project=../.. runtests.jl  (from test/ directory)
+#
+# Not included here (standalone scripts, not @testset):
+#   - flat_plate_full_pipeline_validation.jl  (cross-project, uses StructuralSynthesizer)
+#   - test_rebar_volume.jl                    (cross-project, uses StructuralSynthesizer)
+#   - concrete_column/test_catalog_gen.jl     (smoke test, println-based)
+#   - concrete_column/test_biaxial_fix.jl     (debug script, println-based)
+#   - slabs/test_ddm_multispan.jl             (assert-based, not @testset)
 
 using Test
 using Unitful
 using StructuralSizer
-# Units are re-exported from StructuralSizer (via Asap)
+using Asap  # custom units (kip, ksi, ksf, psf, etc.)
 
 @testset "StructuralSizer Tests" begin
-    # Nebyu's vault tests (based on MATLAB output)
-    include("haile_vault/test_vault.jl")
-    # Steel beam tests (W section)
-    include("steel_member/test_aisc_beam_examples.jl")
-    include("steel_member/test_handcalc_beam.jl")
-    # Steel column tests (W section)
-    include("steel_member/test_aisc_column_examples.jl")
-    # Steel HSS tests
-    include("steel_member/test_hss_sections.jl")
-    include("steel_member/test_hss_e7.jl")
-    include("steel_member/test_hss_round_shear.jl")
-    include("steel_member/test_hss_torsion.jl")
-    # Steel slenderness tests
-    include("steel_member/test_qa_slender_web.jl")
-    # AISC companion manual tests for steel elements
-    include("steel_member/test_aisc_companion_manual_1.jl")
-    include("steel_member/test_aisc_360_reference.jl")
-    # Moment amplification (B1/B2)
-    include("steel_member/test_b1_b2_amplification.jl")
-    include("steel_member/test_b1_checker_integration.jl")
-    # ACI strip geometry tests (generic tributary is now in Asap)
-    include("slabs/test_strip_geometry.jl")
-    # Foundation tests
-    include("foundations/test_spread_footing.jl")
-    # Concrete column tests (rectangular)
-    include("concrete_column/test_data/tied_column_16x16.jl")
-    include("concrete_column/test_rc_column_section.jl")
-    include("concrete_column/test_column_pm.jl")
-    # Concrete column tests (circular)
-    include("concrete_column/test_circular_column_pm.jl")
-    # RC column catalog generation
-    include("concrete_column/test_catalog_gen.jl")
-    
-    # Full column optimization tests
-    include("optimize/test_column_optimization.jl")
-    include("optimize/test_column_full.jl")
+
+    # ─── Vault ───────────────────────────────────────────────────────────
+    @testset "Vault" begin
+        include("haile_vault/test_vault.jl")
+    end
+
+    # ─── Steel Members ───────────────────────────────────────────────────
+    @testset "Steel Members" begin
+        # W-section beams
+        include("steel_member/test_aisc_beam_examples.jl")
+        include("steel_member/test_handcalc_beam.jl")
+        # HSS sections
+        include("steel_member/test_hss_sections.jl")
+        include("steel_member/test_hss_e7.jl")
+        include("steel_member/test_hss_round_shear.jl")
+        include("steel_member/test_hss_torsion.jl")
+        # W-section torsion
+        include("steel_member/test_w_torsion.jl")
+        # Slenderness / local buckling
+        include("steel_member/test_qa_slender_web.jl")
+        # AISC reference examples
+        include("steel_member/test_aisc_companion_manual_1.jl")
+        include("steel_member/test_aisc_360_reference.jl")
+        # Moment amplification (B1/B2)
+        include("steel_member/test_b1_b2_amplification.jl")
+        include("steel_member/test_b1_checker_integration.jl")
+    end
+
+    # ─── Concrete Beams ──────────────────────────────────────────────────
+    @testset "Concrete Beams" begin
+        include("concrete_beam/test_beam_section.jl")
+        include("concrete_beam/test_beam_flexure.jl")
+        include("concrete_beam/test_beam_shear.jl")
+        include("concrete_beam/test_beam_design.jl")
+        include("concrete_beam/test_beam_deflection.jl")
+        include("concrete_beam/test_deflection.jl")
+        include("concrete_beam/test_cantilever_beam.jl")
+        include("concrete_beam/test_doubly_reinforced.jl")
+        include("concrete_beam/test_rc_beam_reference.jl")
+        # Torsion
+        include("concrete_beam/test_torsion.jl")
+        # T-beams
+        include("concrete_beam/test_tbeam.jl")
+        include("concrete_beam/test_tbeam_optimization.jl")
+        include("concrete_beam/test_tbeam_tributary_flange.jl")
+    end
+
+    # ─── Concrete Columns ────────────────────────────────────────────────
+    @testset "Concrete Columns" begin
+        include("concrete_column/test_rc_column_section.jl")
+        include("concrete_column/test_column_pm.jl")
+        include("concrete_column/test_circular_column_pm.jl")
+        include("concrete_column/test_biaxial.jl")
+        include("concrete_column/test_slenderness.jl")
+    end
+
+    # ─── Slabs ───────────────────────────────────────────────────────────
+    @testset "Slabs" begin
+        # Geometry & tributary
+        include("slabs/test_strip_geometry.jl")
+        include("slabs/test_spanning_behavior.jl")
+        include("slabs/test_tributary_workflow.jl")
+        # One-way
+        include("slabs/test_one_way_slab_reference.jl")
+        # Flat plate
+        include("slabs/test_flat_plate.jl")
+        include("slabs/test_flat_plate_methods.jl")
+        include("slabs/test_size_flat_plate.jl")
+        include("slabs/test_method_comparison.jl")
+        # DDM / EFM analysis
+        include("slabs/test_frameline_ddm.jl")
+        include("slabs/test_hardy_cross_larger.jl")
+        include("slabs/test_efm_stiffness.jl")
+        include("slabs/test_efm_pipeline.jl")
+        include("slabs/test_raw_asap_frame.jl")
+        # Flat slab (drop panels)
+        include("slabs/test_flat_slab.jl")
+        # Pipeline provisions (edge beam, ρ', integrity, transfer, face-of-support)
+        include("slabs/test_pipeline_provisions.jl")
+        # Punching / shear
+        include("slabs/test_shear_transfer.jl")
+        include("slabs/test_shear_studs.jl")
+        # Optimizer
+        include("slabs/test_flat_plate_optimizer.jl")
+        # FEA flat plate
+        include("test_fea_flat_plate.jl")
+    end
+
+    # ─── Foundations ──────────────────────────────────────────────────────
+    @testset "Foundations" begin
+        include("foundations/test_spread_footing.jl")
+        include("foundations/test_spread_aci.jl")
+        include("foundations/test_strip_aci.jl")
+        include("foundations/test_mat_aci.jl")
+        include("foundations/test_types_load.jl")
+    end
+
+    # ─── Optimization ────────────────────────────────────────────────────
+    @testset "Optimization" begin
+        include("optimize/test_column_optimization.jl")
+        include("optimize/test_column_full.jl")
+        include("optimize/test_column_nlp.jl")
+        include("optimize/test_hss_column_nlp.jl")
+        include("optimize/test_w_column_nlp.jl")
+    end
+
+    # ─── VCmaster Reference ──────────────────────────────────────────────
+    @testset "VCmaster Reference" begin
+        include("test_vcmaster_reference.jl")
+    end
+
 end

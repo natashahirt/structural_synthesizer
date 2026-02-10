@@ -95,8 +95,8 @@ function _size_span_floor(::FlatPlate, span::L, sdl::F, live::F;
     # Self-weight (mass density × thickness × gravity → pressure)
     sw = slab_self_weight(h, material.ρ)
     
-    # Factored load
-    qu = 1.2 * (sw + sdl) + 1.6 * live
+    # Factored load (ACI strength: 1.2D + 1.6L)
+    qu = factored_pressure(default_combo, sw + sdl, live)
     
     # Static moment M0
     M0 = total_static_moment(qu, l2_val, ln)
@@ -105,15 +105,22 @@ function _size_span_floor(::FlatPlate, span::L, sdl::F, live::F;
     l2_l1 = l2_val / span  # dimensionless ratio
     span_type = discontinuous ? :end_span : :interior_span
     
+    # Compute edge beam βt if applicable
+    _βt = 0.0
+    if !isnothing(opts.edge_beam_βt)
+        _βt = opts.edge_beam_βt
+    elseif opts.has_edge_beam
+        _βt = edge_beam_βt(h, c1_val, c2_val, l2_val)
+    end
+    
     moments = if opts.analysis_method == :mddm
         distribute_moments_mddm(M0, span_type)
     elseif opts.analysis_method == :ddm
-        distribute_moments_aci(M0, span_type, l2_l1; edge_beam=opts.has_edge_beam)
-    elseif opts.analysis_method == :efm
-        # For EFM, we'd need the full frame analysis
-        # For now, fall back to DDM for thickness sizing
-        # (EFM is used when full panel design is needed)
-        distribute_moments_aci(M0, span_type, l2_l1; edge_beam=opts.has_edge_beam)
+        distribute_moments_aci(M0, span_type, l2_l1; edge_beam=opts.has_edge_beam, βt=_βt)
+    elseif opts.analysis_method in (:efm, :efm_hc, :efm_asap, :fea)
+        # EFM/FEA need full panel analysis for actual moment distribution.
+        # For thickness sizing, fall back to DDM coefficients.
+        distribute_moments_aci(M0, span_type, l2_l1; edge_beam=opts.has_edge_beam, βt=_βt)
     else
         error("Unknown analysis method: $(opts.analysis_method)")
     end
@@ -139,7 +146,7 @@ function _size_span_floor(::FlatPlate, span::L, sdl::F, live::F;
         check = check_punching_shear(Vu, Vc)
         
         # If punching fails, increase thickness
-        if !check.passes
+        if !check.ok
             # Iterate thickness until punching passes
             h_in = ustrip(u"inch", h)
             for _ in 1:5
@@ -151,14 +158,14 @@ function _size_span_floor(::FlatPlate, span::L, sdl::F, live::F;
                 
                 # Recalculate load with new self-weight
                 sw = slab_self_weight(h, material.ρ)
-                qu = 1.2 * (sw + sdl) + 1.6 * live
+                qu = factored_pressure(default_combo, sw + sdl, live)
                 Vu = punching_demand(qu, At, c1_val, c2_val, d)
                 
                 check = check_punching_shear(Vu, Vc)
-                check.passes && break
+                check.ok && break
             end
             
-            if !check.passes
+            if !check.ok
                 @warn "Punching shear check fails at h=$(h). Consider drop panels or shear reinforcement."
             end
         end
@@ -175,7 +182,7 @@ function _size_span_floor(::FlatPlate, span::L, sdl::F, live::F;
     h_m = uconvert(u"m", h)
     vol_per_area = h_m  # m³/m² = m
     
-    return CIPSlabResult(h_m, vol_per_area, sw_final)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw_final))
 end
 
 """
@@ -194,42 +201,26 @@ function _size_span_floor(::FlatSlab, span::L, sdl::F, live::F;
                     c2::Union{Nothing, Length} = nothing,
                     position::Symbol = :interior) where {L<:Length, F<:Pressure}
     
-    # Flat slab has slightly different thickness rules (drop panels help)
-    # For now, use flat plate rules with a 10% reduction for drop panels
-    fp = options.flat_plate
-    opts = FloorOptions(
-        flat_plate = FlatPlateOptions(
-            material = fp.material,
-            cover = fp.cover,
-            bar_size = fp.bar_size,
-            has_edge_beam = fp.has_edge_beam,
-            has_drop_panels = true,
-            analysis_method = fp.analysis_method,
-            grouping = fp.grouping,
-            deflection_limit = fp.deflection_limit
-        ),
-        one_way = options.one_way,
-        vault = options.vault,
-        composite = options.composite,
-        timber = options.timber,
-        tributary_axis = options.tributary_axis
-    )
+    # Flat slab minimum thickness per ACI 318-14 Table 8.3.1.1 (with drop panels)
+    # h_min = ln/33 (exterior) or ln/36 (interior)
+    fp = options.flat_slab
     
-    result = _size_span_floor(FlatPlate(), span, sdl, live;
-                        material=material, options=opts, l2=l2, c1=c1, c2=c2, position=position)
+    # Estimate clear span from center-to-center span
+    c = isnothing(c1) ? estimate_column_size_from_span(span; ratio=15.0) : c1
+    ln = span - c
     
-    # ACI allows 10% reduction in thickness with drop panels meeting requirements
-    # ACI 8.3.1.1: For slabs with drop panels, h_min = ln/36 (interior) or ln/33 (exterior)
-    # vs ln/33 and ln/30 for flat plates
-    h_reduced = result.thickness * 0.9
-    h = max(ceil(ustrip(u"inch", h_reduced) * 2) / 2, 5.0) * u"inch"
+    discontinuous = (position in (:exterior, :edge, :corner))
+    h_min = min_thickness_flat_slab(ln; discontinuous_edge=discontinuous)
     
-    # Recalculate self-weight
+    # Round up to nearest 0.5 inch
+    h = max(ceil(ustrip(u"inch", h_min) * 2) / 2, 4.0) * u"inch"
+    
+    # Self-weight (slab only — drop panel weight is localized)
     sw = slab_self_weight(h, material.ρ)
     h_m = uconvert(u"m", h)
     vol_per_area = h_m
     
-    return CIPSlabResult(h_m, vol_per_area, sw)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw))
 end
 
 """
@@ -272,7 +263,7 @@ function _size_span_floor(::TwoWay, span::L, sdl::F, live::F;
     h_m = uconvert(u"m", h)
     vol_per_area = h_m
     
-    return CIPSlabResult(h_m, vol_per_area, sw)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw))
 end
 
 """
@@ -314,7 +305,7 @@ function _size_span_floor(::OneWay, span::L, sdl::F, live::F;
     h_m = uconvert(u"m", h)
     vol_per_area = h_m
     
-    return CIPSlabResult(h_m, vol_per_area, sw)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw))
 end
 
 """
@@ -356,7 +347,7 @@ function _size_span_floor(::Waffle, span::L, sdl::F, live::F;
     h_m = uconvert(u"m", h)
     vol_per_area = h_m * (1 - void_ratio)
     
-    return CIPSlabResult(h_m, vol_per_area, sw)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw))
 end
 
 """
@@ -379,9 +370,9 @@ function _size_span_floor(::PTBanded, span::L, sdl::F, live::F;
     l2_val = isnothing(l2) ? span : l2
     ln = max(span, l2_val)  # Longer span governs
     
-    has_drops = options.flat_plate.has_drop_panels
-    
     # PT thickness rules (PTI guidelines)
+    # If flat_slab options have non-default drop config, use thinner PT rule
+    has_drops = !isnothing(options.flat_slab.h_drop) || !isnothing(options.flat_slab.a_drop_ratio)
     divisor = has_drops ? 50.0 : 45.0
     h_min = max(ln / divisor, 5.0u"inch")  # PT minimum is typically 5"
     
@@ -393,7 +384,7 @@ function _size_span_floor(::PTBanded, span::L, sdl::F, live::F;
     h_m = uconvert(u"m", h)
     vol_per_area = h_m
     
-    return CIPSlabResult(h_m, vol_per_area, sw)
+    return CIPSlabResult(h_m, vol_per_area, uconvert(u"kPa", sw))
 end
 
 # =============================================================================

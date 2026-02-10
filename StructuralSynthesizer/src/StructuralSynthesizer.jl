@@ -1,14 +1,11 @@
 module StructuralSynthesizer
 
 using Logging
+using Printf
 using Reexport
 
 # StructuralSizer re-exports units from Asap, so we get everything via StructuralSizer
-using StructuralSizer
-@reexport using StructuralSizer: kip, ksi, psf, ksf, pcf
-@reexport using StructuralSizer: GRAVITY, STANDARD_GRAVITY
-@reexport using StructuralSizer: Length, Area, Volume, Pressure, Force, Moment
-@reexport using StructuralSizer: LengthQuantity, AreaQuantity
+@reexport using StructuralSizer
 
 # Extend StructuralSizer's floor-result interface functions for local wrapper types
 # (e.g. `Slab`). In Julia, adding methods requires `import`, not `using`.
@@ -26,8 +23,8 @@ import StructuralPlots  # Colors and themes for visualization
 # File includes (order matters!)
 # =============================================================================
 
-# Load combinations first (DesignParameters uses LoadCombination type)
-include("./loads/_loads.jl")
+# Loads (LoadCombination, GravityLoads, pattern loading) come from StructuralSizer
+# via @reexport — no local include needed.
 
 # Building types (includes TributaryCache, BuildingStructure, etc.)
 include("building_types.jl")
@@ -36,19 +33,19 @@ include("building_types.jl")
 include("design_types.jl")
 
 # Core functionality (includes tributary_accessors.jl)
-include("./core/_core.jl")
+include("core/_core.jl")
 
 # Design workflow (uses both building_types and design_types)
 include("design_workflow.jl")
 
 # Geometry utilities (frame lines, slab validation)
-include("./geometry/_geometry.jl")
+include("geometry/_geometry.jl")
 
 # Other modules
-include("./generate/_generate.jl")
-include("./visualization/_visualization.jl")
-include("./analyze/_analyze.jl")
-include("./postprocess/_postprocess.jl")
+include("generate/_generate.jl")
+include("visualization/_visualization.jl")
+include("analyze/_analyze.jl")
+include("postprocess/_postprocess.jl")
 
 # =============================================================================
 # Exports
@@ -61,14 +58,12 @@ export gen_medium_office
 export BuildingSkeleton, BuildingStructure, Story
 export SiteConditions, MaterialVolumes, VolumeType
 export Cell, Slab, SlabGroup, thickness
-export CellGroup, TributaryPolygon, SpanInfo, vertices
+export CellGroup
 export Segment, MemberGroup
 
 # --- Tributary cache types ---
 export TributaryCache, TributaryCacheKey
 export CellTributaryResult, ColumnTributaryResult
-# Re-export Unitful type aliases from Asap (via StructuralSizer) for convenience
-export AreaQuantity, LengthQuantity
 export has_edge_tributaries, has_vertex_tributaries
 export get_edge_tributaries, set_edge_tributaries!
 export get_vertex_tributary, set_vertex_tributary!
@@ -79,26 +74,25 @@ export get_cached_edge_tributaries, cache_edge_tributaries!
 export get_cached_column_tributary, cache_column_tributary!
 export column_tributary_area, column_tributary_by_cell, column_tributary_polygons
 export cell_edge_tributaries, cell_strip_geometry, has_cell_tributaries
-export clear_tributary_cache!, list_cached_tributary_keys
+export clear_geometry_caches!, clear_tributary_cache!, list_cached_tributary_keys
 
 # --- Design types ---
 export DesignParameters, FoundationParameters
 export BuildingDesign, SlabDesignResult, ColumnDesignResult, BeamDesignResult, FoundationDesignResult
-export PunchingCheckResult, StripReinforcementDesign, DesignSummary
+export PunchingDesignResult, StripReinforcementDesign, DesignSummary
+export DisplayUnits, imperial, metric, fmt
 export structure, skeleton  # BuildingDesign accessors
 export slab_design, column_design, beam_design, foundation_design, all_ok, critical_ratio
 export has_analysis_model, build_analysis_model!
 
 # --- Design workflow ---
-export design_building, compare_designs
+export design_building, compare_designs, build_pipeline, sync_asap!
+export snapshot!, restore!, has_snapshot, DesignSnapshot
 
-# --- Load combinations ---
-export LoadCombination, factored_pressure, factored_load
-export STRENGTH_1_4D, STRENGTH_1_2D_1_6L, STRENGTH_1_2D_1_6Lr
-export STRENGTH_1_2D_1_0W, STRENGTH_1_2D_1_0E
-export STRENGTH_0_9D_1_0W, STRENGTH_0_9D_1_0E
-export ASD, SERVICE, DEFAULT_STRENGTH
-export ASCE7_STRENGTH_COMBINATIONS, GRAVITY_COMBINATIONS
+# --- Loads (re-exported from StructuralSizer via @reexport) ---
+# GravityLoads, LoadCombination, factored_pressure, envelope_pressure, etc.
+# are all available without additional exports here.
+export governing_combo  # defined locally in design_types.jl
 
 # --- Member type hierarchy ---
 export AbstractMember, MemberBase, Beam, Column, Strut
@@ -112,7 +106,9 @@ export visualize
 export visualize_cell_groups, visualize_cell_tributary, visualize_cell_tributaries
 export visualize_vertex_tributaries, visualize_tributaries_combined
 export vis_embodied_carbon_summary
-export draw_slab!, draw_slabs!, slab_info, slab_summary_text
+export draw_slab!, draw_slabs!, draw_vault!, draw_vault_deflected!
+export slab_info, slab_summary_text
+export visualize_vault
 
 # --- Building operations ---
 export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
@@ -123,40 +119,137 @@ export create_slab_diaphragm_shells
 export SkeletonLookup, enable_lookup!, build_lookup!, disable_lookup!
 export find_vertex, find_edge, find_face, validate_lookup
 
-# --- Geometry query helpers (avoid exposing Meshes to downstream) ---
+# --- Geometry cache + query helpers ---
+export GeometryCache, rebuild_geometry_cache!
 export edge_length, face_area, vertex_coords, edge_vertices, face_vertices
+export edge_face_count, edge_story
 export is_convex_face
 
 # --- Frame lines and slab geometry ---
 export FrameLine, perpendicular, direction_vector
 export n_spans, n_joints, is_end_span, get_span_supports
-export is_convex_polygon, decompose_to_rectangles, group_by_connectivity
+export decompose_to_rectangles, group_by_connectivity
 export validate_and_split_slab, build_cell_grid, CellGrid
 export initialize_cells!, initialize_slabs!
 export initialize_segments!, initialize_members!, update_bracing!
 export build_slab_groups!, build_cell_groups!, compute_cell_tributaries!
-export update_slab_loads!, update_all_slab_loads!
+# update_slab_loads! / update_all_slab_loads! removed — use sync_asap!(struc; params)
 export update_slab_volumes!
+export slab_conflict_coloring, compute_slab_parallel_batches!
 
 # --- Member sizing ---
-export build_member_groups!, member_group_demands, size_members_discrete!
-export size_columns!
-export rc_section_to_asap
+export build_member_groups!, member_group_demands
+export size_steel_members!
+export size_beams!, size_columns!, size_members!
 export estimate_column_sizes!
+export compute_story_properties!
 
 # --- Slab summary ---
-export slab_summary
+export slab_summary, flat_plate_moment_comparison
 
 # --- Foundation sizing ---
 export initialize_supports!, initialize_foundations!, size_foundations!
 export support_demands, foundation_summary, build_foundation_groups!
 export group_foundations_by_reaction!, size_foundations_grouped!, foundation_group_summary
 
-# --- Shell element creation (uses Asap.Shell) ---
-export create_slab_diaphragm_shells
-
 # --- Postprocessing (Embodied Carbon) ---
 export element_ec, compute_building_ec, ec_summary
 export ElementECResult, BuildingECResult
+
+# =============================================================================
+# Precompilation Workload
+# =============================================================================
+# Comprehensive workload that exercises every hot code path:
+#   1. GLMakie 3D pipeline (Figure, Axis3, scatter, lines, mesh)
+#   2. Full design_building DDM (initialize → estimate columns → to_asap →
+#      size_slabs [DDM moments, column P-M MIP, punching, deflection,
+#      one-way shear, rebar design] → result building)
+#   3. Full design_building EFM (Asap FrameModel build + solve for EFM)
+#   4. Steel member sizing (member_group_demands + AISC MIP from Asap model)
+
+using PrecompileTools
+
+@setup_workload begin
+    @compile_workload begin
+        redirect_stdio(; stdout=devnull, stderr=devnull) do
+            # =================================================================
+            # 1. GLMakie 3D pipeline
+            # =================================================================
+            fig = GLMakie.Figure(size=(400, 300))
+            ax = GLMakie.Axis3(fig[1, 1]; title="precompile", aspect=:data)
+
+            P3 = GLMakie.Point3f
+            pts = [P3(0, 0, 0), P3(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)]
+            GLMakie.scatter!(ax, pts; color=:red, markersize=8)
+            GLMakie.lines!(ax, pts; color=:blue, linewidth=1.0)
+
+            TF = GLMakie.GeometryBasics.TriangleFace
+            faces = [TF(1, 2, 3), TF(1, 3, 4)]
+            m = GLMakie.GeometryBasics.Mesh(pts, faces)
+            GLMakie.mesh!(ax, m; color=(:gray, 0.5), transparency=true)
+
+            # StructuralPlots themes
+            GLMakie.set_theme!(StructuralPlots.sp_light)
+            GLMakie.set_theme!()
+
+            # =================================================================
+            # 2. Full DDM pipeline via design_building
+            #    Cascades through: initialize! → estimate_column_sizes! →
+            #    to_asap! → size_slabs!(DDM) → column P-M MIP → punching →
+            #    deflection → one-way shear → rebar design → results
+            #    NOTE: Use realistic spans (~18ft) so column sizing succeeds.
+            #    40m/3 = 13.3m spans were infeasible for RC column catalog.
+            # =================================================================
+            try
+                _skel_ddm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 3, 3, 1)
+                _struc_ddm = BuildingStructure(_skel_ddm)
+                design_building(_struc_ddm, DesignParameters(
+                    name = "precompile_ddm",
+                    floor_options = StructuralSizer.FloorOptions(
+                        flat_plate = StructuralSizer.FlatPlateOptions(
+                            material = StructuralSizer.RC_4000_60,
+                            analysis_method = :ddm,
+                        ),
+                    ),
+                    max_iterations = 2,
+                ))
+            catch; end
+
+            # =================================================================
+            # 3. Full EFM pipeline via design_building
+            #    Exercises Asap FrameModel build + solve for equivalent frame
+            # =================================================================
+            try
+                _skel_efm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
+                _struc_efm = BuildingStructure(_skel_efm)
+                design_building(_struc_efm, DesignParameters(
+                    name = "precompile_efm",
+                    floor_options = StructuralSizer.FloorOptions(
+                        flat_plate = StructuralSizer.FlatPlateOptions(
+                            material = StructuralSizer.RC_4000_60,
+                            analysis_method = :efm,
+                        ),
+                    ),
+                    max_iterations = 2,
+                ))
+            catch; end
+
+            # =================================================================
+            # 4. Steel member sizing (Asap ElementInternalForces + AISC MIP)
+            # =================================================================
+            try
+                _skel_st = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
+                _struc_st = BuildingStructure(_skel_st)
+                initialize!(_struc_st; floor_type = :flat_plate)
+                to_asap!(_struc_st)
+                Asap.solve!(_struc_st.asap_model)
+                size_steel_members!(_struc_st;
+                    member_edge_group = :beams,
+                    resolution = 20,
+                )
+            catch; end
+        end
+    end
+end
 
 end # module StructuralSynthesizer

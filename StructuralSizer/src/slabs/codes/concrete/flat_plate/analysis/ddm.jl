@@ -29,15 +29,16 @@ Requires `col.boundary_edge_dirs` field (from StructuralSynthesizer). Falls back
 position-based classification if boundary_edge_dirs is not available.
 """
 function is_exterior_support(col, span_axis::NTuple{2, Float64})::Bool
-    # Check if column has boundary_edge_dirs field (from StructuralSynthesizer)
-    if hasproperty(col, :boundary_edge_dirs) && !isempty(col.boundary_edge_dirs)
+    # Check if column has boundary edge directions (from StructuralSynthesizer)
+    dirs = col_boundary_edge_dirs(col)
+    if !isempty(dirs)
         # Normalize span axis
         ax_len = hypot(span_axis...)
         ax_len < 1e-9 && return false
         ax = (span_axis[1]/ax_len, span_axis[2]/ax_len)
         
         # Check if any boundary edge is perpendicular to span axis
-        for dir in col.boundary_edge_dirs
+        for dir in dirs
             dot_product = abs(ax[1]*dir[1] + ax[2]*dir[2])
             if dot_product < 0.3  # Edge is roughly perpendicular to span
                 return true
@@ -80,10 +81,10 @@ Get XY position of column in meters from skeleton vertex.
 Uses `col.vertex_idx` to look up position in `struc.skeleton.vertices`.
 """
 function _get_column_xy(struc, col)::NTuple{2, Float64}
-    if hasproperty(col, :vertex_idx) && col.vertex_idx > 0
-        skel = struc.skeleton
-        coords = Meshes.coords(skel.vertices[col.vertex_idx])
-        return (Float64(ustrip(u"m", coords.x)), Float64(ustrip(u"m", coords.y)))
+    vidx = col_vertex_idx(col)
+    if vidx > 0
+        vc = struc.skeleton.geometry.vertex_coords
+        return (vc[vidx, 1], vc[vidx, 2])
     else
         error("Column missing vertex_idx - cannot determine position for ordering")
     end
@@ -144,7 +145,8 @@ This is the core of multi-span DDM:
 Vector of NamedTuples with (span_idx, ln, M0, M_neg_left, M_pos, M_neg_right)
 """
 function _compute_ddm_span_moments(variant::Symbol, qu, l2, 
-                                    sorted_columns, projections, column_is_exterior)
+                                    sorted_columns, projections, column_is_exterior;
+                                    βt::Float64 = 0.0)
     n_cols = length(sorted_columns)
     n_spans = n_cols - 1
     
@@ -154,6 +156,13 @@ function _compute_ddm_span_moments(variant::Symbol, qu, l2,
     
     span_moments = NamedTuple{(:span_idx, :ln, :M0, :M_neg_left, :M_pos, :M_neg_right), 
                               Tuple{Int, L_type, M_type, M_type, M_type, M_type}}[]
+    
+    # Edge beam torsional stiffness modifies end span coefficients
+    end_coeffs = if βt > 0.0
+        aci_ddm_longitudinal_with_edge_beam(βt)
+    else
+        ACI_DDM_LONGITUDINAL.end_span
+    end
     
     for span_idx in 1:n_spans
         col_left = sorted_columns[span_idx]
@@ -166,18 +175,18 @@ function _compute_ddm_span_moments(variant::Symbol, qu, l2,
         c_left = col_left.c1
         c_right = col_right.c1
         
-        # Handle nil column dimensions
-        c_left_val = isnothing(c_left) ? 0.0u"inch" : c_left
-        c_right_val = isnothing(c_right) ? 0.0u"inch" : c_right
+        # Handle nil column dimensions (unsized columns → 0 width → full clear span)
+        if isnothing(c_left) || isnothing(c_right)
+            @warn "DDM: column dimensions not yet sized — using 0\" (clear span = full span)" span_idx c_left c_right maxlog=1
+        end
+        c_left_val = something(c_left, 0.0u"inch")
+        c_right_val = something(c_right, 0.0u"inch")
         
-        # Clear span = center-to-center - half column widths (both now in ft)
+        # Clear span = center-to-center - half column widths
         ln = clear_span(l1_span, (c_left_val + c_right_val) / 2)
         
-        # Total static moment for this span (all units now in ft/psf)
+        # Total static moment
         M0 = total_static_moment(qu, l2, ln)
-        
-        # DEBUG: Trace M0 calculation (temporary)
-        @info "DDM Span $span_idx M0 calculation" qu=qu l2=l2 ln=ln M0=M0 M0_kipft=uconvert(kip*u"ft", M0)
         
         # Determine if this is an end span (either support is exterior)
         left_is_ext = column_is_exterior[span_idx]
@@ -192,22 +201,19 @@ function _compute_ddm_span_moments(variant::Symbol, qu, l2,
             M_pos = 0.35 * M0
         else  # :full
             if is_end_span
-                # End span coefficients (ACI Table 8.10.4.2, no edge beam)
-                # Exterior support: 0.26 M0
-                # Interior support: 0.70 M0
-                # Positive: 0.52 M0
+                # End span coefficients (ACI Table 8.10.4.2, edge beam via βt)
                 M_neg_left = left_is_ext ? 
-                    ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0 :   # 0.26
-                    ACI_DDM_LONGITUDINAL.end_span.int_neg * M0    # 0.70
+                    end_coeffs.ext_neg * M0 :
+                    end_coeffs.int_neg * M0
                 M_neg_right = right_is_ext ? 
-                    ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0 :  # 0.26
-                    ACI_DDM_LONGITUDINAL.end_span.int_neg * M0   # 0.70
-                M_pos = ACI_DDM_LONGITUDINAL.end_span.pos * M0   # 0.52
+                    end_coeffs.ext_neg * M0 :
+                    end_coeffs.int_neg * M0
+                M_pos = end_coeffs.pos * M0
             else
-                # Interior span coefficients
-                M_neg_left = ACI_DDM_LONGITUDINAL.interior_span.neg * M0   # 0.65
-                M_neg_right = ACI_DDM_LONGITUDINAL.interior_span.neg * M0  # 0.65
-                M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0        # 0.35
+                # Interior span coefficients (unaffected by edge beam)
+                M_neg_left = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
+                M_neg_right = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
+                M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0
             end
         end
         
@@ -280,32 +286,42 @@ function run_moment_analysis(
     fc::Pressure,
     Ecs::Pressure,
     γ_concrete;
-    verbose::Bool = false
+    ν_concrete = nothing,   # API parity (unused by DDM)
+    verbose::Bool = false,
+    efm_cache = nothing,    # API parity (unused by DDM)
+    cache = nothing,        # API parity (unused by DDM)
+    drop_panel = nothing,   # For flat slab: adjusts M0 with equivalent uniform load
+    βt::Float64 = 0.0,     # Edge beam torsional stiffness ratio (ACI 8.10.5.2)
 )
-    # Build span properties (convert to feet for US code consistency)
-    l1 = uconvert(u"ft", slab.spans.primary)   # Span in analysis direction (nominal)
-    l2 = uconvert(u"ft", slab.spans.secondary) # Tributary width
+    # Shared setup: l1, l2, ln, span_axis, c1_avg, qD, qL, qu, M0
+    setup = _moment_analysis_setup(struc, slab, supporting_columns, h, γ_concrete)
+    (; l1, l2, ln, span_axis, c1_avg, qD, qL, qu, M0) = setup
     
-    # Get loads from first cell (convert to consistent units - psf for US code)
-    cell = struc.cells[first(slab.cell_indices)]
-    sw = slab_self_weight(h, γ_concrete)  # returns psf
-    qD = uconvert(psf, cell.sdl) + sw
-    qL = uconvert(psf, cell.live_load)
-    qu = 1.2 * qD + 1.6 * qL
-    
-    # Get span axis for column classification
-    span_axis = _get_span_axis(slab)
-    
-    # Average column dimension in span direction
+    # For flat slabs with drop panels, the DDM static moment M0 must account
+    # for the additional dead load from the drop panel projection.
+    # Convert the localized drop panel weight to an equivalent uniform load
+    # spread over the full panel area (ACI 8.10.3.2 uses qu × l2 × ln²/8).
+    if !isnothing(drop_panel)
+        # Drop panel weight per unit area (projection only)
+        w_drop = uconvert(psf, drop_panel.h_drop * γ_concrete * GRAVITY)
+        # Drop panel plan area: 2×a_drop_1 × 2×a_drop_2
+        A_drop = drop_extent_1(drop_panel) * drop_extent_2(drop_panel)
+        # Panel area: l1 × l2
+        A_panel = l1 * l2
+        # Equivalent uniform load: spread drop panel weight over full panel
+        # Convert areas to common units before dividing so the ratio is truly
+        # dimensionless and qu stays in psf (DropPanelGeometry stores meters,
+        # while l1/l2 are in ft from _moment_analysis_setup).
+        A_drop_ft2 = uconvert(u"ft^2", A_drop)
+        qu_drop_equiv = 1.2 * w_drop * (A_drop_ft2 / A_panel)  # factored (DL only)
+        qu = uconvert(psf, qu + qu_drop_equiv)
+        M0 = total_static_moment(qu, l2, ln)
+        
+        if verbose
+            @debug "DDM drop panel correction" w_drop=w_drop A_drop=A_drop A_panel=A_panel qu_drop_equiv=qu_drop_equiv qu_total=qu M0_corrected=uconvert(kip*u"ft", M0)
+        end
+    end
     n_cols = length(supporting_columns)
-    c1_avg = sum(isnothing(c.c1) ? 0.0u"inch" : c.c1 for c in supporting_columns) / n_cols
-    
-    # Clear span from panel geometry (simpler and correct for regular grids)
-    # This matches how EFM calculates ln
-    ln = clear_span(l1, c1_avg)
-    
-    # Total static moment for this panel strip
-    M0 = total_static_moment(qu, l2, ln)
     
     # DDM coefficients - determine panel type from cell positions
     # For multi-cell slabs, check if ANY cell is exterior (corner/edge) or interior
@@ -314,28 +330,38 @@ function run_moment_analysis(
     has_interior_cell = any(c -> c.position == :interior, cells)
     
     # Apply DDM moment distribution coefficients (ACI 318-19 Table 8.10.4.2)
+    # Edge beam torsional stiffness modifies end span coefficients (Table 8.10.4.2)
+    end_coeffs = if βt > 0.0
+        aci_ddm_longitudinal_with_edge_beam(βt)
+    else
+        ACI_DDM_LONGITUDINAL.end_span
+    end
+    
     if method.variant == :simplified
-        # Simplified: same coefficients for all panels (MDDM)
-        M_neg_ext = 0.65 * M0
+        # Simplified: uniform 0.65/0.35 for interior negative/positive, but exterior
+        # negative MUST use the actual ACI coefficient (0.26 without edge beam).
+        # Using 0.65 at exterior would inflate Mub by ~2.5×, making punching shear
+        # at edge/corner columns physically unrealistic (vu >> 8√f'c stud limit).
+        M_neg_ext = end_coeffs.ext_neg * M0
         M_neg_int = 0.65 * M0
         M_pos = 0.35 * M0
     else  # :full
         if has_exterior_cell && has_interior_cell
             # Mixed slab: use envelope of end span + interior span coefficients
             # This is conservative - ensures both exterior and interior columns are designed correctly
-            M_neg_ext = 0.26 * M0   # End span exterior negative (at building edge)
-            M_pos = 0.52 * M0       # End span positive (governs)
-            M_neg_int = 0.70 * M0   # End span interior negative (at first interior support)
+            M_neg_ext = end_coeffs.ext_neg * M0
+            M_pos = end_coeffs.pos * M0
+            M_neg_int = end_coeffs.int_neg * M0
         elseif has_exterior_cell
             # All exterior cells - pure end span coefficients
-            M_neg_ext = 0.26 * M0
-            M_pos = 0.52 * M0
-            M_neg_int = 0.70 * M0
+            M_neg_ext = end_coeffs.ext_neg * M0
+            M_pos = end_coeffs.pos * M0
+            M_neg_int = end_coeffs.int_neg * M0
         else
             # Pure interior slab (no exterior cells)
-            M_neg_ext = 0.65 * M0
-            M_pos = 0.35 * M0
-            M_neg_int = 0.65 * M0
+            M_neg_ext = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
+            M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0
+            M_neg_int = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
         end
     end
     
@@ -358,8 +384,7 @@ function run_moment_analysis(
     )
     
     # Convert all outputs to consistent US units for MomentAnalysisResult
-    # Moments in kip*ft, lengths in ft, forces in kip, pressures in psf
-    # Note: kip is from Asap, imported in calculations.jl
+    # Moments in kip·ft, lengths in ft, forces in kip, pressures in psf
     M0_conv = uconvert(kip * u"ft", M0)
     M_neg_ext_conv = uconvert(kip * u"ft", M_neg_ext)
     M_neg_int_conv = uconvert(kip * u"ft", M_neg_int)
@@ -494,17 +519,16 @@ Compute shear at column using tributary area if available, else simple formula.
 function _compute_column_shear(struc, col, qu, l2, ln)
     # Try to get tributary area from struc
     Atrib = nothing
-    if hasproperty(struc, :tributaries) && hasproperty(col, :vertex_idx)
-        # Try to access column_tributary_area function
+    vidx = col_vertex_idx(col)
+    if hasproperty(struc, :tributaries) && vidx > 0
         try
-            # Check if column has tributary data cached
-            story = hasproperty(col, :story) ? col.story : 1
-            if haskey(struc.tributaries.vertex, story) && 
-               haskey(struc.tributaries.vertex[story], col.vertex_idx)
-                Atrib = struc.tributaries.vertex[story][col.vertex_idx].total_area
+            story = col_story(col)
+            if haskey(struc._tributary_caches.vertex, story) && 
+               haskey(struc._tributary_caches.vertex[story], vidx)
+                Atrib = struc._tributary_caches.vertex[story][vidx].total_area
             end
-        catch
-            # Fallback if accessor fails
+        catch e
+            @warn "DDM: tributary area lookup failed; falling back to simple shear" exception=(e, catch_backtrace())
         end
     end
     
@@ -585,7 +609,7 @@ Named tuple with:
 # Throws
 `DDMApplicabilityError` if any condition is violated and `throw_on_failure=true`
 """
-function check_ddm_applicability(struc, slab, columns; throw_on_failure::Bool = true)
+function check_ddm_applicability(struc, slab, columns; throw_on_failure::Bool = true, ρ_concrete::Density = NWC_4000.ρ)
     violations = String[]
     
     l1 = slab.spans.primary
@@ -643,11 +667,10 @@ function check_ddm_applicability(struc, slab, columns; throw_on_failure::Bool = 
     qL = cell.live_load
     
     # Estimate self-weight: use minimum thickness h_min ≈ ln/33 for flat plates (ACI 8.3.1.1)
-    # Assume typical NWC at 150 pcf (23.6 kN/m³)
-    γ_concrete_typical = 150.0u"lbf/ft^3"
+    γ_concrete = ρ_concrete * GRAVITY
     ln_max = max(l1, l2)  # Longer span for thickness estimate
     h_min_estimate = ln_max / 33  # Minimum thickness per ACI Table 8.3.1.1
-    sw_estimate = uconvert(psf, h_min_estimate * γ_concrete_typical)
+    sw_estimate = uconvert(psf, h_min_estimate * γ_concrete)
     
     qD = cell.sdl + sw_estimate  # Include self-weight estimate
     
@@ -659,27 +682,96 @@ function check_ddm_applicability(struc, slab, columns; throw_on_failure::Bool = 
     end
     
     # -------------------------------------------------------------------------
-    # §8.10.2.1 - Minimum 3 continuous spans (requires building-level info)
+    # §8.10.2.1 - Minimum 3 continuous spans in each direction
     # -------------------------------------------------------------------------
-    # Check if we have enough columns to imply multiple spans
+    # Full check: count columns along the span axis.  n_cols ≥ 4 implies ≥ 3 spans.
+    # Partial check: n_cols ≥ 2 needed for any analysis; < 4 triggers a warning.
     n_cols = length(columns)
     if n_cols < 2
-        push!(violations, "§8.10.2.1: DDM requires at least 3 continuous spans; only $(n_cols) columns found")
+        push!(violations, "§8.10.2.1: DDM requires at least 3 continuous spans; only $(n_cols) columns found (need ≥ 4 column lines)")
+    elseif n_cols < 4
+        # Not a hard violation — the slab may be part of a larger building.
+        # But flag it as a potential issue.
+        push!(violations, "§8.10.2.1: DDM requires ≥ 3 continuous spans; only $(n_cols) columns found for this slab. Verify that the building has ≥ 3 spans in each direction.")
     end
-    # Note: Full check requires counting spans across the entire building
-    # This is a partial check based on available information
     
     # -------------------------------------------------------------------------
-    # §8.10.2.4 - Column offset ≤ 10% of span
+    # §8.10.2.3 - Successive span lengths differ by ≤ 1/3 of longer span
     # -------------------------------------------------------------------------
-    # Check if columns are approximately aligned
-    # This requires column position data relative to a grid
-    # For now, we check if column positions are consistent
-    if length(columns) >= 2
-        # Get column positions from vertices
-        positions = [col.position for col in columns]
-        # If we have mixed interior/edge in unexpected patterns, flag it
-        # (Full implementation would check actual coordinates)
+    # Check adjacent panel spans if building-level info is available.
+    # We can query adjacent slabs from struc to find neighboring spans.
+    if hasproperty(slab, :adjacent_slabs) && !isnothing(slab.adjacent_slabs)
+        for adj_idx in slab.adjacent_slabs
+            adj_slab = struc.slabs[adj_idx]
+            l1_adj = adj_slab.spans.primary
+            l_longer = max(l1, l1_adj)
+            l_diff = abs(l1 - l1_adj)
+            if l_diff > l_longer / 3
+                push!(violations, "§8.10.2.3: Successive span variation |$(round(ustrip(u"ft", l1), digits=1))' − $(round(ustrip(u"ft", l1_adj), digits=1))'| = $(round(ustrip(u"ft", l_diff), digits=1))' > $(round(ustrip(u"ft", l_longer/3), digits=1))' (l_longer/3)")
+            end
+        end
+    end
+    # Note: if adjacent_slabs info is not available, this check is skipped.
+    # EFM or FEA should be used when span regularity is uncertain.
+    
+    # -------------------------------------------------------------------------
+    # §8.10.2.4 - Column offset ≤ 10% of span from column lines
+    # -------------------------------------------------------------------------
+    # A "column line" is a row of columns sharing roughly the same
+    # perpendicular coordinate.  We cluster columns into lines first,
+    # then check each column's offset from its own line's mean.
+    # The previous implementation compared every column to the global
+    # mean, which falsely flagged regular grids (columns on different
+    # grid lines all appeared "offset" from the centroid).
+    if length(columns) >= 2 && all(col_vertex_idx(col) > 0 for col in columns)
+        try
+            span_axis = _get_span_axis(slab)
+            perp_axis = (-span_axis[2], span_axis[1])  # 90° rotation
+            l1_m = ustrip(u"m", l1)
+            
+            # Project each column onto the perpendicular axis
+            perp_projs = map(columns) do col
+                pos = _get_column_xy(struc, col)
+                pos[1] * perp_axis[1] + pos[2] * perp_axis[2]
+            end
+            
+            # Cluster columns into column lines: group by perpendicular
+            # projection within a tolerance of 10% of span (the violation
+            # threshold itself).  Columns closer than this are on the
+            # same column line.
+            cluster_tol = 0.10 * l1_m
+            assigned = falses(length(columns))
+            line_groups = Vector{Vector{Int}}()  # each group = indices into columns
+            
+            sorted_order = sortperm(perp_projs)
+            for idx in sorted_order
+                assigned[idx] && continue
+                # Start a new column line
+                group = [idx]
+                assigned[idx] = true
+                for jdx in sorted_order
+                    assigned[jdx] && continue
+                    if abs(perp_projs[jdx] - perp_projs[idx]) <= cluster_tol
+                        push!(group, jdx)
+                        assigned[jdx] = true
+                    end
+                end
+                push!(line_groups, group)
+            end
+            
+            # Check each column's offset from its own line's mean
+            for group in line_groups
+                line_mean = sum(perp_projs[i] for i in group) / length(group)
+                for i in group
+                    offset_m = abs(perp_projs[i] - line_mean)
+                    if offset_m > cluster_tol
+                        push!(violations, "§8.10.2.4: Column $(i) offset $(round(offset_m, digits=2))m from column line > 10% of span ($(round(cluster_tol, digits=2))m)")
+                    end
+                end
+            end
+        catch e
+            @warn "DDM §8.10.2.4: column offset check skipped — coordinate lookup failed" exception=(e, catch_backtrace())
+        end
     end
     
     # -------------------------------------------------------------------------
@@ -720,8 +812,8 @@ function _compute_ddm_alternatives(struc, slab, columns)
         if efm_result.ok
             push!(alternatives, "EFM (Equivalent Frame Method): method=EFM() — fewer geometric restrictions than DDM")
         end
-    catch
-        # EFM check function not available or failed, skip
+    catch e
+        @warn "DDM: EFM applicability check failed — cannot suggest EFM as alternative" exception=(e, catch_backtrace())
     end
     
     # FEA is always valid - it's the most general method with no geometric restrictions
@@ -736,8 +828,8 @@ end
 Enforce DDM applicability, throwing an error if not permitted.
 This is called automatically by `run_moment_analysis(::DDM, ...)`.
 """
-function enforce_ddm_applicability(struc, slab, columns)
-    check_ddm_applicability(struc, slab, columns; throw_on_failure=true)
+function enforce_ddm_applicability(struc, slab, columns; ρ_concrete::Density = NWC_4000.ρ)
+    check_ddm_applicability(struc, slab, columns; throw_on_failure=true, ρ_concrete=ρ_concrete)
 end
 
 # =============================================================================
@@ -781,7 +873,8 @@ function run_moment_analysis(
     qu::Pressure,
     qD::Pressure,
     qL::Pressure;
-    verbose::Bool = false
+    verbose::Bool = false,
+    βt::Float64 = 0.0
 )
     # Extract from FrameLine
     sorted_columns = frame_line.columns
@@ -812,6 +905,13 @@ function run_moment_analysis(
         is_end_span = left_is_ext || right_is_ext
         
         # DDM coefficients based on span type and method variant
+        # Edge beam torsional stiffness modifies end span coefficients
+        end_coeffs_fl = if βt > 0.0
+            aci_ddm_longitudinal_with_edge_beam(βt)
+        else
+            ACI_DDM_LONGITUDINAL.end_span
+        end
+        
         if method.variant == :simplified
             # Simplified DDM: same coefficients for all spans
             M_neg_left = 0.65 * M0
@@ -819,19 +919,19 @@ function run_moment_analysis(
             M_pos = 0.35 * M0
         else  # :full
             if is_end_span
-                # End span coefficients (ACI Table 8.10.4.2, no edge beam)
+                # End span coefficients (ACI Table 8.10.4.2, edge beam via βt)
                 M_neg_left = left_is_ext ? 
-                    ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0 :   # 0.26
-                    ACI_DDM_LONGITUDINAL.end_span.int_neg * M0    # 0.70
+                    end_coeffs_fl.ext_neg * M0 :
+                    end_coeffs_fl.int_neg * M0
                 M_neg_right = right_is_ext ? 
-                    ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0 :  # 0.26
-                    ACI_DDM_LONGITUDINAL.end_span.int_neg * M0   # 0.70
-                M_pos = ACI_DDM_LONGITUDINAL.end_span.pos * M0   # 0.52
+                    end_coeffs_fl.ext_neg * M0 :
+                    end_coeffs_fl.int_neg * M0
+                M_pos = end_coeffs_fl.pos * M0
             else
-                # Interior span coefficients
-                M_neg_left = ACI_DDM_LONGITUDINAL.interior_span.neg * M0   # 0.65
-                M_neg_right = ACI_DDM_LONGITUDINAL.interior_span.neg * M0  # 0.65
-                M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0        # 0.35
+                # Interior span coefficients (unaffected by edge beam)
+                M_neg_left = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
+                M_neg_right = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
+                M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0
             end
         end
         
@@ -898,9 +998,3 @@ function run_moment_analysis(
     )
 end
 
-# =============================================================================
-# Exports
-# =============================================================================
-
-export run_moment_analysis, check_ddm_applicability, enforce_ddm_applicability
-export DDMApplicabilityError

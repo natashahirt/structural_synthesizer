@@ -3,6 +3,7 @@
 
 using Test
 using Unitful
+using Asap  # Register Asap units (psf, ksf, kip, etc.) with Unitful's @u_str
 using StructuralSizer
 
 @testset "Shear and Moment Transfer - StructurePoint Validation" begin
@@ -88,14 +89,17 @@ using StructuralSizer
     # Test 3: Effective Slab Width for Flexure Transfer
     # =========================================================================
     @testset "Effective Slab Width" begin
-        # bb = c2 + 3h = 16 + 3×7 = 37 in (from SP page 31)
+        # Interior column: bb = c2 + 3h = 16 + 3×7 = 37 in (from SP page 31)
+        bb_int = StructuralSizer.effective_slab_width(c2, h; position=:interior)
+        @test ustrip(u"inch", bb_int) ≈ 37 rtol=0.01
         
-        bb = StructuralSizer.effective_slab_width(c2, h)
-        
-        @test ustrip(u"inch", bb) ≈ 37 rtol=0.01
+        # Edge column: bb = c2 + 1.5h = 16 + 1.5×7 = 26.5 in (ACI 8.4.2.3.3)
+        bb_edge = StructuralSizer.effective_slab_width(c2, h; position=:edge)
+        @test ustrip(u"inch", bb_edge) ≈ 26.5 rtol=0.01
         
         println("\n=== Effective Slab Width ===")
-        println("bb = c2 + 3h = $(ustrip(u"inch", c2)) + 3×$(ustrip(u"inch", h)) = $(ustrip(u"inch", bb)) in (SP: 37)")
+        println("Interior: bb = c2+3h = $(ustrip(u"inch", bb_int)) in (SP: 37)")
+        println("Edge:     bb = c2+1.5h = $(ustrip(u"inch", bb_edge)) in (expected: 26.5)")
     end
     
     # =========================================================================
@@ -303,7 +307,7 @@ using StructuralSizer
         println("φvc = $(0.75 * ustrip(u"psi", vc)) psi")
         println("Result: $(result.message)")
         
-        @test result.passes == true
+        @test result.ok == true
         @test result.ratio < 1.0
     end
     
@@ -325,7 +329,7 @@ using StructuralSizer
         println("φvc = $(0.75 * ustrip(u"psi", vc)) psi")
         println("Result: $(result.message)")
         
-        @test result.passes == true
+        @test result.ok == true
         @test result.ratio < 1.0
     end
     
@@ -393,3 +397,163 @@ using StructuralSizer
 end
 
 println("\n✓ Shear and moment transfer tests complete!")
+
+# =============================================================================
+# Circular Column — Punching Geometry & Combined Stress
+# =============================================================================
+# ACI 318-19 R22.6.4.1: For circular columns, the critical section for
+# interior punching is circular with perimeter b₀ = π(D+d).
+# Edge/corner circular columns are converted to equivalent square.
+# =============================================================================
+
+@testset "Circular Column — Punching & Moment Transfer" begin
+
+    fc = 4000u"psi"
+    fy = 60000u"psi"
+    h = 7u"inch"
+    d = 5.75u"inch"
+    D = 16u"inch"     # Circular column diameter
+    l1 = 18u"ft"
+    l2 = 14u"ft"
+
+    # =========================================================================
+    # Circular Interior Column — Punching Geometry
+    # =========================================================================
+    @testset "Circular Interior — Punching Geometry" begin
+        geom = StructuralSizer.punching_geometry_interior(D, D, d; shape=:circular)
+
+        # b₀ = π(D + d) = π(16 + 5.75) = π × 21.75 ≈ 68.33 in
+        b0_expected = π * (16 + 5.75)
+        @test ustrip(u"inch", geom.b0) ≈ b0_expected rtol=0.001
+
+        # b1 = b2 = b₀/4 (equivalent square)
+        b_side = b0_expected / 4
+        @test ustrip(u"inch", geom.b1) ≈ b_side rtol=0.001
+        @test ustrip(u"inch", geom.b2) ≈ b_side rtol=0.001
+
+        # Centroid is at b1/2
+        @test ustrip(u"inch", geom.cAB) ≈ b_side / 2 rtol=0.001
+    end
+
+    # =========================================================================
+    # Circular Interior Column — β Factor
+    # =========================================================================
+    @testset "Circular Interior — β = 1.0" begin
+        β_circ = StructuralSizer.punching_β(D, D; shape=:circular)
+        @test β_circ == 1.0
+
+        # Compare with rectangular
+        β_rect = StructuralSizer.punching_β(D, D; shape=:rectangular)
+        @test β_rect == 1.0  # Also 1.0 since it's square
+
+        # Non-square rectangular should have β > 1
+        β_rect_nonsq = StructuralSizer.punching_β(20u"inch", 12u"inch"; shape=:rectangular)
+        @test β_rect_nonsq ≈ 20 / 12 rtol=0.01
+    end
+
+    # =========================================================================
+    # Circular Interior Column — Gamma Factors
+    # =========================================================================
+    @testset "Circular Interior — Gamma Factors" begin
+        geom = StructuralSizer.punching_geometry_interior(D, D, d; shape=:circular)
+
+        # For circular, b1 = b2 → γf = 0.60, γv = 0.40 (same as square)
+        γf = StructuralSizer.gamma_f(geom.b1, geom.b2)
+        γv = StructuralSizer.gamma_v(geom.b1, geom.b2)
+
+        @test γf ≈ 0.60 rtol=0.01
+        @test γv ≈ 0.40 rtol=0.01
+        @test γf + γv ≈ 1.0 rtol=0.001
+    end
+
+    # =========================================================================
+    # Circular Interior Column — Polar Moment Jc
+    # =========================================================================
+    @testset "Circular Interior — Polar Moment Jc" begin
+        geom = StructuralSizer.punching_geometry_interior(D, D, d; shape=:circular)
+
+        Jc = StructuralSizer.polar_moment_Jc_interior(geom.b1, geom.b2, d)
+
+        # Jc should be positive
+        @test ustrip(u"inch^4", Jc) > 0
+
+        # Compare with rectangular 16" square
+        geom_rect = StructuralSizer.punching_geometry_interior(D, D, d; shape=:rectangular)
+        Jc_rect = StructuralSizer.polar_moment_Jc_interior(geom_rect.b1, geom_rect.b2, d)
+
+        # Circular column has smaller critical section → smaller Jc
+        @test Jc < Jc_rect
+    end
+
+    # =========================================================================
+    # Circular Interior Column — Combined Punching Stress
+    # =========================================================================
+    @testset "Circular Interior — Combined Punching Stress" begin
+        geom = StructuralSizer.punching_geometry_interior(D, D, d; shape=:circular)
+        Jc = StructuralSizer.polar_moment_Jc_interior(geom.b1, geom.b2, d)
+        γv = StructuralSizer.gamma_v(geom.b1, geom.b2)
+
+        Vu = 50u"kip"
+        Mub = 8u"kip*ft"
+
+        vu = StructuralSizer.combined_punching_stress(Vu, Mub, geom.b0, d, γv, Jc, geom.cAB)
+
+        # Should be a valid stress (positive, reasonable magnitude)
+        vu_psi = ustrip(u"psi", vu)
+        @test vu_psi > 0
+        @test vu_psi < 500  # Sanity bound
+
+        # Capacity check: 4√f'c should be ~253 psi, φvc ≈ 190 psi
+        vc = StructuralSizer.punching_capacity_stress(fc, 1.0, 40, geom.b0, d)
+        @test ustrip(u"psi", vu) < 0.75 * ustrip(u"psi", vc)  # Should pass
+    end
+
+    # =========================================================================
+    # Circular Edge Column — Equivalent Square Conversion
+    # =========================================================================
+    @testset "Circular Edge — Equivalent Square" begin
+        c_eq = StructuralSizer.equivalent_square_column(D)
+
+        # Edge geometry uses equivalent square
+        geom = StructuralSizer.punching_geometry_edge(c_eq, c_eq, d)
+
+        # b1 = c_eq + d/2, b2 = c_eq + d
+        @test ustrip(u"inch", geom.b1) ≈ ustrip(u"inch", c_eq) + 5.75 / 2 rtol=0.01
+        @test ustrip(u"inch", geom.b2) ≈ ustrip(u"inch", c_eq) + 5.75 rtol=0.01
+
+        # Perimeter should be positive
+        @test ustrip(u"inch", geom.b0) > 0
+    end
+
+    # =========================================================================
+    # High-Level Punching Check — Circular Column
+    # =========================================================================
+    @testset "Punching Check API — Circular" begin
+        Vu = 45u"kip"
+        Mux = 5u"kip*ft"
+        Muy = 0u"kip*ft"
+
+        # Interior circular column
+        result = StructuralSizer.punching_check(
+            Vu, Mux, Muy, d, fc, D, D;
+            position=:interior, shape=:circular
+        )
+
+        @test result.ok == true
+        @test result.utilization < 1.0
+        @test result.utilization > 0.0
+        @test ustrip(u"psi", result.vu) > 0
+        @test ustrip(u"psi", result.ϕvc) > 0
+
+        # Compare with rectangular
+        result_rect = StructuralSizer.punching_check(
+            Vu, Mux, Muy, d, fc, D, D;
+            position=:interior, shape=:rectangular
+        )
+
+        # Circular should have higher utilization (less b₀)
+        @test result.utilization > result_rect.utilization
+    end
+end
+
+println("\n✓ Circular column punching and moment transfer tests complete!")

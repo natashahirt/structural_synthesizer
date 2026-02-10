@@ -3,14 +3,14 @@ function extract_point3f(v)
     c = Meshes.coords(v)
     # Ensure coordinates are in meters before visualization
     if hasproperty(c, :x)
-        x = ustrip(uconvert(u"m", c.x))
-        y = ustrip(uconvert(u"m", c.y))
-        z = ustrip(uconvert(u"m", c.z))
+        x = ustrip(u"m", c.x)
+        y = ustrip(u"m", c.y)
+        z = ustrip(u"m", c.z)
         return GLMakie.Point3f(x, y, z)
     else
-        x = ustrip(uconvert(u"m", c[1]))
-        y = ustrip(uconvert(u"m", c[2]))
-        z = ustrip(uconvert(u"m", c[3]))
+        x = ustrip(u"m", c[1])
+        y = ustrip(u"m", c[2])
+        z = ustrip(u"m", c[3])
         return GLMakie.Point3f(x, y, z)
     end
 end
@@ -64,7 +64,7 @@ function visualize(skel::BuildingSkeleton;
         y_rng = [minimum(ys), maximum(ys)]
         
         for (i, z) in enumerate(skel.stories_z)
-            z_val = ustrip(uconvert(u"m", z))
+            z_val = ustrip(u"m", z)
             # Use a mesh for 3D planes to avoid poly!/SizedVector issues
             pts = GLMakie.Point3f[
                 (x_rng[1], y_rng[1], z_val), 

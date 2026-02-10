@@ -334,7 +334,7 @@ end
 # =============================================================================
 
 """Default colors for geometry types."""
-const GEOMETRY_COLORS = Dict{Type{<:AbstractSectionGeometry}, Symbol}(
+const geometry_colors = Dict{Type{<:AbstractSectionGeometry}, Symbol}(
     SolidRect => :gray60,
     HollowRect => :slategray,
     HollowRound => :cadetblue,
@@ -344,7 +344,7 @@ const GEOMETRY_COLORS = Dict{Type{<:AbstractSectionGeometry}, Symbol}(
 """Get color for a section based on its geometry trait."""
 function section_color(sec)
     geom = section_geometry(sec)
-    return get(GEOMETRY_COLORS, typeof(geom), :gray70)
+    return get(geometry_colors, typeof(geom), :gray70)
 end
 
 """Get color based on material (more specific than geometry)."""

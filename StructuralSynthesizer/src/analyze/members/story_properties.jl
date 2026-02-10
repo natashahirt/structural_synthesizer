@@ -15,13 +15,17 @@
 # =============================================================================
 
 """
-    compute_story_properties!(struc; verbose=false)
+    compute_story_properties!(struc; concrete=NWC_4000, verbose=false)
 
 Compute and assign story properties to all columns for sway magnification.
 
 This function should be called after structural analysis (ASAP solve) when
 displacements and member forces are available. It populates the `story_properties`
 field on each Column for use in ACI 318-19 sway moment magnification.
+
+# Keyword Arguments
+- `concrete`: Concrete material for Ec estimation (default: `NWC_4000`)
+- `verbose`: Print diagnostic info
 
 # Story-Level Properties (all returned as Unitful quantities)
 - `ΣPu`: Sum of factored axial loads on all columns in story (Force)
@@ -31,7 +35,7 @@ field on each Column for use in ACI 318-19 sway moment magnification.
 - `lc`: Story height (Length)
 
 # Notes
-- ΣPc is estimated using simplified EI = 0.4EcIg (conservative per ACI 6.6.4.4.4)
+- ΣPc uses Ec from the provided concrete material (ACI 19.2.2.1)
 - Actual ΣPc will be refined during column sizing when sections are known
 - Δo is computed from ASAP analysis node displacements
 
@@ -40,7 +44,7 @@ field on each Column for use in ACI 318-19 sway moment magnification.
 # After creating model and running analysis
 struc, model = create_asap_model(struc; analyze=true)
 
-# Compute and assign story properties
+# Compute and assign story properties (uses NWC_4000 by default)
 compute_story_properties!(struc; verbose=true)
 
 # Column now has story_properties for sway magnification
@@ -48,7 +52,7 @@ col = struc.columns[1]
 Q = stability_index(col.story_properties)  # Story stability index
 ```
 """
-function compute_story_properties!(struc; verbose::Bool = false)
+function compute_story_properties!(struc; concrete::StructuralSizer.Concrete = NWC_4000, verbose::Bool = false)
     # Group columns by story
     columns_by_story = Dict{Int, Vector}()
     for col in struc.columns
@@ -61,7 +65,7 @@ function compute_story_properties!(struc; verbose::Bool = false)
     
     # For each story, compute properties
     for (story, cols) in columns_by_story
-        props = _compute_story_props(struc, cols, story; verbose=verbose)
+        props = _compute_story_props(struc, cols, story; concrete=concrete, verbose=verbose)
         
         # Assign to all columns in this story
         for col in cols
@@ -83,7 +87,7 @@ end
 Compute story properties for a single story level.
 Returns all values as proper Unitful quantities.
 """
-function _compute_story_props(struc, cols, story::Int; verbose::Bool = false)
+function _compute_story_props(struc, cols, story::Int; concrete::StructuralSizer.Concrete = NWC_4000, verbose::Bool = false)
     n_cols = length(cols)
     
     # --- Story height (lc) ---
@@ -106,7 +110,7 @@ function _compute_story_props(struc, cols, story::Int; verbose::Bool = false)
     # --- Sum of critical buckling loads (ΣPc) ---
     # Use simplified formula: Pc = π²EI/(kLu)²
     # EI estimated as 0.4EcIg until section is known
-    ΣPc = _estimate_Pc_sum(struc, cols)
+    ΣPc = _estimate_Pc_sum(struc, cols; concrete=concrete)
     
     # --- Story shear (Vus) ---
     # Sum of column shears at the story level
@@ -125,17 +129,41 @@ end
 
 # --- Helper functions ---
 
-"""Get column axial load from ASAP analysis results (returns nothing if not available)."""
+"""
+    _get_column_axial_from_analysis(struc, col) -> Union{Force, Nothing}
+
+Extract the worst-case factored axial compression from ASAP analysis results.
+Returns `nothing` if the model has not been solved.
+"""
 function _get_column_axial_from_analysis(struc, col)
-    # Check if we have ASAP results
+    # Need a solved ASAP model
     if !hasfield(typeof(struc), :asap_model) || isnothing(struc.asap_model)
         return nothing
     end
-    
-    # Try to get from segment forces
-    # For now, return nothing to use tributary estimation
-    # TODO: Implement extraction from ASAP results when model is available
-    return nothing
+    model = struc.asap_model
+    hasfield(typeof(model), :processed) && !model.processed && return nothing
+
+    element_loads = Asap.get_elemental_loads(model)
+
+    Pu_max = 0.0  # track worst-case compression (positive = compression)
+    for seg_idx in segment_indices(col)
+        seg = struc.segments[seg_idx]
+        edge_idx = seg.edge_idx
+        edge_idx > 0 || continue
+
+        el = model.elements[edge_idx]
+        el_loads = get(element_loads, el.elementID, nothing)
+        isnothing(el_loads) && continue
+
+        fd = Asap.ElementForceAndDisplacement(el, el_loads; resolution=10)
+        # Convention: negative P = compression
+        min_P = minimum(fd.forces.P)
+        if min_P < 0
+            Pu_max = max(Pu_max, abs(min_P))
+        end
+    end
+
+    Pu_max > 0 ? uconvert(u"kip", Pu_max * u"N") : nothing
 end
 
 """Estimate column axial load from tributary area and loads. Returns Force (kip)."""
@@ -148,10 +176,10 @@ function _estimate_column_axial(struc, col)
         cell = struc.cells[cell_idx]
         area = area_m2 * u"m^2"
         
-        # Factored load: 1.2D + 1.6L
+        # Factored load (ACI strength: 1.2D + 1.6L)
         qD = cell.sdl + cell.self_weight
         qL = cell.live_load
-        qu = 1.2 * qD + 1.6 * qL
+        qu = factored_pressure(default_combo, qD, qL)
         
         Pu += uconvert(u"kip", qu * area)
     end
@@ -160,28 +188,28 @@ function _estimate_column_axial(struc, col)
 end
 
 """Estimate sum of critical buckling loads for columns in story. Returns Force (kip)."""
-function _estimate_Pc_sum(struc, cols)
-    # Use simplified EI = 0.4EcIg
+function _estimate_Pc_sum(struc, cols; concrete::StructuralSizer.Concrete = NWC_4000)
+    # Use simplified EI = 0.4EcIg per ACI 6.6.4.4.4
     # Pc = π²(0.4EcIg)/(kLu)²
-    # 
-    # For now, estimate based on typical 4000 psi concrete and 
-    # assumed column dimensions from c1, c2
     
+    Ec_val = StructuralSizer.Ec(concrete)
     ΣPc = 0.0u"kip"
     
     for col in cols
         # Get column dimensions (fall back to defaults if not set)
-        c1 = isnothing(col.c1) ? 18.0u"inch" : col.c1
-        c2 = isnothing(col.c2) ? 18.0u"inch" : col.c2
+        c1 = col.c1
+        c2 = col.c2
+        if isnothing(c1) || isnothing(c2)
+            @warn "Column dimensions not yet sized — using 18\" default for stability index" col.base.edge_idx c1 c2 maxlog=1
+            c1 = something(c1, 18.0u"inch")
+            c2 = something(c2, 18.0u"inch")
+        end
         
         # Gross moment of inertia (assuming rectangular)
         Ig = c1 * c2^3 / 12  # About weak axis (conservative)
         
-        # Concrete modulus (4000 psi typical)
-        Ec = 57.0 * sqrt(4000) * u"psi"  # ACI 19.2.2.1
-        
         # Effective stiffness (simplified per ACI 6.6.4.4.4)
-        EI_eff = 0.4 * Ec * Ig
+        EI_eff = 0.4 * Ec_val * Ig
         
         # Unsupported length
         Lu = col.base.Lu
@@ -212,5 +240,3 @@ function _compute_story_drift(struc, cols, story::Int)
     # TODO: Implement extraction from ASAP results
     return 0.5u"inch"
 end
-
-export compute_story_properties!

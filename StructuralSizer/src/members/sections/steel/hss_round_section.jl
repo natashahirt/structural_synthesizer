@@ -4,12 +4,6 @@
 
 using Asap: Length, Area, Volume, SecondMomentOfArea
 
-# Use same type aliases (already defined if hss_rect_section.jl loaded first)
-const LengthQ_Round = Length
-const AreaQ_Round   = Area
-const ModQ_Round    = Volume
-const InertQ_Round  = SecondMomentOfArea
-
 """
     HSSRoundSection <: AbstractRoundHollowSection
 
@@ -35,25 +29,25 @@ mutable struct HSSRoundSection <: AbstractRoundHollowSection
     name::Union{String, Nothing}
     
     # Input geometry
-    OD::LengthQ_Round    # Outside diameter
-    t::LengthQ_Round     # Design wall thickness
+    OD::Length    # Outside diameter
+    t::Length     # Design wall thickness
     
     # Derived geometry
-    ID::LengthQ_Round    # Inside diameter = OD - 2t
-    Dm::LengthQ_Round    # Mean diameter = OD - t
-    rm::LengthQ_Round    # Mean radius = Dm / 2
+    ID::Length    # Inside diameter = OD - 2t
+    Dm::Length    # Mean diameter = OD - t
+    rm::Length    # Mean radius = Dm / 2
     D_t::Float64         # OD/t ratio (slenderness)
     
     # Material
     material::Union{Metal, Nothing}
     
     # Section properties (symmetric: Ix=Iy, Sx=Sy, Zx=Zy, rx=ry)
-    A::AreaQ_Round
-    I::InertQ_Round      # = Ix = Iy
-    S::ModQ_Round        # = Sx = Sy
-    Z::ModQ_Round        # = Zx = Zy
-    J::InertQ_Round      # = 2I for round section
-    r::LengthQ_Round     # = rx = ry
+    A::Area
+    I::SecondMomentOfArea      # = Ix = Iy
+    S::Volume        # = Sx = Sy
+    Z::Volume        # = Zx = Zy
+    J::SecondMomentOfArea      # = 2I for round section
+    r::Length     # = rx = ry
     
     # AISC preferred (bolded) section flag
     is_preferred::Bool

@@ -62,7 +62,6 @@ FlatPlateOptions(
     
     # Edge conditions
     has_edge_beam = false,       # Spandrel beam at exterior?
-    has_drop_panels = false,     # Drop panels (for flat slab)?
     
     # Strength reduction (ACI Table 21.2.1)
     φ_flexure = 0.90,            # Tension-controlled

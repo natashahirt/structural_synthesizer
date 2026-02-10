@@ -21,6 +21,7 @@ Unified demand for framing members (beams, columns, beam-columns).
 - `M2y`: Larger end moment about weak axis (for B1 Cm factor)
 - `Vu_strong`: Strong-axis shear [N]
 - `Vu_weak`: Weak-axis shear [N]
+- `Tu`: Factored torsion [N*m] (0 = no torsion demand)
 - `δ_max`: Maximum local deflection from analysis [m] (for deflection scaling)
 - `I_ref`: Reference moment of inertia used in analysis [m⁴] (for deflection scaling)
 - `transverse_load`: Whether transverse loading exists between supports (for Cm)
@@ -43,6 +44,7 @@ struct MemberDemand{T} <: AbstractDemand
     M2y::T       # Larger end moment, weak axis (for B1)
     Vu_strong::T # Strong-axis shear
     Vu_weak::T   # Weak-axis shear
+    Tu::T        # Factored torsion (0 = no torsion demand)
     δ_max::T     # Max local deflection from analysis (for scaling)
     I_ref::T     # Reference I used in analysis (for scaling)
     transverse_load::Bool  # Whether transverse loading between supports
@@ -53,6 +55,7 @@ function MemberDemand(idx::Int;
     Pu_c=0.0, Pu_t=0.0, Mux=0.0, Muy=0.0,
     M1x=nothing, M2x=nothing, M1y=nothing, M2y=nothing,
     Vu_strong=0.0, Vu_weak=0.0,
+    Tu=0.0,
     δ_max=0.0, I_ref=1.0,
     transverse_load=false
 )
@@ -62,11 +65,20 @@ function MemberDemand(idx::Int;
     M1y_val = isnothing(M1y) ? zero(Muy) : M1y
     M2y_val = isnothing(M2y) ? Muy : M2y
     
-    # Use Any as the type parameter to handle mixed Quantity/Float64 fields
-    # The checker will handle unit conversions appropriately
-    MemberDemand{Any}(idx, Pu_c, Pu_t, Mux, Muy, 
-                      M1x_val, M2x_val, M1y_val, M2y_val,
-                      Vu_strong, Vu_weak, δ_max, I_ref, transverse_load)
+    # Determine concrete type parameter (Float64 when all fields are plain numbers)
+    all_vals = (Pu_c, Pu_t, Mux, Muy, M1x_val, M2x_val, M1y_val, M2y_val,
+                Vu_strong, Vu_weak, Tu, δ_max, I_ref)
+    T = promote_type(typeof.(all_vals)...)
+    if T <: Real
+        MemberDemand{T}(idx, T(Pu_c), T(Pu_t), T(Mux), T(Muy),
+                        T(M1x_val), T(M2x_val), T(M1y_val), T(M2y_val),
+                        T(Vu_strong), T(Vu_weak), T(Tu), T(δ_max), T(I_ref), transverse_load)
+    else
+        # Mixed Unitful dimensions — fall back to Any (checker handles conversions)
+        MemberDemand{Any}(idx, Pu_c, Pu_t, Mux, Muy,
+                          M1x_val, M2x_val, M1y_val, M2y_val,
+                          Vu_strong, Vu_weak, Tu, δ_max, I_ref, transverse_load)
+    end
 end
 
 # ==============================================================================
@@ -162,4 +174,60 @@ function RCColumnDemand(idx::Int;
     
     T = promote_type(typeof(Pu), typeof(Mux), typeof(Muy), typeof(M1x), typeof(M2x), typeof(M1y), typeof(M2y))
     RCColumnDemand{T}(idx, T(Pu), T(Mux), T(Muy), T(M1x), T(M2x), T(M1y), T(M2y), Float64(βdns))
+end
+
+# ==============================================================================
+# RC Beam Demand (ACI-style)
+# ==============================================================================
+
+"""
+    RCBeamDemand <: AbstractDemand
+
+Demand for reinforced concrete beams (flexure + shear + torsion + optional axial).
+All force/moment values can be in any Unitful units — they will be
+converted internally to kip/kip·ft for ACI calculations.
+
+# Fields
+- `member_idx`: Index of the member group
+- `Mu`: Factored moment (positive)
+- `Vu`: Factored shear (positive)
+- `Nu`: Factored axial compression (positive = compression, 0 for pure beams)
+- `Tu`: Factored torsion (positive, 0.0 = no torsion demand)
+
+When `Nu > 0`, the ACI 318 shear capacity `Vc` is increased via the
+axial compression modifier (ACI 318-19 §22.5.6.1 / 318-11 Eq. 11-4):
+`Vc = 2λ(1 + Nu/(2000 Ag)) √f'c bw d`.
+
+# Examples
+```julia
+# Pure beam (no axial, no torsion)
+demand = RCBeamDemand(1; Mu=150.0, Vu=30.0)
+
+# With torsion
+demand = RCBeamDemand(1; Mu=150.0, Vu=30.0, Tu=20.0)
+
+# With axial compression (column-like member under shear)
+demand = RCBeamDemand(1; Mu=150.0, Vu=30.0, Nu=10.0)
+
+# Unitful — converted automatically
+demand = RCBeamDemand(1; Mu=200.0u"kN*m", Vu=80.0u"kN", Tu=15.0u"kN*m")
+```
+"""
+struct RCBeamDemand{T} <: AbstractDemand
+    member_idx::Int
+    Mu::T           # Factored moment
+    Vu::T           # Factored shear
+    Nu::T           # Factored axial compression (0 for pure beams)
+    Tu::T           # Factored torsion (0 = no torsion)
+end
+
+function RCBeamDemand(idx::Int; Mu=0.0, Vu=0.0, Nu=0.0, Tu=0.0)
+    all_vals = (Mu, Vu, Nu, Tu)
+    T = promote_type(typeof.(all_vals)...)
+    if T <: Real
+        RCBeamDemand{T}(idx, T(Mu), T(Vu), T(Nu), T(Tu))
+    else
+        # Mixed Unitful dimensions — fall back to Any (checker handles conversions)
+        RCBeamDemand{Any}(idx, Mu, Vu, Nu, Tu)
+    end
 end

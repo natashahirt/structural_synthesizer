@@ -17,7 +17,7 @@ using Asap: ksi
 
 """
     standard_rc_columns(; 
-        sizes = 12:2:36,      # inches (square) or [(b,h), ...] for rectangular
+        sizes = 8:2:36,       # inches (square) or [(b,h), ...] for rectangular
         bar_sizes = [5, 6, 7, 8, 9, 10, 11],
         n_bars_range = 4:4:20,
         cover = 1.5u"inch",
@@ -29,6 +29,7 @@ Generate a catalog of standard RC column sections.
 
 # Arguments
 - `sizes`: Range of column sizes (inches). For square columns, use integers.
+  No ACI code minimum; 8" is the practical floor from cover + ties + bars.
 - `bar_sizes`: Available rebar sizes (#5 through #18)
 - `n_bars_range`: Range of bar counts (must be ≥4 for corners)
 - `cover`: Clear cover (Length with units, default 1.5")
@@ -40,13 +41,13 @@ Vector of RCColumnSection with varying sizes and reinforcement
 
 # Example
 ```julia
-catalog = standard_rc_columns()           # Default: 12"-36" square
+catalog = standard_rc_columns()           # Default: 8"-36" square
 catalog = standard_rc_columns(sizes=14:2:24, bar_sizes=[8,9,10])
 catalog = standard_rc_columns(include_rectangular=true)  # Adds 1.5:1 and 2:1 ratios
 ```
 """
 function standard_rc_columns(;
-    sizes = 12:2:36,
+    sizes = 8:2:36,
     bar_sizes = [6, 7, 8, 9, 10, 11],
     n_bars_range = 4:4:16,
     cover::Length = 1.5u"inch",
@@ -199,12 +200,12 @@ end
 """
     square_rc_columns() -> Vector{RCColumnSection}
 
-Square columns only (12"-36"), no rectangular aspect ratios.
+Square columns only (8"-36"), no rectangular aspect ratios.
 Good default for typical buildings. ~200-400 sections.
 """
 function square_rc_columns()
     standard_rc_columns(
-        sizes = 12:2:36,
+        sizes = 8:2:36,
         bar_sizes = [5, 6, 7, 8, 9, 10, 11],
         n_bars_range = [4, 6, 8, 10, 12, 14, 16, 20],
         cover = 1.5u"inch",
@@ -215,12 +216,12 @@ end
 """
     rectangular_rc_columns() -> Vector{RCColumnSection}
 
-Square + rectangular columns (12"-36") with 1.5:1 and 2:1 aspect ratios.
+Square + rectangular columns (8"-36") with 1.5:1 and 2:1 aspect ratios.
 Use for buildings with directional moment demands. ~500-800 sections.
 """
 function rectangular_rc_columns()
     standard_rc_columns(
-        sizes = 12:2:36,
+        sizes = 8:2:36,
         bar_sizes = [5, 6, 7, 8, 9, 10, 11],
         n_bars_range = [4, 6, 8, 10, 12, 14, 16, 20],
         cover = 1.5u"inch",
@@ -232,12 +233,12 @@ end
 """
     low_capacity_rc_columns() -> Vector{RCColumnSection}
 
-Smaller columns (12"-24") for low-rise or light load applications.
+Smaller columns (8"-24") for low-rise or light load applications.
 Includes both square and rectangular. ~100-200 sections.
 """
 function low_capacity_rc_columns()
     standard_rc_columns(
-        sizes = 12:2:24,
+        sizes = 8:2:24,
         bar_sizes = [5, 6, 7, 8, 9],
         n_bars_range = [4, 6, 8, 10, 12],
         cover = 1.5u"inch",
@@ -266,12 +267,12 @@ end
 """
     all_rc_rect_columns() -> Vector{RCColumnSection}
 
-Comprehensive catalog (10"-48") with all bar sizes and rectangular options.
+Comprehensive catalog (8"-48") with all bar sizes and rectangular options.
 Use for full optimization studies. ~1000+ sections.
 """
 function all_rc_rect_columns()
     standard_rc_columns(
-        sizes = 10:2:48,
+        sizes = 8:2:48,
         bar_sizes = [5, 6, 7, 8, 9, 10, 11, 14, 18],
         n_bars_range = [4, 6, 8, 10, 12, 14, 16, 18, 20, 24],
         cover = 1.5u"inch",
@@ -287,7 +288,7 @@ end
 
 """
     standard_rc_circular_columns(; 
-        diameters = 12:2:36,       # inches
+        diameters = 10:2:36,       # inches (10" practical minimum for 6 spiral bars)
         bar_sizes = [6, 7, 8, 9, 10, 11],
         n_bars_range = 6:2:16,
         cover = 1.5u"inch"
@@ -296,7 +297,7 @@ end
 Generate a catalog of standard circular RC column sections.
 
 # Arguments
-- `diameters`: Range of column diameters (inches)
+- `diameters`: Range of column diameters (inches). 10" is practical minimum for 6 spiral bars.
 - `bar_sizes`: Available rebar sizes
 - `n_bars_range`: Range of bar counts (minimum 6 for spiral columns)
 - `cover`: Clear cover (Length with units, default 1.5")
@@ -311,7 +312,7 @@ catalog = standard_rc_circular_columns(diameters=16:4:32, bar_sizes=[8,9,10])
 ```
 """
 function standard_rc_circular_columns(;
-    diameters = 12:2:36,
+    diameters = 10:2:36,
     bar_sizes = [6, 7, 8, 9, 10, 11],
     n_bars_range = 6:2:16,
     cover::Length = 1.5u"inch"
@@ -390,11 +391,11 @@ end
 """
     standard_circular_columns() -> Vector{RCCircularSection}
 
-Standard circular columns (12"-36"). Good default. ~200-300 sections.
+Standard circular columns (10"-36"). Good default. ~200-300 sections.
 """
 function standard_circular_columns()
     standard_rc_circular_columns(
-        diameters = 12:2:36,
+        diameters = 10:2:36,
         bar_sizes = [6, 7, 8, 9, 10, 11],
         n_bars_range = [6, 8, 10, 12, 14, 16],
         cover = 1.5u"inch"
@@ -404,11 +405,11 @@ end
 """
     low_capacity_circular_columns() -> Vector{RCCircularSection}
 
-Smaller circular columns (12"-24") for light loads. ~50-100 sections.
+Smaller circular columns (10"-24") for light loads. ~50-100 sections.
 """
 function low_capacity_circular_columns()
     standard_rc_circular_columns(
-        diameters = 12:2:24,
+        diameters = 10:2:24,
         bar_sizes = [6, 7, 8, 9],
         n_bars_range = [6, 8, 10, 12],
         cover = 1.5u"inch"
@@ -432,11 +433,11 @@ end
 """
     all_rc_circular_columns() -> Vector{RCCircularSection}
 
-Comprehensive circular catalog (12"-48"). ~500+ sections.
+Comprehensive circular catalog (10"-48"). ~500+ sections.
 """
 function all_rc_circular_columns()
     standard_rc_circular_columns(
-        diameters = 12:2:48,
+        diameters = 10:2:48,
         bar_sizes = [5, 6, 7, 8, 9, 10, 11, 14, 18],
         n_bars_range = [6, 8, 10, 12, 14, 16, 18, 20, 24]
     )

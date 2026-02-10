@@ -86,19 +86,19 @@ function _resolve_rise(
             "Got: $(join(provided, ", "))"))
     end
     
-    span_m = Float64(ustrip(u"m", span))
+    span_m = ustrip(u"m", span)
     
     # Convert to rise_bounds or fixed_rise (in meters, as Float64)
     if !isnothing(rise_bounds)
-        return (Float64(ustrip(u"m", rise_bounds[1])), 
-                Float64(ustrip(u"m", rise_bounds[2]))), nothing
+        return (ustrip(u"m", rise_bounds[1]), 
+                ustrip(u"m", rise_bounds[2])), nothing
     elseif !isnothing(lambda_bounds)
         # λ = span/rise → rise = span/λ
         # λ_min → rise_max, λ_max → rise_min
         λ_min, λ_max = Float64.(lambda_bounds)
         return (span_m / λ_max, span_m / λ_min), nothing
     elseif !isnothing(rise)
-        return nothing, Float64(ustrip(u"m", rise))
+        return nothing, ustrip(u"m", rise)
     elseif !isnothing(lambda)
         return nothing, span_m / Float64(lambda)
     else
@@ -120,14 +120,14 @@ function _resolve_thickness(;
     end
     
     if !isnothing(thickness)
-        return nothing, Float64(ustrip(u"m", thickness))
+        return nothing, ustrip(u"m", thickness)
     elseif !isnothing(thickness_bounds)
-        return (Float64(ustrip(u"m", thickness_bounds[1])), 
-                Float64(ustrip(u"m", thickness_bounds[2]))), nothing
+        return (ustrip(u"m", thickness_bounds[1]), 
+                ustrip(u"m", thickness_bounds[2])), nothing
     else
         # Default bounds
-        return (Float64(ustrip(u"m", default_bounds[1])), 
-                Float64(ustrip(u"m", default_bounds[2]))), nothing
+        return (ustrip(u"m", default_bounds[1]), 
+                ustrip(u"m", default_bounds[2])), nothing
     end
 end
 
@@ -321,5 +321,127 @@ function optimize_vault(
         result = vault_result,
         objective_value = opt_result.objective_value,
         status = opt_result.status,
+    )
+end
+
+# ==============================================================================
+# Flat Plate Optimization API
+# ==============================================================================
+
+"""
+    size_flat_plate_optimized(struc, slab, opts; kwargs...) -> NamedTuple
+
+Optimize flat plate slab thickness `h` and column size `c` simultaneously
+using a 2D grid search with inner rebar sweep.
+
+Unlike `size_flat_plate!` (which greedily bumps thickness), this evaluates
+all feasible `(h, c, bar_size)` combinations and selects the one that
+minimizes the chosen objective (volume, weight, cost, or carbon).
+
+# Arguments
+- `struc::BuildingStructure`: Structure with skeleton, cells, columns
+- `slab::Slab`: Slab to design
+- `opts::FlatPlateOptions`: Design options (material, objective, etc.)
+
+# Keyword Arguments
+- `h_max::Length`: Upper bound on slab thickness (default: ACI min + 6")
+- `c_min::Length`: Lower bound on column size (default: span/15)
+- `c_max::Length`: Upper bound on column size (default: `opts.max_column_size`)
+- `bar_sizes::Vector{Int}`: Candidate bar sizes for rebar sweep (default: [4,5,6,7,8])
+- `n_grid::Int = 20`: Grid points per dimension (total evals ≈ n_grid²)
+- `n_refine::Int = 2`: Refinement passes around best point
+- `verbose::Bool = false`: Print progress
+
+# Returns
+Named tuple with:
+- `h::Length`: Optimal slab thickness
+- `c::Length`: Optimal column dimension
+- `bar_size::Int`: Best bar designation (#4–#8)
+- `objective_value::Float64`: Final objective score
+- `status::Symbol`: `:success` or `:infeasible`
+- `eval_result`: Full evaluation NamedTuple (moments, deflection, rebar)
+- `n_evals::Int`: Total grid evaluations performed
+
+# Example
+```julia
+opts = FlatPlateOptions(objective=MinCarbon())
+result = size_flat_plate_optimized(struc, slab, opts; verbose=true)
+result.h       # optimal thickness
+result.c       # optimal column size
+result.bar_size  # best bar size
+```
+"""
+function size_flat_plate_optimized(
+    struc, slab, opts::FlatPlateOptions;
+    h_max::Union{Length, Nothing}  = nothing,
+    c_min::Union{Length, Nothing}  = nothing,
+    c_max::Union{Length, Nothing}  = nothing,
+    bar_sizes::Vector{Int}         = [4, 5, 6, 7, 8],
+    n_grid::Int                    = 20,
+    n_refine::Int                  = 2,
+    verbose::Bool                  = false,
+)
+    # ── Find supporting columns ──
+    slab_cell_indices = Set(slab.cell_indices)
+    columns = find_supporting_columns(struc, slab_cell_indices)
+    if isempty(columns)
+        error("No supporting columns found for slab.")
+    end
+
+    # ── Build NLP problem ──
+    problem = FlatPlateNLPProblem(
+        struc, slab, columns, opts;
+        h_max     = h_max,
+        c_min     = c_min,
+        c_max     = c_max,
+        bar_sizes = bar_sizes,
+    )
+
+    if verbose
+        lb, ub = variable_bounds(problem)
+        @info "Flat plate optimization" objective=typeof(opts.objective) h_range="$(lb[1])-$(ub[1]) in" c_range="$(lb[2])-$(ub[2]) in" bar_sizes=bar_sizes n_grid=n_grid n_refine=n_refine
+    end
+
+    # ── Run grid search ──
+    opt = optimize_continuous(
+        problem;
+        objective = opts.objective,
+        solver    = :grid,
+        n_grid    = n_grid,
+        n_refine  = n_refine,
+        verbose   = verbose,
+    )
+
+    # ── Interpret result ──
+    if opt.status == :infeasible || isnothing(opt.eval_result)
+        if verbose
+            @warn "No feasible (h, c) found in grid search"
+        end
+        return (
+            h              = nothing,
+            c              = nothing,
+            bar_size       = nothing,
+            objective_value = Inf,
+            status         = :infeasible,
+            eval_result    = nothing,
+            n_evals        = opt.n_evals,
+        )
+    end
+
+    h_opt = opt.eval_result.h
+    c_opt = opt.eval_result.c
+
+    if verbose
+        @info "Optimization complete" h=h_opt c=c_opt bar_size=opt.eval_result.bar_size objective=round(opt.objective_value, sigdigits=4) status=opt.status
+    end
+
+    return (
+        h              = h_opt,
+        c              = c_opt,
+        bar_size       = opt.eval_result.bar_size,
+        objective_value = opt.objective_value,
+        status         = opt.status,
+        eval_result    = opt.eval_result,
+        n_evals        = opt.n_evals,
     )
 end

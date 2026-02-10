@@ -1,47 +1,37 @@
 """Doubly-symmetric I-section with computed properties."""
 
-# Import type aliases from Asap
-using Asap: Length, Area, Volume, SecondMomentOfArea, WarpingConstant
-
-# Local aliases for consistency with existing code (Length, Area, etc. match struct field types)
-const LengthQ = Length
-const AreaQ   = Area
-const ModQ    = Volume   # Section modulus has L³ dimension (same as Volume)
-const InertQ  = SecondMomentOfArea  # Second moment of area L⁴
-const WarpQ   = WarpingConstant  # Warping constant L⁶
-
 mutable struct ISymmSection <: AbstractSection
     name::Union{String, Nothing}
     # input geometry
-    d::LengthQ       # total depth
-    bf::LengthQ      # flange width
-    tw::LengthQ      # web thickness
-    tf::LengthQ      # flange thickness
+    d::Length                # total depth
+    bf::Length               # flange width
+    tw::Length               # web thickness
+    tf::Length               # flange thickness
     # derived geometry
-    h::LengthQ       # clear web height (d - 2tf)
-    ho::LengthQ      # distance between flange centroids (d - tf)
-    λ_f::Float64  # flange slenderness (bf / 2tf)
-    λ_w::Float64  # web slenderness (h / tw)
-    d_tw::Float64 # depth-to-web ratio (d / tw)
-    Aw::AreaQ        # web area
-    Af::AreaQ        # flange area
+    h::Length                # clear web height (d - 2tf)
+    ho::Length               # distance between flange centroids (d - tf)
+    λ_f::Float64             # flange slenderness (bf / 2tf)
+    λ_w::Float64             # web slenderness (h / tw)
+    d_tw::Float64            # depth-to-web ratio (d / tw)
+    Aw::Area                 # web area
+    Af::Area                 # flange area
     # material
     material::Union{Metal, Nothing}
     # section properties
-    A::AreaQ
-    Ix::InertQ
-    Iy::InertQ
-    Iyc::InertQ
-    J::InertQ
-    Cw::WarpQ
-    Sx::ModQ
-    Sy::ModQ
-    Zx::ModQ
-    Zy::ModQ
-    rx::LengthQ
-    ry::LengthQ
-    rts::LengthQ
-    # AISC preferred (bolded) section flag
+    A::Area
+    Ix::SecondMomentOfArea
+    Iy::SecondMomentOfArea
+    Iyc::SecondMomentOfArea
+    J::SecondMomentOfArea
+    Cw::WarpingConstant
+    Sx::SectionModulus        # elastic section modulus (L³)
+    Sy::SectionModulus
+    Zx::SectionModulus        # plastic section modulus (L³)
+    Zy::SectionModulus
+    rx::Length
+    ry::Length
+    rts::Length
+    # AISC preferred section flag
     is_preferred::Bool
 end
 
@@ -103,6 +93,10 @@ get_coords(s::ISymmSection) = get_coords(s.d, s.bf, s.tw, s.tf)
 section_area(s::ISymmSection) = s.A
 section_depth(s::ISymmSection) = s.d
 section_width(s::ISymmSection) = s.bf
+Ix(s::ISymmSection) = s.Ix
+Iy(s::ISymmSection) = s.Iy
+Sx(s::ISymmSection) = s.Sx
+Sy(s::ISymmSection) = s.Sy
 
 # Geometry computation functions
 compute_A(d, bf, tw, tf) = 2 * bf * tf + (d - 2 * tf) * tw

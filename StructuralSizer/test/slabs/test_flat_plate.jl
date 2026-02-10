@@ -234,19 +234,19 @@ using StructuralSizer
     
     @testset "Reinforcement Design (ACI 22.2)" begin
         # From StructurePoint: d_avg = 5.75 in
-        # d = h - cover - db/2 = 7 - 0.75 - 0.5/2 = 6.0 in (top layer)
-        # d = h - cover - db - db/2 = 7 - 0.75 - 0.5 - 0.25 = 5.5 in (bottom layer)
-        # d_avg = (6.0 + 5.5) / 2 = 5.75 in
+        # d₁ = h - cover - db/2 = 7 - 0.75 - 0.5/2 = 6.0 in (top layer)
+        # d₂ = h - cover - db - db/2 = 7 - 0.75 - 0.5 - 0.25 = 5.5 in (bottom layer)
+        # d_avg = (d₁ + d₂) / 2 = h - cover - db = 5.75 in
         
         d = effective_depth(h; cover=0.75u"inch", bar_diameter=0.5u"inch")
-        @test ustrip(u"inch", d) ≈ 6.0 rtol=0.02
+        @test ustrip(u"inch", d) ≈ 5.75 rtol=0.02  # d_avg for two-way slab
         
         # Column strip width = 84 in
         b_cs = 84u"inch"
         
         # Minimum reinforcement: As,min = 0.0018 × b × h
         # = 0.0018 × 84 × 7 = 1.06 in² (matches StructurePoint Table 3)
-        As_min = minimum_reinforcement(b_cs, h)
+        As_min = minimum_reinforcement(b_cs, h, fy)
         @test ustrip(u"inch^2", As_min) ≈ 1.06 rtol=0.02
         
         # Max spacing: s_max = min(2h, 18") = min(14", 18") = 14"
@@ -291,7 +291,7 @@ using StructuralSizer
         
         # Check: φVc = 0.75 × 126.55 = 94.92 kip > Vu = 48.00 kip → OK
         check = check_punching_shear(Vu, Vc)
-        @test check.passes
+        @test check.ok
         @test check.ratio < 1.0
         @test check.ratio ≈ 48.0 / (0.75 * 126.55) rtol=0.05
     end
@@ -449,3 +449,150 @@ using StructuralSizer
 end
 
 println("All flat plate design tests passed!")
+
+# =============================================================================
+# Circular Column Tests
+# Validates that all core slab calculations handle circular columns correctly.
+# ACI 318-19 R22.6.4.1: Use equivalent square for clear span and torsional C;
+# use actual circular geometry for interior punching (b₀ = π(D+d)).
+# =============================================================================
+
+@testset "Circular Column Support" begin
+
+    D = 16u"inch"         # Circular column diameter (same area intent as 16" square)
+    c_eq = equivalent_square_column(D)  # D√(π/4) ≈ 14.18"
+
+    @testset "Equivalent Square Column" begin
+        # c_eq = D × √(π/4) ≈ 0.886 D
+        @test ustrip(u"inch", c_eq) ≈ 16 * sqrt(π / 4) rtol=0.001
+        @test ustrip(u"inch", c_eq) ≈ 14.18 rtol=0.01
+
+        # Area preservation: π D²/4 = c_eq²
+        A_circle = π * D^2 / 4
+        A_square = c_eq^2
+        @test ustrip(u"inch^2", A_circle) ≈ ustrip(u"inch^2", A_square) rtol=0.001
+    end
+
+    @testset "Clear Span — Circular vs Rectangular" begin
+        l1 = 18u"ft"
+
+        # Rectangular: ln = l - c
+        ln_rect = clear_span(l1, D)  # treats D as rectangular dimension
+        @test ustrip(u"ft", ln_rect) ≈ 18 - 16/12 rtol=0.01
+
+        # Circular: ln = l - c_eq (shorter deduction since c_eq < D)
+        ln_circ = clear_span(l1, D; shape=:circular)
+        @test ustrip(u"inch", ln_circ) ≈ ustrip(u"inch", l1) - ustrip(u"inch", c_eq) rtol=0.001
+
+        # Circular clear span should be longer (less deduction)
+        @test ln_circ > ln_rect
+    end
+
+    @testset "Punching Perimeter — Circular Interior" begin
+        d = 5.75u"inch"
+
+        # Rectangular: b₀ = 4(c+d) for square column
+        b0_rect = punching_perimeter(D, D, d; shape=:rectangular)
+        @test ustrip(u"inch", b0_rect) ≈ 4 * (16 + 5.75) rtol=0.001
+
+        # Circular: b₀ = π(D+d)
+        b0_circ = punching_perimeter(D, D, d; shape=:circular)
+        @test ustrip(u"inch", b0_circ) ≈ π * (16 + 5.75) rtol=0.001
+
+        # Circular perimeter < rectangular (circle minimizes perimeter for area)
+        @test b0_circ < b0_rect
+    end
+
+    @testset "Punching Geometry — Circular Interior" begin
+        d = 5.75u"inch"
+
+        geom = punching_geometry_interior(D, D, d; shape=:circular)
+
+        # b₀ = π(D+d)
+        @test ustrip(u"inch", geom.b0) ≈ π * (16 + 5.75) rtol=0.001
+
+        # b1 = b2 = b₀/4 (equivalent square sides of critical section)
+        @test ustrip(u"inch", geom.b1) ≈ ustrip(u"inch", geom.b0) / 4 rtol=0.001
+        @test geom.b1 ≈ geom.b2 rtol=0.001
+
+        # cAB = b1/2
+        @test geom.cAB ≈ geom.b1 / 2 rtol=0.001
+    end
+
+    @testset "Punching Capacity — Circular Interior" begin
+        d = 5.75u"inch"
+        fc = 4000u"psi"
+
+        b0_circ = punching_perimeter(D, D, d; shape=:circular)
+        Vc_circ = punching_capacity_interior(b0_circ, d, fc;
+                    c1=D, c2=D, position=:interior, shape=:circular)
+
+        # β = 1.0 for circular → (2+4/β) = 6 clause won't govern
+        # 4√f'c should govern for circular (since β=1)
+        vc_expected = 4 * sqrt(4000)  # psi
+        Vc_expected = vc_expected * ustrip(u"inch", b0_circ) * ustrip(u"inch", d)
+        @test ustrip(u"lbf", Vc_circ) ≈ Vc_expected rtol=0.02
+    end
+
+    @testset "Punching Demand — Circular Interior" begin
+        d = 5.75u"inch"
+        qu = 0.193u"ksf"
+        At = 18u"ft" * 14u"ft"
+
+        # Rectangular deduction: (c+d)²
+        Vu_rect = punching_demand(qu, At, D, D, d; shape=:rectangular)
+
+        # Circular deduction: π(D+d)²/4
+        Vu_circ = punching_demand(qu, At, D, D, d; shape=:circular)
+
+        # Circular deduction area < rectangular → higher Vu
+        @test Vu_circ > Vu_rect
+
+        # Verify the demand formula: Vu = qu × (At - Ac)
+        Ac_circ = π * (D + d)^2 / 4
+        Vu_manual = qu * (At - Ac_circ)
+        @test ustrip(u"kip", Vu_circ) ≈ ustrip(u"kip", Vu_manual) rtol=0.001
+    end
+
+    @testset "Punching Check — Circular vs Rectangular" begin
+        d = 5.75u"inch"
+        fc = 4000u"psi"
+        qu = 0.193u"ksf"
+        At = 18u"ft" * 14u"ft"
+
+        # Rectangular 16" square
+        b0_rect = punching_perimeter(D, D, d; shape=:rectangular)
+        Vc_rect = punching_capacity_interior(b0_rect, d, fc;
+                    c1=D, c2=D, position=:interior, shape=:rectangular)
+        Vu_rect = punching_demand(qu, At, D, D, d; shape=:rectangular)
+        ratio_rect = ustrip(u"lbf", Vu_rect) / (0.75 * ustrip(u"lbf", Vc_rect))
+
+        # Circular D=16"
+        b0_circ = punching_perimeter(D, D, d; shape=:circular)
+        Vc_circ = punching_capacity_interior(b0_circ, d, fc;
+                    c1=D, c2=D, position=:interior, shape=:circular)
+        Vu_circ = punching_demand(qu, At, D, D, d; shape=:circular)
+        ratio_circ = ustrip(u"lbf", Vu_circ) / (0.75 * ustrip(u"lbf", Vc_circ))
+
+        # Both should pass for this geometry
+        @test ratio_rect < 1.0
+        @test ratio_circ < 1.0
+
+        # Circular column has higher utilization (less b₀, higher Vu)
+        @test ratio_circ > ratio_rect
+    end
+
+    @testset "Column Moment of Inertia — Circular" begin
+        # Rectangular: Ic = c1 × c2³ / 12
+        Ic_rect = column_moment_of_inertia(D, D; shape=:rectangular)
+        @test ustrip(u"inch^4", Ic_rect) ≈ 16^4 / 12 rtol=0.001
+
+        # Circular: Ic = π D⁴ / 64
+        Ic_circ = column_moment_of_inertia(D, D; shape=:circular)
+        @test ustrip(u"inch^4", Ic_circ) ≈ π * 16^4 / 64 rtol=0.001
+
+        # Both should be positive; ratio is 64/(12π) ≈ 1.698 (rect > circ for same D)
+        @test ustrip(u"inch^4", Ic_circ) > 0
+        @test ustrip(u"inch^4", Ic_rect) / ustrip(u"inch^4", Ic_circ) ≈ 64 / (12π) rtol=0.01
+    end
+end

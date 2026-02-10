@@ -78,7 +78,7 @@ Tries fields: :t, :tw (in that order).
 """
 function section_thickness(sec)
     for field in (:t, :tw)
-        hasproperty(sec, field) && return Float64(ustrip(u"m", getproperty(sec, field)))
+        hasproperty(sec, field) && return ustrip(u"m", getproperty(sec, field))
     end
     return 0.01  # fallback
 end
@@ -88,19 +88,15 @@ end
 # =============================================================================
 
 """Get flange width for I-shapes (meters)."""
-section_flange_width(sec) = Float64(ustrip(u"m", section_width(sec)))
+section_flange_width(sec) = ustrip(u"m", section_width(sec))
 
 """Get flange thickness for I-shapes (meters)."""
-function section_flange_thickness(sec)
-    hasproperty(sec, :tf) && return Float64(ustrip(u"m", sec.tf))
-    return 0.01
-end
+section_flange_thickness(sec::ISymmSection) = ustrip(u"m", sec.tf)
+section_flange_thickness(sec) = 0.01  # Fallback for non-I sections
 
 """Get web thickness for I-shapes (meters)."""
-function section_web_thickness(sec)
-    hasproperty(sec, :tw) && return Float64(ustrip(u"m", sec.tw))
-    return 0.01
-end
+section_web_thickness(sec::ISymmSection) = ustrip(u"m", sec.tw)
+section_web_thickness(sec) = 0.01  # Fallback for non-I sections
 
 # =============================================================================
 # Rebar Interface (for RC sections)
@@ -142,16 +138,16 @@ section_geometry(::Type{<:RCBeamSection}) = SolidRect()
 has_rebar(sec::RCColumnSection) = !isempty(sec.bars)
 
 function section_rebar_positions(sec::RCColumnSection)
-    b = Float64(ustrip(u"m", section_width(sec)))
-    h = Float64(ustrip(u"m", section_depth(sec)))
+    b = ustrip(u"m", section_width(sec))
+    h = ustrip(u"m", section_depth(sec))
     # Bars stored with x,y from bottom-left corner → centroid-relative
-    return [(Float64(ustrip(u"m", bar.x)) - b/2, 
-             Float64(ustrip(u"m", bar.y)) - h/2) for bar in sec.bars]
+    return [(ustrip(u"m", bar.x) - b/2, 
+             ustrip(u"m", bar.y) - h/2) for bar in sec.bars]
 end
 
 function section_rebar_radius(sec::RCColumnSection)
     isempty(sec.bars) && return 0.0
-    As = Float64(ustrip(u"m^2", sec.bars[1].As))
+    As = ustrip(u"m^2", sec.bars[1].As)
     return sqrt(As / π)
 end
 

@@ -83,12 +83,12 @@ function _get_cell_vertices_2d_with_offset(struc::BuildingStructure, cell::Cell)
     for p in pts
         c = Meshes.coords(p)
         # Convert to meters (matching TributaryPolygon internal storage)
-        x = Float64(ustrip(u"m", c.x))
-        y = Float64(ustrip(u"m", c.y))
+        x = ustrip(u"m", c.x)
+        y = ustrip(u"m", c.y)
         push!(coords, (x, y))
     end
     
-    # IMPORTANT: Ensure CCW ordering to match tributary computation
+    # Ensure CCW ordering to match tributary computation
     coords = Asap._ensure_ccw(coords)
     
     # Compute centroid offset
@@ -332,7 +332,7 @@ end
     visualize_vertex_tributaries(struc::BuildingStructure; story=0, kwargs...)
 
 Visualize stored Voronoi vertex tributary polygons for columns at a given story.
-Uses pre-computed polygons from `struc.tributaries` cache.
+Uses pre-computed polygons from `struc._tributary_caches`.
 
 # Arguments
 - `story::Int=0`: Which story to visualize (0 = ground level columns)
@@ -372,8 +372,8 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
         # Also include column position
         v = skel.vertices[col.vertex_idx]
         c = Meshes.coords(v)
-        push!(all_xs, Float64(ustrip(u"m", c.x)))
-        push!(all_ys, Float64(ustrip(u"m", c.y)))
+        push!(all_xs, ustrip(u"m", c.x))
+        push!(all_ys, ustrip(u"m", c.y))
     end
     
     if isempty(all_xs)
@@ -420,8 +420,8 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
         if show_labels && !isnothing(trib_area)
             v = skel.vertices[col.vertex_idx]
             c = Meshes.coords(v)
-            mx = Float64(ustrip(u"m", c.x)) - cx
-            my = Float64(ustrip(u"m", c.y)) - cy
+            mx = ustrip(u"m", c.x) - cx
+            my = ustrip(u"m", c.y) - cy
             area_m2 = ustrip(u"m^2", trib_area)
             label = "$(round(area_m2, digits=1)) m²"
             GLMakie.text!(ax, mx, my + 0.5, text=label, fontsize=10,
@@ -434,8 +434,8 @@ function visualize_vertex_tributaries(struc::BuildingStructure;
         for col in story_cols
             v = skel.vertices[col.vertex_idx]
             c = Meshes.coords(v)
-            x = Float64(ustrip(u"m", c.x)) - cx
-            y = Float64(ustrip(u"m", c.y)) - cy
+            x = ustrip(u"m", c.x) - cx
+            y = ustrip(u"m", c.y) - cy
             GLMakie.scatter!(ax, [x], [y], color=:black, markersize=12, marker=:rect)
         end
     end

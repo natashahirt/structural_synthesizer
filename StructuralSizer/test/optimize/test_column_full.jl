@@ -190,13 +190,13 @@ const MOI = JuMP.MOI
     
     # =========================================================================
     @testset "Geometry Conversions" begin
-        # Steel to concrete
+        # Steel to concrete (geometry fields are now Unitful)
         steel_geom = SteelMemberGeometry(5.0; Lb=2.5, Kx=1.0, Ky=0.8)
         conc_geom = to_concrete_geometry(steel_geom)
         
         @test conc_geom isa ConcreteMemberGeometry
-        @test conc_geom.L == 5.0
-        @test conc_geom.Lu == 2.5
+        @test ustrip(u"m", conc_geom.L) ≈ 5.0
+        @test ustrip(u"m", conc_geom.Lu) ≈ 2.5
         @test conc_geom.k == 0.8
         
         # Concrete to steel
@@ -204,8 +204,8 @@ const MOI = JuMP.MOI
         steel_geom2 = to_steel_geometry(conc_geom2)
         
         @test steel_geom2 isa SteelMemberGeometry
-        @test steel_geom2.L == 4.0
-        @test steel_geom2.Lb == 4.0
+        @test ustrip(u"m", steel_geom2.L) ≈ 4.0
+        @test ustrip(u"m", steel_geom2.Lb) ≈ 4.0
         @test steel_geom2.Kx == 1.2
         @test steel_geom2.Ky == 1.2
         
@@ -274,8 +274,8 @@ const MOI = JuMP.MOI
         # Concrete defaults
         c = ConcreteColumnOptions()
         @test c.grade === NWC_4000
-        @test c.rebar_fy_ksi == 60.0
-        @test c.catalog === :common
+        @test c.rebar_grade === Rebar_60
+        @test c.catalog === :standard
         @test c.include_slenderness == true
         @test c.include_biaxial == true
         @test c.βdns == 0.6
@@ -404,25 +404,25 @@ const MOI = JuMP.MOI
         @test length(combined) == length(preferred_W()) + length(all_HSS())
         
         # RC rectangular catalogs
-        rc_rect_common = rc_column_catalog(:rect, :common)
-        @test length(rc_rect_common) > 0
-        @test all(s -> s isa RCColumnSection, rc_rect_common)
+        rc_rect_std = rc_column_catalog(:rect, :standard)
+        @test length(rc_rect_std) > 0
+        @test all(s -> s isa RCColumnSection, rc_rect_std)
         
         rc_rect_all = rc_column_catalog(:rect, :all)
-        @test length(rc_rect_all) >= length(rc_rect_common)
+        @test length(rc_rect_all) >= length(rc_rect_std)
         
         # RC circular catalogs
-        rc_circ_common = rc_column_catalog(:circular, :common)
-        @test length(rc_circ_common) > 0
-        @test all(s -> s isa RCCircularSection, rc_circ_common)
+        rc_circ_std = rc_column_catalog(:circular, :standard)
+        @test length(rc_circ_std) > 0
+        @test all(s -> s isa RCCircularSection, rc_circ_std)
         
         rc_circ_all = rc_column_catalog(:circular, :all)
-        @test length(rc_circ_all) >= length(rc_circ_common)
+        @test length(rc_circ_all) >= length(rc_circ_std)
         
         # Legacy single-arg version defaults to rectangular
-        rc_common = rc_column_catalog(:common)
-        @test length(rc_common) > 0
-        @test all(s -> s isa RCColumnSection, rc_common)
+        rc_std = rc_column_catalog(:standard)
+        @test length(rc_std) > 0
+        @test all(s -> s isa RCColumnSection, rc_std)
     end
     
     # =========================================================================

@@ -4,6 +4,8 @@
 # Glued laminated timber sections per NDS/AITC.
 # TODO: Implement full geometry calculations and catalog loading.
 
+using Asap: Length, Area, Volume, SecondMomentOfArea
+
 """
     GlulamSection <: AbstractSection
 
@@ -28,15 +30,15 @@ Glued laminated timber (glulam) rectangular section.
 """
 struct GlulamSection <: AbstractSection
     name::Union{String, Nothing}
-    b::LengthQ       # Width
-    d::LengthQ       # Depth
+    b::Length           # Width
+    d::Length           # Depth
     stress_class::String
     # Section properties
-    A::AreaQ
-    Ix::InertQ
-    Iy::InertQ
-    Sx::ModQ
-    Sy::ModQ
+    A::Area
+    Ix::SecondMomentOfArea
+    Iy::SecondMomentOfArea
+    Sx::SectionModulus
+    Sy::SectionModulus
 end
 
 # Stub constructor
@@ -53,6 +55,10 @@ end
 section_area(s::GlulamSection) = s.A
 section_depth(s::GlulamSection) = s.d
 section_width(s::GlulamSection) = s.b
+Ix(s::GlulamSection) = s.Ix
+Iy(s::GlulamSection) = s.Iy
+Sx(s::GlulamSection) = s.Sx
+Sy(s::GlulamSection) = s.Sy
 
 """
 Standard glulam widths (inches) per AITC.

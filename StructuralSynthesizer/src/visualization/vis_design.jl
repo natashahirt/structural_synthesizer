@@ -261,20 +261,34 @@ function visualize(design::BuildingDesign;
     if mode == :deflected
         # Draw original geometry as dashed reference
         if show_original_geometry
-            # Frame elements
+            # Frame elements (batched)
+            orig_frame_pts = GLMakie.Point3f[]
+            nan_pt = GLMakie.Point3f(NaN, NaN, NaN)
             for element in model.elements
                 p1, p2 = get_drawing_pts(element, 0.0)
-                GLMakie.lines!(ax, [p1[1], p2[1]], [p1[2], p2[2]], [p1[3], p2[3]], 
+                push!(orig_frame_pts, GLMakie.Point3f(p1...), GLMakie.Point3f(p2...), nan_pt)
+            end
+            if !isempty(orig_frame_pts)
+                GLMakie.lines!(ax, orig_frame_pts,
                               color = (:gray60, 0.4), linewidth = 0.5, linestyle = :dash,
                               transparency = true)
             end
             # Shell elements (original mesh outlines)
             if Asap.has_shell_elements(model)
+                orig_verts = GLMakie.Point3f[]
+                orig_faces = GLMakie.GeometryBasics.TriangleFace{Int}[]
                 for shell in model.shell_elements
-                    pts = [GLMakie.Point3f(ustrip.(u"m", node.position)...) for node in shell.nodes]
-                    GLMakie.lines!(ax, [pts..., pts[1]],
-                                   color = (:gray60, 0.3), linewidth = 0.3, linestyle = :dash,
-                                   transparency = true)
+                    base = length(orig_verts)
+                    for node in shell.nodes
+                        push!(orig_verts, GLMakie.Point3f(ustrip.(u"m", node.position)...))
+                    end
+                    push!(orig_faces, GLMakie.GeometryBasics.TriangleFace(base + 1, base + 2, base + 3))
+                end
+                if !isempty(orig_verts)
+                    orig_mesh = GLMakie.GeometryBasics.Mesh(orig_verts, orig_faces)
+                    GLMakie.wireframe!(ax, orig_mesh,
+                                       color = (:gray60, 0.3), linewidth = 0.3,
+                                       transparency = true)
                 end
             end
             push!(leg_elems, GLMakie.LineElement(color = (:gray60, 0.4), linewidth = 1, linestyle = :dash))
@@ -348,20 +362,34 @@ function visualize(design::BuildingDesign;
                 has_displacement_coloring = true
             end
             
-            # Draw deflected elements
+            # Draw deflected elements (batched where possible)
             use_displacement_coloring = color_by in (:displacement_global, :displacement_local) && !isempty(all_colors)
-            color_idx = 1
             
-            for (i, pts) in enumerate(all_points)
-                n_pts = length(pts)
-                if use_displacement_coloring
-                    # Use per-point coloring - slice exactly n_pts colors
-                    local_colors = all_colors[color_idx:min(color_idx + n_pts - 1, length(all_colors))]
-                    GLMakie.lines!(ax, pts, color = local_colors, colorrange = crange,
-                                  linewidth = linewidth, colormap = :turbo)
+            if use_displacement_coloring
+                # Batch all displacement-colored elements into one lines! call
+                batched_pts = GLMakie.Point3f[]
+                batched_colors = Float64[]
+                nan_pt = GLMakie.Point3f(NaN, NaN, NaN)
+                for pts in all_points
+                    append!(batched_pts, pts)
+                    push!(batched_pts, nan_pt)
+                end
+                # Rebuild color array with NaN-gap entries
+                color_idx = 1
+                for pts in all_points
+                    n_pts = length(pts)
+                    append!(batched_colors, all_colors[color_idx:color_idx + n_pts - 1])
+                    push!(batched_colors, NaN)
                     color_idx += n_pts
-                else
-                    # Use utilization coloring
+                end
+                if !isempty(batched_pts)
+                    GLMakie.lines!(ax, batched_pts, color = batched_colors,
+                                  colorrange = crange, linewidth = linewidth,
+                                  colormap = :turbo)
+                end
+            else
+                # Non-displacement coloring: per-element colors, batch by color
+                for (i, pts) in enumerate(all_points)
                     c = if color_by == :utilization
                         ratio = get(element_ratios, i, 0.0)
                         _utilization_color(ratio, utilization_limits)
@@ -386,8 +414,27 @@ function visualize(design::BuildingDesign;
         if show_slabs && Asap.has_shell_elements(model)
             shell_disp_colors = Float64[]  # For displacement coloring
             
+            # ── Drape shells over the deflected frame ──
+            # Superposition: δ_draped = frame_support_field + δ_local
+            # Falls back to raw coupled-model displacements if frame model unavailable
+            draped = compute_draped_displacements(design)
+            use_draping = !isempty(draped.total)
+            
+            # Helper: get displacement for a shell node (draped or raw)
+            _shell_disp(node) = if use_draping
+                get(draped.total, objectid(node),
+                    Asap.to_displacement_vec(node.displacement)[1:3])
+            else
+                Asap.to_displacement_vec(node.displacement)[1:3]
+            end
+            _shell_local(node) = if use_draping
+                get(draped.local_bending, objectid(node),
+                    Asap.to_displacement_vec(node.displacement)[1:3])
+            else
+                Asap.to_displacement_vec(node.displacement)[1:3]
+            end
+            
             # For local mode: identify support nodes (shared with frame elements)
-            # These are nodes that appear in both shell and frame elements
             support_nodes = Set{Asap.Node}()
             if color_by == :displacement_local
                 for el in model.elements
@@ -396,37 +443,23 @@ function visualize(design::BuildingDesign;
                 end
             end
             
-            # Group shells by slab ID and compute per-slab support displacement
-            # This ensures each slab uses its own supports as reference
+            # Per-slab average support displacement (for local mode fallback)
             slab_support_disp = Dict{Symbol, Vector{Float64}}()
-            if color_by == :displacement_local
-                # Group shells by slab
-                slab_shells = Dict{Symbol, Vector{typeof(first(model.shell_elements))}}()
+            if color_by == :displacement_local && !use_draping
+                slab_shells_map = Dict{Symbol, Vector{typeof(first(model.shell_elements))}}()
                 for shell in model.shell_elements
-                    slab_id = shell.id
-                    if !haskey(slab_shells, slab_id)
-                        slab_shells[slab_id] = []
-                    end
-                    push!(slab_shells[slab_id], shell)
+                    shells = get!(slab_shells_map, shell.id, typeof(first(model.shell_elements))[])
+                    push!(shells, shell)
                 end
-                
-                # For each slab, find its support nodes and compute average displacement
-                for (slab_id, shells) in slab_shells
+                for (slab_id, shells) in slab_shells_map
                     slab_support_nodes = Set{Asap.Node}()
-                    for shell in shells
-                        for node in shell.nodes
-                            if node in support_nodes
-                                push!(slab_support_nodes, node)
-                            end
-                        end
+                    for shell in shells, node in shell.nodes
+                        node in support_nodes && push!(slab_support_nodes, node)
                     end
-                    
-                    # Compute average displacement of this slab's supports
                     if !isempty(slab_support_nodes)
                         avg_disp = [0.0, 0.0, 0.0]
                         for node in slab_support_nodes
-                            disp = Asap.to_displacement_vec(node.displacement)
-                            avg_disp .+= disp[1:3]
+                            avg_disp .+= Asap.to_displacement_vec(node.displacement)[1:3]
                         end
                         avg_disp ./= length(slab_support_nodes)
                         slab_support_disp[slab_id] = avg_disp
@@ -440,24 +473,24 @@ function visualize(design::BuildingDesign;
             if deflection_scale === :auto || deflection_scale == 1.0
                 max_shell_disp = 0.0
                 for shell in model.shell_elements
-                    slab_ref = get(slab_support_disp, shell.id, [0.0, 0.0, 0.0])
                     for node in shell.nodes
-                        disp = Asap.to_displacement_vec(node.displacement)
-                        # For local mode, measure relative to this slab's supports
-                        d = color_by == :displacement_local ? disp[1:3] .- slab_ref : disp[1:3]
+                        d = if color_by == :displacement_local
+                            _shell_local(node)
+                        else
+                            _shell_disp(node)
+                        end
                         max_shell_disp = max(max_shell_disp, norm(d))
                     end
                 end
                 if max_shell_disp > 1e-12
-                    # Scale so max deflection is ~10% of typical span
-                    avg_len = model.nElements > 0 ? avg_len : 5.0  # fallback to 5m
+                    avg_len = model.nElements > 0 ? avg_len : 5.0
                     deflection_scale = (avg_len * 0.1) / max_shell_disp
                 end
             end
             
             # Collect all shell triangles
             shell_verts = GLMakie.Point3f[]
-            shell_faces = GLMakie.TriangleFace{Int}[]
+            shell_faces = GLMakie.GeometryBasics.TriangleFace{Int}[]
             
             for shell in model.shell_elements
                 base_idx = length(shell_verts)
@@ -465,36 +498,41 @@ function visualize(design::BuildingDesign;
                 
                 for node in shell.nodes
                     pos = [ustrip(u"m", node.position[j]) for j in 1:3]
-                    disp = Asap.to_displacement_vec(node.displacement)
                     
                     if color_by == :displacement_local
-                        # LOCAL mode: support nodes stay at original position,
-                        # interior nodes show displacement relative to THIS SLAB's supports
                         is_support = node in support_nodes
-                        if is_support
-                            # Support node: stays at original position
-                            push!(shell_verts, GLMakie.Point3f(pos...))
-                            push!(shell_disp_colors, 0.0)
-                        else
-                            # Interior node: show displacement relative to slab's supports
-                            local_disp = disp[1:3] .- slab_ref
-                            deformed = pos .+ deflection_scale .* local_disp
+                        # Local mode: position using local bending only
+                        # (support nodes get [0,0,0] → stay at original, matching frame endpoints)
+                        if use_draping
+                            local_d = _shell_local(node)
+                            deformed = pos .+ deflection_scale .* local_d
                             push!(shell_verts, GLMakie.Point3f(deformed...))
-                            push!(shell_disp_colors, norm(local_disp))
+                            push!(shell_disp_colors, is_support ? 0.0 : norm(local_d))
+                        else
+                            if is_support
+                                push!(shell_verts, GLMakie.Point3f(pos...))
+                                push!(shell_disp_colors, 0.0)
+                            else
+                                local_disp = Asap.to_displacement_vec(node.displacement)[1:3] .- slab_ref
+                                deformed = pos .+ deflection_scale .* local_disp
+                                push!(shell_verts, GLMakie.Point3f(deformed...))
+                                push!(shell_disp_colors, norm(local_disp))
+                            end
                         end
                     else
-                        # GLOBAL mode: full displacement from original position
-                        deformed = pos .+ deflection_scale .* disp[1:3]
+                        # GLOBAL mode: full draped displacement
+                        disp_3 = _shell_disp(node)
+                        deformed = pos .+ deflection_scale .* disp_3
                         push!(shell_verts, GLMakie.Point3f(deformed...))
                         
                         if color_by == :displacement_global
-                            push!(shell_disp_colors, norm(disp[1:3]))
+                            push!(shell_disp_colors, norm(disp_3))
                         end
                     end
                 end
                 
                 # Add triangle face (1-indexed)
-                push!(shell_faces, GLMakie.TriangleFace(base_idx + 1, base_idx + 2, base_idx + 3))
+                push!(shell_faces, GLMakie.GeometryBasics.TriangleFace(base_idx + 1, base_idx + 2, base_idx + 3))
             end
             
             if !isempty(shell_verts) && !isempty(shell_faces)
@@ -523,24 +561,42 @@ function visualize(design::BuildingDesign;
                                   transparency = true)
                 end
                 
-                # Draw mesh edges for visibility
-                for face in shell_faces
-                    p1, p2, p3 = shell_verts[face[1]], shell_verts[face[2]], shell_verts[face[3]]
-                    GLMakie.lines!(ax, [p1, p2, p3, p1],
+                # Draw mesh wireframe
+                shell_mesh = GLMakie.GeometryBasics.Mesh(shell_verts, shell_faces)
+                GLMakie.wireframe!(ax, shell_mesh,
                                    color = (:gray40, 0.3), linewidth = 0.5,
                                    transparency = true)
-                end
                 
                 push!(leg_elems, GLMakie.PolyElement(color = (slab_color, slab_alpha), 
                       strokecolor = :gray40, strokewidth = 1))
                 push!(leg_labels, "Slabs (Deflected Mesh)")
             end
         elseif show_slabs && !isempty(struc.slabs)
-            # Fallback: no shell model available, show reference slabs
-            draw_slabs!(ax, struc; color=slab_color, alpha=slab_alpha * 0.5)
-            push!(leg_elems, GLMakie.PolyElement(color = (slab_color, slab_alpha * 0.5), 
-                  strokecolor = :gray40, strokewidth = 1))
-            push!(leg_labels, "Slabs (Reference)")
+            # Fallback: no shell model available
+            # Vault slabs: map parabolic surface onto deflected beam corners
+            has_vaults = false
+            for slab in struc.slabs
+                if slab.result isa StructuralSizer.VaultResult
+                    draw_vault_deflected!(ax, slab, struc, model, deflection_scale;
+                        color=slab_color, alpha=slab_alpha * 0.6)
+                    has_vaults = true
+                end
+            end
+            # Non-vault slabs: flat reference boxes
+            non_vault = [s for s in struc.slabs if !(s.result isa StructuralSizer.VaultResult)]
+            if !isempty(non_vault)
+                draw_slabs!(ax, struc; color=slab_color, alpha=slab_alpha * 0.5)
+            end
+            if has_vaults
+                push!(leg_elems, GLMakie.PolyElement(color = (slab_color, slab_alpha * 0.6),
+                      strokecolor = :gray40, strokewidth = 1))
+                push!(leg_labels, "Vaults (Deflected)")
+            end
+            if !isempty(non_vault)
+                push!(leg_elems, GLMakie.PolyElement(color = (slab_color, slab_alpha * 0.5), 
+                      strokecolor = :gray40, strokewidth = 1))
+                push!(leg_labels, "Slabs (Reference)")
+            end
         end
         
     # =========================================================================
@@ -611,15 +667,15 @@ function visualize(design::BuildingDesign;
         # Draw foundations (3D boxes with designed dimensions)
         if show_foundations && !isempty(struc.foundations)
             draw_foundations!(ax, struc; color=foundation_color, alpha=foundation_alpha)
-            push!(leg_elems, GLMakie.PolyElement(color = (foundation_color, foundation_alpha), 
-                  strokecolor = :gray40, strokewidth = 1))
-            push!(leg_labels, "Foundations")
+            _add_foundation_legend!(leg_elems, leg_labels, struc, foundation_color, foundation_alpha)
         end
     end
     
-    # Draw nodes
+    # Draw nodes (only skeleton nodes — skip shell mesh interior nodes)
     if show_nodes && !isempty(model.nodes)
-        nodes_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in model.nodes]
+        n_skel = length(skel.vertices)
+        skel_nodes = model.nodes[1:min(n_skel, length(model.nodes))]
+        nodes_pos = [GLMakie.Point3f(ustrip.(u"m", n.position)...) for n in skel_nodes]
         GLMakie.scatter!(ax, nodes_pos, color = :black, markersize = markersize / 2)
         push!(leg_elems, GLMakie.MarkerElement(marker = :circle, color = :black, markersize = 8))
         push!(leg_labels, "Nodes")
@@ -710,4 +766,62 @@ function visualize(design::BuildingDesign;
     
     display(fig)
     return fig
+end
+
+# ─── Foundation legend helper ────────────────────────────────────────────────
+
+"""Build legend entries for each distinct foundation type present in the model."""
+function _add_foundation_legend!(elems, labels, struc, default_color, default_alpha)
+    types_present = Set{Symbol}()
+    for f in struc.foundations
+        r = f.result
+        if r isa StructuralSizer.SpreadFootingResult
+            push!(types_present, :spread)
+        elseif r isa StructuralSizer.StripFootingResult
+            push!(types_present, :strip)
+        elseif r isa StructuralSizer.MatFootingResult
+            push!(types_present, :mat)
+        else
+            push!(types_present, :other)
+        end
+    end
+
+    if length(types_present) <= 1
+        # Single type → one generic entry
+        col = if :strip in types_present
+            RGBAf(0.55, 0.55, 0.60, Float32(default_alpha))
+        elseif :mat in types_present
+            RGBAf(0.60, 0.60, 0.65, Float32(default_alpha))
+        else
+            (default_color, default_alpha)
+        end
+        lbl = if :strip in types_present
+            "Strip Footings"
+        elseif :mat in types_present
+            "Mat Foundation"
+        else
+            "Spread Footings"
+        end
+        push!(elems, GLMakie.PolyElement(color=col, strokecolor=:gray40, strokewidth=1))
+        push!(labels, lbl)
+    else
+        # Multiple types → one entry per type
+        if :spread in types_present
+            push!(elems, GLMakie.PolyElement(
+                color=(default_color, default_alpha), strokecolor=:gray40, strokewidth=1))
+            push!(labels, "Spread Footings")
+        end
+        if :strip in types_present
+            push!(elems, GLMakie.PolyElement(
+                color=RGBAf(0.55, 0.55, 0.60, Float32(default_alpha)),
+                strokecolor=:gray40, strokewidth=1))
+            push!(labels, "Strip Footings")
+        end
+        if :mat in types_present
+            push!(elems, GLMakie.PolyElement(
+                color=RGBAf(0.60, 0.60, 0.65, 0.55f0),
+                strokecolor=:gray40, strokewidth=1))
+            push!(labels, "Mat Foundation")
+        end
+    end
 end

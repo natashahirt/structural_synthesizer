@@ -162,4 +162,3 @@ import Meshes
 end
 
 println("\n✓ Strip geometry tests complete!")
-exit(0)

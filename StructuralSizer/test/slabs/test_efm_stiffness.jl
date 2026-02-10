@@ -19,7 +19,7 @@
 using Test
 using Unitful
 using Unitful: @u_str
-using StructuralSizer: psf, ksf, ksi  # Units from Asap via StructuralSizer
+using Asap  # Register Asap units (psf, ksf, kip, etc.) with Unitful's @u_str
 using StructuralSizer
 
 @testset "EFM Stiffness Calculations - StructurePoint Validation" begin
@@ -46,8 +46,8 @@ using StructuralSizer
     # ==========================================================================
     
     # Concrete modulus values
-    Ecs_ref = 3.834e6u"psi"     # E_cs = 57000√4000 = 3,834×10³ psi
-    Ecc_ref = 4.696e6u"psi"     # E_cc = 57000√6000 = 4,696×10³ psi (using their formula)
+    Ecs_ref = 3.834e6u"psi"     # E_cs = 33 × 150^1.5 × √4000 = 3,834×10³ psi (ACI 19.2.2.1.a, wc=150 pcf)
+    Ecc_ref = 4.696e6u"psi"     # E_cc = 33 × 150^1.5 × √6000 = 4,696×10³ psi (ACI 19.2.2.1.a, wc=150 pcf)
     
     # Moment of inertia values
     Is_ref = 4802u"inch^4"      # Slab: l2 × h³/12 = 168 × 7³/12 = 4,802 in⁴

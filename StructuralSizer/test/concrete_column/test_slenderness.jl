@@ -19,11 +19,11 @@ include("test_data/slenderness_sway_18x18.jl")
     # =========================================================================
     @testset "Material Properties" begin
         # Concrete modulus: Ec = 57000√f'c (psi)
-        Ec = StructuralSizer.concrete_modulus(ref.materials.fc)
-        @test Ec ≈ ref.materials.Ec rtol=0.01
+        Ec_val = StructuralSizer.Ec_ksi(ref.materials)
+        @test Ec_val ≈ ref.materials.Ec rtol=0.01
         
         # For f'c = 3 ksi = 3000 psi: Ec = 57000√3000 ≈ 3122 ksi
-        @test Ec ≈ 3122 rtol=0.01
+        @test Ec_val ≈ 3122 rtol=0.01
     end
     
     # =========================================================================
@@ -125,7 +125,7 @@ include("test_data/slenderness_sway_18x18.jl")
         # PDF uses Ise = 360 in⁴ giving (EI)_eff = 10.56×10⁶ kip-in²
         # Our Ise depends on bar arrangement - verify formula is correct
         # by checking the formula components
-        Ec = StructuralSizer.concrete_modulus(ref.materials.fc)  # 3122 ksi
+        Ec_val = StructuralSizer.Ec_ksi(ref.materials)  # 3122 ksi
         Ig = 17.0^4 / 12  # 6960 in⁴
         
         # Simplified method check
@@ -134,7 +134,7 @@ include("test_data/slenderness_sway_18x18.jl")
             βdns = ref.loading.βdns,
             method = :simplified
         )
-        EI_expected_simplified = 0.4 * Ec * Ig / (1 + ref.loading.βdns)
+        EI_expected_simplified = 0.4 * Ec_val * Ig / (1 + ref.loading.βdns)
         @test EI_eff_simplified ≈ EI_expected_simplified rtol=0.01
         
         # Accurate method should give higher value than simplified

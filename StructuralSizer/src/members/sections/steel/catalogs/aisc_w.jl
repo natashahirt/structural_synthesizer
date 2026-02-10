@@ -1,15 +1,8 @@
 # AISC W-Shape Catalog
 
-using Asap: asfloat, maybe_asfloat
+using Asap: asfloat, maybe_asfloat, IN_TO_M, IN2_TO_M2, IN4_TO_M4, IN6_TO_M6
 
 const W_CATALOG = Dict{String, ISymmSection}()
-
-# Conversion factors (Float64) to avoid Rational{Int64} overflow in Unitful
-# for high powers (like inch^6 -> m^6)
-const _IN_TO_M = 0.0254
-const _IN2_TO_M2 = _IN_TO_M^2
-const _IN4_TO_M4 = _IN_TO_M^4
-const _IN6_TO_M6 = _IN_TO_M^6
 
 # AISC Manual "preferred" (bolded) W-shapes - most economical for their depth
 # Source: AISC Steel Construction Manual, 15th Edition, Table 1-1
@@ -91,23 +84,23 @@ function load_w_catalog!()
         
         # Load and convert to SI Base Units (Meters) using float factors
         # Explicit multiplication by u"m" applies the unit after numeric conversion
-        d  = (asfloat(row.d)  * _IN_TO_M) * u"m"
-        bf = (asfloat(row.bf) * _IN_TO_M) * u"m"
-        tw = (asfloat(row.tw) * _IN_TO_M) * u"m"
-        tf = (asfloat(row.tf) * _IN_TO_M) * u"m"
+        d  = (asfloat(row.d)  * IN_TO_M) * u"m"
+        bf = (asfloat(row.bf) * IN_TO_M) * u"m"
+        tw = (asfloat(row.tw) * IN_TO_M) * u"m"
+        tf = (asfloat(row.tf) * IN_TO_M) * u"m"
         
         # Database values (more accurate than thin-walled approximations)
         Jv   = maybe_asfloat(row.J)
-        J_db = Jv === nothing ? nothing : (Jv * _IN4_TO_M4) * u"m^4"
+        J_db = Jv === nothing ? nothing : (Jv * IN4_TO_M4) * u"m^4"
 
         Cwv   = maybe_asfloat(row.Cw)
-        Cw_db = Cwv === nothing ? nothing : (Cwv * _IN6_TO_M6) * u"m^6"
+        Cw_db = Cwv === nothing ? nothing : (Cwv * IN6_TO_M6) * u"m^6"
 
         rtsv   = maybe_asfloat(row.rts)
-        rts_db = rtsv === nothing ? nothing : (rtsv * _IN_TO_M) * u"m"
+        rts_db = rtsv === nothing ? nothing : (rtsv * IN_TO_M) * u"m"
 
         hov   = maybe_asfloat(row.ho)
-        ho_db = hov === nothing ? nothing : (hov * _IN_TO_M) * u"m"
+        ho_db = hov === nothing ? nothing : (hov * IN_TO_M) * u"m"
         
         is_preferred = name in PREFERRED_W_SECTIONS
         
@@ -115,7 +108,7 @@ function load_w_catalog!()
             name=name, J_db=J_db, Cw_db=Cw_db, rts_db=rts_db, ho_db=ho_db,
             is_preferred=is_preferred)
     end
-    @debug "Loaded $(length(W_CATALOG)) W sections (SI units)"
+    nothing
 end
 
 """Get W section by AISC name (e.g., "W10X22")."""

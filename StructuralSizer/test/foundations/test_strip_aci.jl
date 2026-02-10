@@ -1,0 +1,103 @@
+using StructuralSizer
+using Unitful
+using Test
+
+println("Testing ACI 318-14 Strip (Combined) Footing Design...")
+
+# =============================================================================
+# Validation against StructurePoint Combined Footing Reference
+# =============================================================================
+# Source: "Reinforced Concrete Column Combined Footing Analysis and Design"
+#         Wight 7th Ed., Example 15-5
+#
+# Given:
+#   Exterior column: 24" x 16", PD=200 kip, PL=150 kip
+#   Interior column: 24" x 24", PD=300 kip, PL=225 kip
+#   f'c = 3000 psi, fy = 60000 psi
+#   qa = 5000 psf → after surcharge ≈ 4.37 ksf net (reference pre-sizes to L=25.33', B=8')
+#   Pu_ext = 1.2(200)+1.6(150) = 480 kip
+#   Pu_int = 1.2(300)+1.6(225) = 720 kip
+#   Ps_ext = 200+150 = 350 kip
+#   Ps_int = 300+225 = 525 kip
+#
+# Reference results:
+#   Footing: 25'-4" x 8', h=40 in., d=36.5 in.
+#   qu = 5.92 ksf
+#   Negative Mu = 2100 kip-ft → As = 13.4 in², use 17 #8
+#   Interior punching: vu = 80.2 psi < ϕvc = 164 psi
+#   Exterior punching (at h=40): vu = 157 psi < ϕvc = 164 psi
+# =============================================================================
+
+# Demands
+d_ext = FoundationDemand(1; Pu=480.0kip, Ps=350.0kip)
+d_int = FoundationDemand(2; Pu=720.0kip, Ps=525.0kip)
+
+# The reference uses pre-computed net qa ≈ 4.37 ksf (after footing weight, etc.)
+# From the reference: total area = 25.33 × 8 = 202.67 ft²
+# Service load = 350+525 = 875 kip → qa_net = 875/202.67 = 4.32 ksf
+# Let's use a net qa that yields the reference's pre-sized dimensions
+soil = Soil(4.32ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
+
+# Column positions: exterior at 1 ft from left edge, interior at 21 ft from left edge
+# The reference places columns such that centroid aligns at L/2
+# Exterior column is near property line
+# Column spacing = 20 ft (from the reference figure)
+# With the resultant at x = (350×0 + 525×20)/875 = 12 ft from exterior
+# L/2 = 12 + overhang → L ≈ 25.33 ft
+positions = [0.0u"ft", 20.0u"ft"]
+
+opts = StripFootingOptions(
+    material = RC_3000_60,
+    bar_size_long = 8,
+    bar_size_trans = 5,
+    cover = 3.5u"inch",  # 3" clear + half bar for d calculation
+    min_depth = 12.0u"inch",
+    depth_increment = 1.0u"inch",
+    width_increment = 1.0u"inch",
+)
+
+println("Designing strip footing...")
+result = design_strip_footing([d_ext, d_int], positions, soil; opts)
+
+# Extract results
+B_in = ustrip(u"inch", result.B)
+L_in = ustrip(u"inch", result.L_ftg)
+h_in = ustrip(u"inch", result.D)
+d_in = ustrip(u"inch", result.d)
+
+println("\n=== Design Results ===")
+println("  B = $(round(B_in, digits=1)) in. ($(round(B_in/12, digits=2)) ft)")
+println("  L = $(round(L_in, digits=1)) in. ($(round(L_in/12, digits=2)) ft)")
+println("  h = $(round(h_in, digits=1)) in.")
+println("  d = $(round(d_in, digits=1)) in.")
+println("  n_columns = $(result.n_columns)")
+As_bot = ustrip(u"inch^2", result.As_long_bot)
+As_top = ustrip(u"inch^2", result.As_long_top)
+As_trans = ustrip(u"inch^2", result.As_trans)
+println("  As_long_bot = $(round(As_bot, digits=2)) in²")
+println("  As_long_top = $(round(As_top, digits=2)) in²")
+println("  As_trans = $(round(As_trans, digits=2)) in²")
+println("  utilization = $(round(result.utilization, digits=3))")
+
+# =============================================================================
+# Validation
+# =============================================================================
+println("\n=== Validation ===")
+
+# Thickness: reference = 40 in. (after failing at 36 in.)
+@test h_in ≥ 36.0 && h_in ≤ 44.0
+println("  h = $(h_in) in. (ref: 40 in.) ✓")
+
+# Width: reference = 8 ft = 96 in.
+@test B_in ≥ 80.0 && B_in ≤ 120.0
+println("  B = $(round(B_in/12, digits=2)) ft (ref: 8 ft) ✓")
+
+# Top steel should be significant (Mu_neg = 2100 kip-ft → As ≈ 13.4 in²)
+@test As_top ≥ 10.0
+println("  As_top = $(round(As_top, digits=2)) in² (ref: ≈13.4 in²) ✓")
+
+# Utilization should be < 1.0
+@test result.utilization < 1.0
+println("  utilization = $(round(result.utilization, digits=3)) < 1.0 ✓")
+
+println("\n=== All strip footing validation tests passed! ===")

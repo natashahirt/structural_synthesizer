@@ -24,9 +24,8 @@ to_asap!(struc)
 
 # With custom parameters
 params = DesignParameters(
-    load_combination = STRENGTH_1_2D_1_6L,
+    load_combinations = [strength_1_2D_1_6L, strength_1_4D],
     diaphragm_mode = :rigid,
-    default_frame_E = 200e9u"Pa",
 )
 to_asap!(struc; params=params)
 
@@ -48,30 +47,31 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     
     skel = struc.skeleton
     
-    # 1. Nodes
-    support_indices = get(skel.groups_vertices, :support, Int[])
+    # 1. Nodes — from cached coordinate matrix
+    support_set = Set(get(skel.groups_vertices, :support, Int[]))
+    vc = skel.geometry.vertex_coords
+    n_verts = length(skel.vertices)
     
-    nodes = map(enumerate(skel.vertices)) do (v_idx, v)
-        coords = Meshes.coords(v)
-        x = uconvert(u"m", coords.x)
-        y = uconvert(u"m", coords.y)
-        z = uconvert(u"m", coords.z)
-        
-        is_support = v_idx in support_indices
-        dofs = is_support ? [false, false, false, false, false, false] : [true, true, true, false, false, false]
-        return Asap.Node([x, y, z], dofs)
+    nodes = Vector{Asap.Node}(undef, n_verts)
+    @inbounds for v_idx in 1:n_verts
+        x = vc[v_idx, 1] * u"m"
+        y = vc[v_idx, 2] * u"m"
+        z = vc[v_idx, 3] * u"m"
+        dofs = v_idx in support_set ? [false, false, false, false, false, false] : [true, true, true, false, false, false]
+        nodes[v_idx] = Asap.Node([x, y, z], dofs)
     end
 
-    # 2. Frame Elements
-    # Default placeholder section using params - will be replaced during sizing
+    # 2. Frame Elements — placeholder section (replaced during sizing)
+    frame_E = isnothing(params.steel) ? params.default_frame_E : uconvert(u"Pa", params.steel.E)
+    frame_G = isnothing(params.steel) ? params.default_frame_G : uconvert(u"Pa", params.steel.G)
+    frame_ρ = isnothing(params.steel) ? params.default_frame_ρ : uconvert(u"kg/m^3", params.steel.ρ)
     default_section = Asap.Section(
-        4.18e-3u"m^2",              # A (approx W10x22 - placeholder geometry)
-        params.default_frame_E,     # E from params
-        params.default_frame_G,     # G from params
-        89.8e-6u"m^4",              # Ix (placeholder)
-        11.4e-6u"m^4",              # Iy (placeholder)
-        0.5e-6u"m^4",               # J (placeholder)
-        params.default_frame_ρ      # ρ from params
+        4.18e-3u"m^2",    # A (approx W10x22 — placeholder geometry)
+        frame_E, frame_G,
+        89.8e-6u"m^4",    # Ix
+        11.4e-6u"m^4",    # Iy
+        0.5e-6u"m^4",     # J
+        frame_ρ
     )
     frame_elements = map(skel.edge_indices) do (v1, v2)
         return Asap.Element(nodes[v1], nodes[v2], default_section, release=:fixedfixed)
@@ -92,7 +92,7 @@ function to_asap!(struc::BuildingStructure{T, A, P};
     isempty(struc.cell_groups) && build_cell_groups!(struc)
     compute_cell_tributaries!(struc)  # Cache handles deduplication
     
-    # 5. Create loads using TributaryLoad (uses params.load_combination)
+    # 5. Create loads using TributaryLoad (uses envelope of params.load_combinations)
     loads = Asap.AbstractLoad[]
     empty!(struc.cell_tributary_loads)
     
@@ -127,11 +127,14 @@ end
 
 """Build effective shell_props from DesignParameters and explicit overrides."""
 function _build_shell_props(params::DesignParameters, mode::Symbol, explicit_props::Union{Nothing, NamedTuple})
+    # Resolve concrete E from params.concrete (user's material choice)
+    concrete_E = isnothing(params.concrete) ? uconvert(u"Pa", NWC_4000.E) : uconvert(u"Pa", params.concrete.E)
+    
     # Start with params values
     E_default = if mode == :rigid
         1e15u"Pa"  # Effectively rigid
     else
-        isnothing(params.diaphragm_E) ? 30e9u"Pa" : params.diaphragm_E
+        isnothing(params.diaphragm_E) ? concrete_E : params.diaphragm_E
     end
     
     ν_default = params.diaphragm_ν
@@ -162,16 +165,16 @@ function _create_shell_diaphragms(struc::BuildingStructure, nodes::Vector{Asap.N
                                    props::Union{Nothing, NamedTuple}=nothing)
     shells = Asap.ShellElement[]
     
-    # Default properties based on mode
+    # Default properties based on mode (uses props from _build_shell_props)
     if mode == :rigid
         # Rigid diaphragm: very high stiffness (effectively infinite)
         E_default = 1e15u"Pa"
         ν_default = 0.0  # No Poisson effect for rigid
         t_factor = 1.0
     else  # :shell
-        # Semi-rigid: actual concrete properties
-        E_default = 30e9u"Pa"
-        ν_default = 0.2
+        # Semi-rigid: use whatever _build_shell_props resolved from params.concrete
+        E_default = uconvert(u"Pa", NWC_4000.E)  # fallback; overridden by props below
+        ν_default = NWC_4000.ν
         t_factor = 1.0
     end
     
@@ -210,11 +213,11 @@ function _create_cell_tributary_loads!(
     face_edges = skel.face_edge_indices[cell.face_idx]
     face_verts = skel.face_vertex_indices[cell.face_idx]
     
-    # Use load combination from params instead of hardcoded factors
-    combo = params.load_combination
+    # Envelope across all load combinations in params
+    combos = params.load_combinations
     dead = cell.sdl + cell.self_weight
     live = cell.live_load
-    pressure = uconvert(u"Pa", factored_pressure(combo, dead, live))
+    pressure = uconvert(u"Pa", envelope_pressure(combos, dead, live))
     
     n_verts = length(face_verts)
     
@@ -298,53 +301,53 @@ function _extract_width_profile(trib::TributaryPolygon)
 end
 
 """
-    update_slab_loads!(struc, slab_idx)
+    sync_asap!(struc; params=DesignParameters())
 
-Update tributary load pressures when a slab's properties change.
-Call this after modifying slab sizing results, then the model will be re-solved.
+Lightweight sync of the Asap model between pipeline stages.
+
+Updates cell self-weights from current slab results, recomputes tributary load
+pressures, and re-solves. Does **not** rebuild topology — only loads change.
+
+This is the standard "glue" between design stages in `build_pipeline`:
+    for stage! in build_pipeline(params)
+        stage!(struc)
+        sync_asap!(struc)
+    end
+
+See also: [`to_asap!`](@ref), [`snapshot!`](@ref), [`restore!`](@ref)
 """
-function update_slab_loads!(struc::BuildingStructure, slab_idx::Int)
-    slab = struc.slabs[slab_idx]
-    sw = StructuralSizer.self_weight(slab.result)
+function sync_asap!(struc::BuildingStructure;
+                    params::DesignParameters=DesignParameters())
+    # 1. Push current slab self-weights into cells
+    for slab in struc.slabs
+        sw = StructuralSizer.self_weight(slab.result)
+        for cell_idx in slab.cell_indices
+            struc.cells[cell_idx].self_weight = sw
+        end
+    end
     
-    for cell_idx in slab.cell_indices
-        cell = struc.cells[cell_idx]
-        cell.self_weight = sw
-        
-        new_pressure = uconvert(u"Pa", total_factored_pressure(cell))
-        
+    # 2. Recompute tributary load pressures (envelope across combinations)
+    combos = params.load_combinations
+    for (cell_idx, cell) in enumerate(struc.cells)
+        cell.floor_type == :grade && continue
+        new_pressure = uconvert(u"Pa", envelope_pressure(combos, cell.sdl + cell.self_weight, cell.live_load))
         for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
             tload.pressure = new_pressure
         end
     end
     
-    Asap.solve!(struc.asap_model; reprocess=true)
-end
-
-"""
-    update_all_slab_loads!(struc)
-
-Update all tributary load pressures and re-solve.
-"""
-function update_all_slab_loads!(struc::BuildingStructure)
-    for slab_idx in eachindex(struc.slabs)
-        slab = struc.slabs[slab_idx]
-        sw = StructuralSizer.self_weight(slab.result)
-        
-        for cell_idx in slab.cell_indices
-            cell = struc.cells[cell_idx]
-            cell.self_weight = sw
-            
-            new_pressure = uconvert(u"Pa", total_factored_pressure(cell))
-            
-            for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
-                tload.pressure = new_pressure
-            end
-        end
+    # 3. Re-solve (topology unchanged, just updated loads/sections)
+    if struc.asap_model.processed
+        Asap._reprocess_stiffness_and_loads!(struc.asap_model)
+    else
+        Asap.process!(struc.asap_model)
     end
+    Asap.solve!(struc.asap_model)
     
-    Asap.solve!(struc.asap_model; reprocess=true)
+    return struc
 end
+
+# update_slab_loads! and update_all_slab_loads! removed — use sync_asap!(struc; params) instead.
 
 # =============================================================================
 # Slab → edge load interface
@@ -414,8 +417,8 @@ end
 function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab, 
                                   eff::StructuralSizer.LateralThrust,
                                   params::DesignParameters=DesignParameters())::Vector{EdgeLineLoadSpec}
-    # Factored thrust using load combination from params
-    combo = params.load_combination
+    # Factored thrust using governing (primary) load combination from params
+    combo = governing_combo(params)
     thrust_factored = eff.dead * combo.D + eff.live * combo.L
     mag_N_m = ustrip(u"N/m", uconvert(u"N/m", thrust_factored))
 
@@ -427,30 +430,22 @@ function vault_thrust_line_loads(struc::BuildingStructure, slab::Slab,
     skel = struc.skeleton
     boundary_edges = skel.face_edge_indices[face_idx]
 
+    vc = skel.geometry.vertex_coords
+    f_vis = skel.face_vertex_indices[face_idx]
+    f_mid = [sum(vc[vi, k] for vi in f_vis) / length(f_vis) for k in 1:3]
+
     out = EdgeLineLoadSpec[]
     for e_idx in boundary_edges
-        edge = skel.edges[e_idx]
-        p1, p2 = Meshes.vertices(edge)
-        c1, c2 = Meshes.coords(p1), Meshes.coords(p2)
+        ev1, ev2 = skel.edge_indices[e_idx]
+        v = [vc[ev2, k] - vc[ev1, k] for k in 1:3]
+        v_len = sqrt(sum(v .^ 2))
+        v_norm = v / v_len
+        abs(sum(v_norm .* span_vec)) < 0.1 || continue
 
-        v = [c2.x - c1.x, c2.y - c1.y, c2.z - c1.z]
-        v_norm = v / sqrt(sum(v .^ 2))
-        is_perpendicular = abs(sum(v_norm .* span_vec)) < 0.1
-        is_perpendicular || continue
-
-        # Determine "outward" direction (simple heuristic from previous implementation)
-        mid = [(c1.x + c2.x) / 2, (c1.y + c2.y) / 2, (c1.z + c2.z) / 2]
-        f_poly = skel.faces[face_idx]
-        f_pts = Meshes.vertices(f_poly)
-        f_xs = [Meshes.coords(p).x for p in f_pts]
-        f_ys = [Meshes.coords(p).y for p in f_pts]
-        f_zs = [Meshes.coords(p).z for p in f_pts]
-        f_mid = [sum(f_xs) / length(f_pts), sum(f_ys) / length(f_pts), sum(f_zs) / length(f_pts)]
-
+        mid = [(vc[ev1, k] + vc[ev2, k]) / 2 for k in 1:3]
         out_vec = mid .- f_mid
         proj = sum(out_vec .* span_vec)
-        # `proj` carries length units; compare against a unit-consistent zero.
-        dir = proj > zero(proj) ? span_vec : -span_vec
+        dir = proj > 0 ? span_vec : -span_vec
 
         w = (dir[1] * mag_N_m, dir[2] * mag_N_m, dir[3] * mag_N_m)
         push!(out, EdgeLineLoadSpec(Int(e_idx), w))
@@ -473,15 +468,15 @@ Uses Asap.Shell() for automatic triangulation.
 - `struc`: BuildingStructure containing the slab
 - `slab`: Slab object with sizing result
 - `nodes`: Vector of Asap.Node (indexed same as skeleton vertices)
-- `E`: Young's modulus (default uses slab concrete or 30 GPa)
-- `ν`: Poisson's ratio (default 0.2)
+- `E`: Young's modulus (default: from slab result material, then NWC_4000)
+- `ν`: Poisson's ratio (default: from slab result material, then NWC_4000)
 - `t_factor`: Thickness multiplier (default 1.0)
 
 # Returns
 Vector of ShellTri3 elements.
 """
 function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, nodes::Vector{Asap.Node};
-                                       E=nothing, ν::Float64=0.2, t_factor::Float64=1.0)
+                                       E=nothing, ν::Float64=NWC_4000.ν, t_factor::Float64=1.0)
     skel = struc.skeleton
     
     # Get slab thickness (with optional scaling)
@@ -489,16 +484,18 @@ function create_slab_diaphragm_shells(struc::BuildingStructure, slab::Slab, node
     
     # Determine E: use provided, or try slab concrete, or default
     if E === nothing
-        E = 30e9u"Pa"  # default concrete
+        E = uconvert(u"Pa", NWC_4000.E)  # fallback
         if hasfield(typeof(slab.result), :concrete) && slab.result.concrete !== nothing
             if hasfield(typeof(slab.result.concrete), :E)
                 E = slab.result.concrete.E
             end
+            if hasfield(typeof(slab.result.concrete), :ν)
+                ν = slab.result.concrete.ν
+            end
         end
     end
     
-    # Convert E to Pa if not already
-    E_pa = E isa Unitful.Quantity ? uconvert(u"Pa", E) : E * u"Pa"
+    E_pa = uconvert(u"Pa", E)
     
     # Collect face indices for this slab
     face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
@@ -554,24 +551,18 @@ function _get_slab_boundary_vertices(struc::BuildingStructure, slab::Slab)
     end
     
     # Multi-cell: collect all unique vertices and compute convex hull
+    vc = skel.geometry.vertex_coords
     all_vert_indices = Set{Int}()
-    z_coord = 0.0
     
     for cell_idx in slab.cell_indices
         cell = struc.cells[cell_idx]
         for vi in skel.face_vertex_indices[cell.face_idx]
             push!(all_vert_indices, vi)
-            # Capture z coordinate
-            pt = skel.vertices[vi]
-            z_coord = ustrip(u"m", Meshes.coords(pt).z)
         end
     end
     
-    # Build vertex index → 2D coords mapping
     vert_idx_list = collect(all_vert_indices)
-    pts_2d = [(let c = Meshes.coords(skel.vertices[vi])
-               (ustrip(u"m", c.x), ustrip(u"m", c.y))
-               end) for vi in vert_idx_list]
+    pts_2d = [(vc[vi, 1], vc[vi, 2]) for vi in vert_idx_list]
     
     # Compute convex hull in CCW order
     hull_pts_2d = _convex_hull_ccw(pts_2d)
@@ -657,7 +648,7 @@ end
 # =============================================================================
 
 """
-    build_analysis_model!(design; load_combination=SERVICE, mesh_density=2, frame_groups=:auto)
+    build_analysis_model!(design; load_combination=service, mesh_density=2, frame_groups=:auto)
 
 Build a frame+shell Asap model for global deflection analysis.
 
@@ -670,7 +661,7 @@ The original `struc.asap_model` (frame-only) is preserved for design calculation
 
 # Arguments
 - `design::BuildingDesign`: Design with completed slab sizing
-- `load_combination::LoadCombination`: Load factors (default: SERVICE = 1.0D + 1.0L)
+- `load_combination::LoadCombination`: Load factors (default: service = 1.0D + 1.0L)
 - `mesh_density::Int`: Shell mesh refinement per face (default: 2 = 2×2 triangulation)
 - `frame_groups`: Which skeleton edge groups to include as frame elements
   - `:auto` (default): Infer from floor type
@@ -700,9 +691,13 @@ visualize(design, mode=:deflected)
 - Frame TributaryLoads are NOT included (loads go through shells)
 """
 function build_analysis_model!(design::BuildingDesign;
-                               load_combination::LoadCombination=SERVICE,
+                               load_combination::LoadCombination=service,
                                mesh_density::Int=2,
-                               frame_groups::Union{Symbol, Vector{Symbol}}=:auto)
+                               frame_groups::Union{Symbol, Vector{Symbol}}=:auto,
+                               target_edge_length=1.0u"m",
+                               refinement_edge_length=nothing,
+                               refinement_radius=nothing,
+                               refinement_targets=nothing)
     struc = design.structure
     skel = struc.skeleton
     
@@ -729,12 +724,11 @@ function build_analysis_model!(design::BuildingDesign;
     end
     
     # ─── 2. Create nodes (same as struc.asap_model) ───
-    support_indices = get(skel.groups_vertices, :support, Int[])
+    support_set = Set(get(skel.groups_vertices, :support, Int[]))
+    vc = skel.geometry.vertex_coords
     nodes = [begin
-        c = Meshes.coords(skel.vertices[i])
-        is_support = i in support_indices
-        dofs = is_support ? [false, false, false, false, false, false] : [true, true, true, false, false, false]
-        Asap.Node([uconvert(u"m", c.x), uconvert(u"m", c.y), uconvert(u"m", c.z)], dofs)
+        dofs = i in support_set ? [false, false, false, false, false, false] : [true, true, true, false, false, false]
+        Asap.Node([vc[i,1]*u"m", vc[i,2]*u"m", vc[i,3]*u"m"], dofs)
     end for i in eachindex(skel.vertices)]
     
     # ─── 3. Copy frame elements from selected groups ───
@@ -766,21 +760,23 @@ function build_analysis_model!(design::BuildingDesign;
         # Get slab properties
         t = thickness(slab)
         
-        # Get concrete properties from slab result
-        E = 30e9u"Pa"  # default
-        ρ = 2400.0u"kg/m^3"  # default concrete density
+        # Get concrete properties from slab result (fall back to NWC_4000)
+        E = uconvert(u"Pa", NWC_4000.E)
+        ρ = NWC_4000.ρ
+        ν_slab = NWC_4000.ν
         
         if hasfield(typeof(slab.result), :concrete) && !isnothing(slab.result.concrete)
             concrete = slab.result.concrete
             hasfield(typeof(concrete), :E) && (E = concrete.E)
             hasfield(typeof(concrete), :ρ) && (ρ = concrete.ρ)
+            hasfield(typeof(concrete), :ν) && (ν_slab = concrete.ν)
         end
         
         E_pa = uconvert(u"Pa", E)
         ρ_kgm3 = uconvert(u"kg/m^3", ρ)
         
         # Create shell section with proper density (enables self-weight)
-        section = Asap.ShellSection(t, E_pa, 0.2; ρ=ρ_kgm3)
+        section = Asap.ShellSection(t, E_pa, ν_slab; ρ=ρ_kgm3)
         
         # Get the outer boundary of the entire slab (not individual cells)
         boundary_vert_indices = _get_slab_boundary_vertices(struc, slab)
@@ -804,7 +800,11 @@ function build_analysis_model!(design::BuildingDesign;
             slab_shells = Asap.Shell(corners, section; n=effective_n, 
                                      id=Symbol("slab_$(slab_idx)"),
                                      interior_nodes=interior_nodes,
-                                     edge_support_type=:free)
+                                     edge_support_type=:free,
+                                     target_edge_length=target_edge_length,
+                                     refinement_edge_length=refinement_edge_length,
+                                     refinement_radius=refinement_radius,
+                                     refinement_targets=refinement_targets)
         else
             # Fallback to per-cell meshing for degenerate cases
             slab_shells = Asap.ShellElement[]
@@ -817,7 +817,11 @@ function build_analysis_model!(design::BuildingDesign;
                 face_shells = Asap.Shell(corners, section; n=mesh_density, 
                                          id=Symbol("slab_$(slab_idx)"),
                                          edge_support_type=:free, 
-                                         interior_support_type=:free)
+                                         interior_support_type=:free,
+                                         target_edge_length=target_edge_length,
+                                         refinement_edge_length=refinement_edge_length,
+                                         refinement_radius=refinement_radius,
+                                         refinement_targets=refinement_targets)
                 append!(slab_shells, face_shells)
             end
         end

@@ -4,6 +4,7 @@
     draw_slab!(ax, slab::Slab, struc::BuildingStructure; kwargs...)
 
 Draw a slab as a 3D box on top of its supporting face(s).
+If the slab has a `drop_panel`, also draws thickened zones around columns.
 
 # Arguments
 - `ax`: Makie Axis3
@@ -15,11 +16,20 @@ Draw a slab as a 3D box on top of its supporting face(s).
 - `outline_color`: Color for outlines (default: :gray40)
 - `outline_width`: Line width for outlines (default: 1.0)
 - `z_offset`: Additional z offset above face (default: 0.0 m)
+- `drop_color`: Color for drop panels (default: darken slab color)
+- `drop_alpha`: Transparency for drop panels (default: 0.7)
 """
 function draw_slab!(ax, slab::Slab, struc::BuildingStructure;
                     color=:lightblue, alpha=0.6, 
                     show_outline=true, outline_color=:gray40, outline_width=1.0,
-                    z_offset=0.0)
+                    z_offset=0.0,
+                    drop_color=nothing, drop_alpha=0.7)
+    # Vault slabs get a parabolic arch mesh instead of a flat box
+    if slab.result isa StructuralSizer.VaultResult
+        draw_vault!(ax, slab, struc; color, alpha, show_outline, outline_color, outline_width)
+        return
+    end
+
     skel = struc.skeleton
     
     # Get slab thickness from result
@@ -54,6 +64,17 @@ function draw_slab!(ax, slab::Slab, struc::BuildingStructure;
                     color=color, alpha=alpha,
                     show_outline=show_outline, outline_color=outline_color, 
                     outline_width=outline_width)
+    
+    # Draw drop panels if present
+    dp = slab.drop_panel
+    if !isnothing(dp)
+        _draw_drop_panels!(ax, slab, struc, dp, z_bot;
+                           color=isnothing(drop_color) ? _darken_color(color) : drop_color,
+                           alpha=drop_alpha,
+                           show_outline=show_outline,
+                           outline_color=outline_color,
+                           outline_width=outline_width)
+    end
 end
 
 """
@@ -78,7 +99,8 @@ function draw_slabs!(ax, struc::BuildingStructure;
                      color=:lightblue, alpha=0.6,
                      color_by::Symbol=:none, colormap=:viridis,
                      show_outline=true, outline_color=:gray40, outline_width=1.0,
-                     z_offset=0.0)
+                     z_offset=0.0,
+                     drop_color=nothing, drop_alpha=0.7)
     isempty(struc.slabs) && return
     
     # Build color mapping based on mode
@@ -88,7 +110,8 @@ function draw_slabs!(ax, struc::BuildingStructure;
         draw_slab!(ax, slab, struc;
                    color=slab_colors[i], alpha=alpha,
                    show_outline=show_outline, outline_color=outline_color,
-                   outline_width=outline_width, z_offset=z_offset)
+                   outline_width=outline_width, z_offset=z_offset,
+                   drop_color=drop_color, drop_alpha=drop_alpha)
     end
 end
 
@@ -148,6 +171,73 @@ function _resolve_slab_colors(struc::BuildingStructure, color, color_by::Symbol,
     else
         @warn "Unknown color_by mode: $color_by. Using uniform color."
         return fill(color, n)
+    end
+end
+
+"""
+    _draw_drop_panels!(ax, slab, struc, dp, z_slab_bot; kwargs...)
+
+Draw drop panel thickened zones as boxes projecting below the slab soffit,
+centered on each supporting column.
+"""
+function _draw_drop_panels!(ax, slab::Slab, struc, dp::StructuralSizer.DropPanelGeometry,
+                            z_slab_bot::Float64;
+                            color=:steelblue, alpha=0.7,
+                            show_outline=true, outline_color=:gray40, outline_width=1.0)
+    skel = struc.skeleton
+    
+    # Drop panel dimensions in meters
+    h_drop = ustrip(u"m", dp.h_drop)
+    a1 = ustrip(u"m", dp.a_drop_1)  # half-extent in direction 1
+    a2 = ustrip(u"m", dp.a_drop_2)  # half-extent in direction 2
+    
+    z_drop_top = z_slab_bot  # Drop panel top aligns with slab soffit
+    z_drop_bot = z_slab_bot - h_drop  # Projects below
+    
+    # Find supporting columns for this slab
+    slab_cell_set = Set(slab.cell_indices)
+    for col in struc.columns
+        # Check if column supports this slab
+        if isempty(col.tributary_cell_indices)
+            continue
+        end
+        if !any(ci in slab_cell_set for ci in col.tributary_cell_indices)
+            continue
+        end
+        
+        # Get column XY position from skeleton vertex
+        vi = col.vertex_idx
+        pt = skel.vertices[vi]
+        c = Meshes.coords(pt)
+        cx = ustrip(u"m", c.x)
+        cy = ustrip(u"m", c.y)
+        
+        # Drop panel is a rectangle centered on column
+        hull_pts = [
+            (cx - a1, cy - a2),
+            (cx + a1, cy - a2),
+            (cx + a1, cy + a2),
+            (cx - a1, cy + a2),
+        ]
+        
+        _draw_slab_box!(ax, hull_pts, z_drop_bot, z_drop_top;
+                        color=color, alpha=alpha,
+                        show_outline=show_outline, outline_color=outline_color,
+                        outline_width=outline_width)
+    end
+end
+
+"""Darken a color for drop panel visualization."""
+function _darken_color(color)
+    try
+        c = GLMakie.Makie.to_color(color)
+        r = GLMakie.Makie.Colors.red(c)
+        g = GLMakie.Makie.Colors.green(c)
+        b = GLMakie.Makie.Colors.blue(c)
+        return GLMakie.RGBAf(r * 0.6f0, g * 0.6f0, b * 0.85f0, 1.0f0)
+    catch e
+        @warn "Color darkening failed; using fallback" color exception=(e, catch_backtrace())
+        return :steelblue
     end
 end
 
@@ -260,6 +350,7 @@ Get summary information for a slab suitable for visualization labels.
 """
 function slab_info(slab::Slab)
     result = slab.result
+    dp = slab.drop_panel
     
     (
         floor_type = slab.floor_type,
@@ -268,6 +359,8 @@ function slab_info(slab::Slab)
         thickness = StructuralSizer.total_depth(result),
         primary_span = slab.spans.primary,
         secondary_span = slab.spans.secondary,
+        has_drop_panel = !isnothing(dp),
+        drop_depth = isnothing(dp) ? nothing : dp.h_drop,
     )
 end
 
@@ -282,8 +375,15 @@ function slab_summary_text(slab::Slab)
     l1_ft = ustrip(u"ft", info.primary_span)
     l2_ft = ustrip(u"ft", info.secondary_span)
     
-    """$(info.floor_type) ($(info.position))
+    base = """$(info.floor_type) ($(info.position))
     h = $(round(h_in, digits=2))\"
     spans: $(round(l1_ft, digits=1))' × $(round(l2_ft, digits=1))'
     cells: $(info.n_cells)"""
+    
+    if info.has_drop_panel
+        dp_in = round(ustrip(u"inch", info.drop_depth), digits=2)
+        base *= "\n    drop panel: $(dp_in)\" projection"
+    end
+    
+    return base
 end

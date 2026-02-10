@@ -1138,7 +1138,7 @@ Generate TributaryLoads for beams from shell panel geometry.
 # Arguments
 - `shells::Vector{<:ShellElement}`: Shell panels defining slab regions
 - `beams::Vector{<:FrameElement}`: Edge beams to receive loads
-- `pressure::QuantityPressure`: Uniform pressure on shells
+- `pressure::Pressure`: Uniform pressure on shells
 
 # Keywords  
 - `axis::Union{Nothing, Vector{Float64}}`: Load distribution direction
@@ -1152,7 +1152,7 @@ Generate TributaryLoads for beams from shell panel geometry.
 function shell_to_tributary_loads(
     shells::Vector{<:ShellElement},
     beams::Vector{<:FrameElement},
-    pressure::QuantityPressure;
+    pressure::Pressure;
     axis::Union{Nothing, Vector{Float64}} = nothing,
     direction::NTuple{3, Float64} = (0.0, 0.0, -1.0)
 )::Vector{TributaryLoad}
@@ -1203,7 +1203,7 @@ function analyze_slab_system(
     shells::Vector{<:ShellElement},
     beams::Vector{<:FrameElement},
     columns::Vector{<:FrameElement},
-    pressure::QuantityPressure;
+    pressure::Pressure;
     axis = nothing,  # tributary direction
     one_way::Bool = false  # use orthotropic shell stiffness
 )

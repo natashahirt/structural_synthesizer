@@ -11,6 +11,24 @@
 # =============================================================================
 
 # =============================================================================
+# Material Name Registry
+# =============================================================================
+# Maps material instances to display names via objectid lookup.
+# register_material! is called after each const preset definition.
+
+const MATERIAL_NAME_REGISTRY = Dict{UInt, String}()
+
+"""Register a material preset with its display name."""
+register_material!(mat, name::String) = (MATERIAL_NAME_REGISTRY[objectid(mat)] = name; nothing)
+
+"""Get short display name for any material. Falls back to type-specific formatting."""
+function material_name(mat::AbstractMaterial)
+    get(MATERIAL_NAME_REGISTRY, objectid(mat)) do
+        _fallback_material_name(mat)
+    end
+end
+
+# =============================================================================
 # Metal (Steel)
 # =============================================================================
 
@@ -37,6 +55,7 @@ Parametric metal type supporting different steel categories via type tags.
 - `ρ`: Density
 - `ν`: Poisson's ratio
 - `ecc`: Embodied carbon [kgCO₂e/kg]
+- `cost`: Unit cost [\$/kg] (NaN if not set; required for MinCost optimization)
 """
 struct Metal{K<:MetalType, T_P, T_D} <: AbstractMaterial
     E::T_P      # Young's modulus
@@ -46,15 +65,16 @@ struct Metal{K<:MetalType, T_P, T_D} <: AbstractMaterial
     ρ::T_D      # Density
     ν::Float64  # Poisson's ratio
     ecc::Float64  # Embodied carbon [kgCO₂e/kg]
+    cost::Float64 # Unit cost [$/kg] (NaN = not set)
 end
 
 # Type aliases for convenience
 const StructuralSteel{T_P, T_D} = Metal{StructuralSteelType, T_P, T_D}
 const RebarSteel{T_P, T_D} = Metal{RebarType, T_P, T_D}
 
-# Constructors
-StructuralSteel(E, G, Fy, Fu, ρ, ν, ecc) = Metal{StructuralSteelType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc))
-RebarSteel(E, G, Fy, Fu, ρ, ν, ecc) = Metal{RebarType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc))
+# Constructors (cost is keyword-only, defaults to NaN)
+StructuralSteel(E, G, Fy, Fu, ρ, ν, ecc; cost=NaN) = Metal{StructuralSteelType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc), Float64(cost))
+RebarSteel(E, G, Fy, Fu, ρ, ν, ecc; cost=NaN) = Metal{RebarType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc), Float64(cost))
 
 # =============================================================================
 # Concrete
@@ -72,6 +92,8 @@ Concrete material with compressive strength.
 - `ν`: Poisson's ratio
 - `εcu`: Ultimate compressive strain (default 0.003 per ACI 318)
 - `ecc`: Embodied carbon [kgCO₂e/kg]
+- `cost`: Unit cost [\$/kg] (NaN if not set; required for MinCost optimization)
+- `λ`: Lightweight concrete factor (1.0 for NWC, 0.75–0.85 for LWC per ACI 318-19 §19.2.4)
 
 # Notes
 - `εcu = 0.003` is the standard ACI 318 value for concrete up to ~10 ksi
@@ -84,10 +106,12 @@ struct Concrete{T_P, T_D} <: AbstractMaterial
     ν::Float64    # Poisson's ratio
     εcu::Float64  # Ultimate compressive strain
     ecc::Float64  # Embodied carbon [kgCO₂e/kg]
+    cost::Float64 # Unit cost [$/kg] (NaN = not set)
+    λ::Float64    # Lightweight concrete factor (ACI 318-19 §19.2.4)
 end
 
-function Concrete(E, fc′, ρ, ν, ecc; εcu::Real = 0.003)
-    Concrete{typeof(E), typeof(ρ)}(E, fc′, ρ, Float64(ν), Float64(εcu), Float64(ecc))
+function Concrete(E, fc′, ρ, ν, ecc; εcu::Real=0.003, cost::Real=NaN, λ::Real=1.0)
+    Concrete{typeof(E), typeof(ρ)}(E, fc′, ρ, Float64(ν), Float64(εcu), Float64(ecc), Float64(cost), Float64(λ))
 end
 
 # =============================================================================
@@ -154,16 +178,21 @@ Timber material with NDS reference design values.
 Note: Reference values are multiplied by adjustment factors (CD, CM, etc.) 
 per NDS to get adjusted design values.
 """
-struct Timber <: AbstractMaterial
+struct Timber{T_P<:Pressure, T_D<:Density} <: AbstractMaterial
     species::Symbol      # :douglas_fir, :southern_pine, etc.
     grade::Symbol        # :select_structural, :no1, :no2, etc.
-    E::Float64           # Modulus of elasticity [Pa]
-    Emin::Float64        # Minimum E for stability calculations [Pa]
-    Fb::Float64          # Reference bending stress [Pa]
-    Ft::Float64          # Reference tension stress [Pa]
-    Fv::Float64          # Reference shear stress [Pa]
-    Fc::Float64          # Reference compression parallel [Pa]
-    Fc_perp::Float64     # Reference compression perpendicular [Pa]
-    ρ::Float64           # Density [kg/m³]
-    ecc::Float64         # Embodied carbon [kgCO2e/kg]
+    E::T_P               # Modulus of elasticity
+    Emin::T_P            # Minimum E for stability calculations
+    Fb::T_P              # Reference bending stress
+    Ft::T_P              # Reference tension stress
+    Fv::T_P              # Reference shear stress
+    Fc::T_P              # Reference compression parallel to grain
+    Fc_perp::T_P         # Reference compression perpendicular to grain
+    ρ::T_D               # Density
+    ecc::Float64         # Embodied carbon [kgCO₂e/kg]
+    cost::Float64        # Unit cost [$/kg] (NaN = not set)
+end
+
+function Timber(species::Symbol, grade::Symbol, E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, ecc; cost::Real=NaN)
+    Timber{typeof(E), typeof(ρ)}(species, grade, E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, Float64(ecc), Float64(cost))
 end

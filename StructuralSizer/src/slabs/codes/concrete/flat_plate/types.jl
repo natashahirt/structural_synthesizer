@@ -83,6 +83,60 @@ struct EFM <: FlatPlateAnalysisMethod
     end
 end
 
+"""
+    FEA(; target_edge=0.25u"m")
+
+Finite Element Analysis — 2D shell model with column stubs.
+
+Builds a standalone Asap model of the slab panel:
+- Triangulated shell mesh for the slab
+- Column stub beam elements above and below each support
+- Factored area load applied as consistent nodal forces
+
+Design moments are extracted via **tributary integration**: the cell polygon
+for the analyzed panel defines the transverse extent of section cuts at
+column faces and midspan—no hardcoded `l₂` widths required. This adapts
+naturally to irregular slab shapes and column layouts.
+
+Column shears (Vu) and unbalanced moments (Mub) come from stub reactions.
+
+No geometric restrictions — works for any slab shape or column layout.
+
+# Options
+- `target_edge::Length`: Target mesh edge length (default: 0.25 m ≈ 10 in).
+  Asap's auto-mesher refines to this edge size.  Smaller values yield finer
+  meshes with more accurate results at higher cost.  The same length sets the
+  section-cut strip width `δ`, keeping mesh and integration resolution matched.
+
+# Example
+```julia
+size_flat_plate!(struc, slab, col_opts; method=FEA())
+size_flat_plate!(struc, slab, col_opts; method=FEA(target_edge=0.15u"m"))
+```
+
+# Reference
+- ACI 318-19 §8.2.1 permits any analysis satisfying equilibrium and compatibility
+"""
+struct FEA <: FlatPlateAnalysisMethod
+    target_edge::Union{Nothing, typeof(1.0u"m")}
+
+    """
+        FEA(; target_edge=nothing)
+
+    `target_edge = nothing` (default) → adaptive mesh from the smallest cell's short span:
+    `clamp(min_span/20, 0.15, 0.75) m`, ~20 elements per span direction.
+    Pass an explicit `Length` to override.
+    """
+    function FEA(; target_edge::Union{Nothing, Length} = nothing)
+        if target_edge !== nothing
+            ustrip(u"m", target_edge) > 0 || error("FEA target_edge must be > 0")
+            new(uconvert(u"m", target_edge))
+        else
+            new(nothing)
+        end
+    end
+end
+
 # =============================================================================
 # Moment Analysis Results
 # =============================================================================
@@ -90,16 +144,30 @@ end
 """
     MomentAnalysisResult
 
-Results from DDM or EFM moment analysis for a flat plate panel.
+Results from moment analysis (DDM, EFM, or FEA) for a flat plate panel.
 
-This is the common interface between moment analysis (DDM/EFM) and the 
-downstream design pipeline. Both methods produce this same structure.
+This is the common interface between moment analysis and the downstream design
+pipeline (reinforcement, punching shear, deflection).
 
-# Fields
+## Primary data: `column_moments`
+
+The per-column moment vector **`column_moments`** is the authoritative source
+of column negative moments.  All methods populate it:
+
+- **DDM**: assigns `M_neg_ext` to exterior columns, `M_neg_int` to interior
+- **EFM**: assigns span-end moments from frame analysis to each column
+- **FEA**: assigns per-column strip-integration moments directly
+
+The scalar fields `M_neg_ext` and `M_neg_int` are **derived envelopes** —
+the maximum of `column_moments` across exterior and interior columns,
+respectively.  The design pipeline reads `column_moments` directly via
+ACI 8.10.5 transverse distribution.
+
+## Fields
 - `M0::Moment`: Total static moment (qu × l₂ × ln² / 8)
-- `M_neg_ext::Moment`: Exterior negative moment (at exterior column)
-- `M_neg_int::Moment`: Interior negative moment (at first interior column)
-- `M_pos::Moment`: Positive moment (midspan)
+- `M_neg_ext::Moment`: Envelope exterior M⁻ (max of column_moments at ext columns)
+- `M_neg_int::Moment`: Envelope interior M⁻ (max of column_moments at int columns)
+- `M_pos::Moment`: Positive midspan moment
 - `qu::Pressure`: Factored uniform load (1.2D + 1.6L)
 - `qD::Pressure`: Service dead load
 - `qL::Pressure`: Service live load
@@ -107,15 +175,15 @@ downstream design pipeline. Both methods produce this same structure.
 - `l2::Length`: Panel width perpendicular to span (tributary width)
 - `ln::Length`: Clear span (face-to-face of columns)
 - `c_avg::Length`: Average column dimension
-- `column_moments::Vector{<:Moment}`: Design moments at each column (unitful)
+- `column_moments::Vector{<:Moment}`: **Primary** per-column M⁻ (unitful)
 - `column_shears::Vector{<:Force}`: Shear at each column
 - `unbalanced_moments::Vector{<:Moment}`: Unbalanced moment at each column
 - `Vu_max::Force`: Maximum shear demand
-
-# Note
-The column/middle strip distribution (ACI 8.10.5) is applied AFTER this result
-is produced, in the shared pipeline. Both DDM and EFM use the same transverse
-distribution factors.
+- `secondary::Union{Nothing, NamedTuple}`: Perpendicular direction moments (FEA only).
+  NamedTuple `(M_neg_ext, M_neg_int, M_pos, M0)` — all in kip·ft.  `nothing` for DDM/EFM.
+- `fea_Δ_panel::Union{Nothing, Length}`: Max panel deflection from FEA at factored load,
+  gross section.  Used by `check_two_way_deflection` for direct FEA-based deflection
+  instead of the approximate crossing-beam method.  `nothing` for DDM/EFM.
 """
 struct MomentAnalysisResult{M<:Moment, P<:Pressure, F<:Force}
     # Total static moment
@@ -142,7 +210,158 @@ struct MomentAnalysisResult{M<:Moment, P<:Pressure, F<:Force}
     column_shears::Vector{F}             # Shear at each column
     unbalanced_moments::Vector{M}        # Unbalanced moment at each column
     Vu_max::F
+
+    # Optional: secondary (perpendicular) direction moments (FEA only)
+    # NamedTuple with fields M_neg_ext, M_neg_int, M_pos, M0 — or nothing for DDM/EFM
+    secondary::Union{Nothing, NamedTuple}
+
+    # Optional: FEA max panel deflection (factored load, gross section)
+    # Extracted directly from FEA nodal displacements — `nothing` for DDM/EFM.
+    fea_Δ_panel::Union{Nothing, Length}
+
+    function MomentAnalysisResult(
+        M0::M, M_neg_ext::M, M_neg_int::M, M_pos::M,
+        qu::P, qD::P, qL::P,
+        l1::Length, l2::Length, ln::Length, c_avg::Length,
+        column_moments::Vector{M},
+        column_shears::Vector{F},
+        unbalanced_moments::Vector{M},
+        Vu_max::F;
+        secondary::Union{Nothing, NamedTuple} = nothing,
+        fea_Δ_panel::Union{Nothing, Length} = nothing,
+    ) where {M<:Moment, P<:Pressure, F<:Force}
+        new{M,P,F}(
+            M0, M_neg_ext, M_neg_int, M_pos,
+            qu, qD, qL, l1, l2, ln, c_avg,
+            column_moments, column_shears, unbalanced_moments,
+            Vu_max, secondary, fea_Δ_panel,
+        )
+    end
 end
+
+# =============================================================================
+# Per-Column Envelope Helper
+# =============================================================================
+
+"""
+    _envelope_from_columns(column_moments, columns) -> (M_neg_ext, M_neg_int)
+
+Derive `M_neg_ext` and `M_neg_int` envelope values from per-column moments.
+
+Iterates over `columns`, classifying each by `.position`:
+- `:interior` → contributes to `M_neg_int`
+- anything else (`:edge`, `:corner`) → contributes to `M_neg_ext`
+
+Returns the maximum column moment in each group.  If a group has no members
+the envelope value is `zero(eltype(column_moments))`.
+
+This is the single, shared helper used by FEA (and available to DDM/EFM) to
+derive the scalar envelope from the authoritative `column_moments` vector.
+"""
+function _envelope_from_columns(column_moments, columns)
+    T = eltype(column_moments)
+    M_neg_ext = zero(T)
+    M_neg_int = zero(T)
+    for (i, col) in enumerate(columns)
+        m = column_moments[i]
+        if col.position == :interior
+            M_neg_int = max(M_neg_int, m)
+        else
+            M_neg_ext = max(M_neg_ext, m)
+        end
+    end
+    return (M_neg_ext=M_neg_ext, M_neg_int=M_neg_int)
+end
+
+# =============================================================================
+# Drop Panel Geometry (Flat Slab — ACI 318-19 §8.2.4)
+# =============================================================================
+
+"""
+    DropPanelGeometry
+
+Geometry of a drop panel (thickened slab zone around a column) for flat slab design.
+
+Drop panels must satisfy ACI 318-19 §8.2.4:
+- (a) Projection below slab ≥ h_slab / 4
+- (b) Extend ≥ l/6 from column center in each direction
+
+# Fields
+- `h_drop::Length`: Drop panel projection below the slab soffit.
+      Total depth at drop = h_slab + h_drop.
+- `a_drop_1::Length`: Drop panel half-extent in span direction 1 (from column center).
+      Full extent in direction 1 = 2 × a_drop_1.
+- `a_drop_2::Length`: Drop panel half-extent in span direction 2 (from column center).
+      Full extent in direction 2 = 2 × a_drop_2.
+
+# ACI Requirements
+- `h_drop ≥ h_slab / 4`                          ACI 318-19 §8.2.4(a)
+- `a_drop_1 ≥ l1 / 6`,  `a_drop_2 ≥ l2 / 6`    ACI 318-19 §8.2.4(b)
+
+# Formwork
+Standard lumber sizes control practical drop depths:
+| Nominal | Actual | + Plyform (3/4") | h_drop |
+|---------|--------|------------------|--------|
+| 2×      | 1.5"   | 0.75"            | 2.25"  |
+| 4×      | 3.5"   | 0.75"            | 4.25"  |
+| 6×      | 5.5"   | 0.75"            | 6.25"  |
+| 8×      | 7.25"  | 0.75"            | 8.00"  |
+
+# Reference
+- ACI 318-19 §8.2.4
+- StructurePoint DE-Two-Way-Flat-Slab: h_drop = 4.25 in. (4× lumber), a_drop = 5 ft
+"""
+struct DropPanelGeometry{L<:Length}
+    h_drop::L       # projection below slab soffit
+    a_drop_1::L     # half-extent in direction 1 (from column center)
+    a_drop_2::L     # half-extent in direction 2 (from column center)
+end
+
+# Convenience constructor: convert mixed length types to Float64-based meters
+function DropPanelGeometry(h_drop::Length, a1::Length, a2::Length)
+    h   = Float64(ustrip(u"m", h_drop)) * u"m"
+    a1m = Float64(ustrip(u"m", a1))     * u"m"
+    a2m = Float64(ustrip(u"m", a2))     * u"m"
+    DropPanelGeometry{typeof(h)}(h, a1m, a2m)
+end
+
+"""Total slab depth at the drop panel location."""
+total_depth_at_drop(h_slab::Length, dp::DropPanelGeometry) = h_slab + dp.h_drop
+
+"""Full plan extent of drop panel in direction i."""
+drop_extent_1(dp::DropPanelGeometry) = 2 * dp.a_drop_1
+drop_extent_2(dp::DropPanelGeometry) = 2 * dp.a_drop_2
+
+"""
+    check_drop_panel_aci(dp, h_slab, l1, l2) -> (ok, violations)
+
+Verify drop panel geometry against ACI 318-19 §8.2.4 requirements.
+Returns `(true, [])` if compliant, or `(false, ["violation description", ...])`.
+"""
+function check_drop_panel_aci(dp::DropPanelGeometry, h_slab::Length, l1::Length, l2::Length)
+    violations = String[]
+    
+    # §8.2.4(a): projection ≥ h_slab / 4
+    min_proj = h_slab / 4
+    if dp.h_drop < min_proj
+        push!(violations, "h_drop=$(dp.h_drop) < h_slab/4=$(min_proj) [ACI 8.2.4(a)]")
+    end
+    
+    # §8.2.4(b): extent ≥ l/6 from column center in each direction
+    min_a1 = l1 / 6
+    min_a2 = l2 / 6
+    if dp.a_drop_1 < min_a1
+        push!(violations, "a_drop_1=$(dp.a_drop_1) < l1/6=$(min_a1) [ACI 8.2.4(b)]")
+    end
+    if dp.a_drop_2 < min_a2
+        push!(violations, "a_drop_2=$(dp.a_drop_2) < l2/6=$(min_a2) [ACI 8.2.4(b)]")
+    end
+    
+    return (isempty(violations), violations)
+end
+
+# Standard formwork drop panel depths (actual + 3/4" plyform)
+const STANDARD_DROP_DEPTHS_INCH = [2.25, 4.25, 6.25, 8.0]
 
 # =============================================================================
 # EFM-Specific Types
@@ -170,6 +389,8 @@ Properties for a single span in the EFM frame model.
 - `m_factor::Float64`: FEM coefficient (from PCA tables)
 - `COF::Float64`: Carryover factor
 - `k_slab::Float64`: Stiffness factor (from PCA tables)
+- `drop::Union{Nothing, DropPanelGeometry}`: Drop panel geometry (nothing for flat plate)
+- `Is_drop::Union{Nothing, SecondMomentOfArea}`: Moment of inertia at drop panel section
 """
 struct EFMSpanProperties{I<:SecondMomentOfArea, M<:Moment}
     span_idx::Int
@@ -188,7 +409,28 @@ struct EFMSpanProperties{I<:SecondMomentOfArea, M<:Moment}
     m_factor::Float64
     COF::Float64
     k_slab::Float64
+    drop::Union{Nothing, DropPanelGeometry}
+    Is_drop::Union{Nothing, I}
 end
+
+# Convenience constructor for flat plate (no drop panels) — backwards compatible
+function EFMSpanProperties(
+    span_idx::Int, left_joint::Int, right_joint::Int,
+    l1::Length, l2::Length, ln::Length, h::Length,
+    c1_left::Length, c2_left::Length, c1_right::Length, c2_right::Length,
+    Is::I, Ksb::M, m_factor::Float64, COF::Float64, k_slab::Float64,
+) where {I<:SecondMomentOfArea, M<:Moment}
+    EFMSpanProperties{I,M}(
+        span_idx, left_joint, right_joint,
+        l1, l2, ln, h,
+        c1_left, c2_left, c1_right, c2_right,
+        Is, Ksb, m_factor, COF, k_slab,
+        nothing, nothing,
+    )
+end
+
+"""Does this span have drop panels?"""
+has_drop_panels(sp::EFMSpanProperties) = !isnothing(sp.drop)
 
 """
     EFMJointStiffness
@@ -212,10 +454,3 @@ struct EFMJointStiffness{M<:Moment}
     position::Symbol
 end
 
-# =============================================================================
-# Exports
-# =============================================================================
-
-export FlatPlateAnalysisMethod, DDM, EFM
-export MomentAnalysisResult
-export EFMSpanProperties, EFMJointStiffness

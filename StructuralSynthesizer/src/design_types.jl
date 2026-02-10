@@ -12,10 +12,114 @@
 #   BuildingStructure          → geometry, loads, tributaries (see building_types.jl)
 #   BuildingDesign             → design results for a specific parameter set
 #   DesignParameters           → material choices, optimization targets
+#
+# Unit Convention:
+#   All design results are stored in coherent SI:
+#     m, m², m³, kN, kN·m, kPa, kg
+#   Analysis modules work in whatever units are natural internally,
+#   then normalize at their return boundary.
+#   DisplayUnits controls how values are presented to the user.
 # =============================================================================
 
 using Dates
 using Unitful
+
+# =============================================================================
+# Display Unit Preferences
+# =============================================================================
+
+"""
+    DisplayUnits(system::Symbol=:imperial)
+
+Unit preferences for design output display. All design data is stored in
+coherent SI (m, m², m³, kN, kN·m, kPa, kg). `DisplayUnits` controls what
+units are shown to the user in summaries, reports, and visualization labels.
+
+Use presets `imperial` or `metric`, or customize individual categories.
+
+# Categories
+`:length`, `:thickness`, `:span`, `:area`, `:volume`, `:force`, `:moment`,
+`:pressure`, `:stress`, `:weight`, `:mass`, `:deflection`, `:spacing`,
+`:rebar_dia`, `:rebar_area`
+
+# Example
+```julia
+# Use presets
+params = DesignParameters(display_units = imperial)
+params = DesignParameters(display_units = metric)
+
+# Customize: imperial but volume in m³
+du = DisplayUnits(:imperial)
+du.units[:volume] = u"m^3"
+params = DesignParameters(display_units = du)
+```
+"""
+mutable struct DisplayUnits
+    units::Dict{Symbol, Any}
+end
+
+function DisplayUnits(system::Symbol)
+    system === :imperial ? DisplayUnits(_imperial_units()) :
+    system === :metric   ? DisplayUnits(_metric_units()) :
+    error("Unknown unit system :$system. Use :imperial or :metric.")
+end
+
+function _imperial_units()
+    Dict{Symbol, Any}(
+        :length      => u"ft",
+        :thickness   => u"inch",
+        :span        => u"ft",
+        :area        => u"ft^2",
+        :volume      => u"ft^3",
+        :force       => kip,
+        :moment      => kip * u"ft",
+        :pressure    => psf,
+        :stress      => ksi,
+        :weight      => u"lbf",
+        :mass        => u"lb",
+        :deflection  => u"inch",
+        :spacing     => u"inch",
+        :rebar_dia   => u"inch",
+        :rebar_area  => u"inch^2",
+    )
+end
+
+function _metric_units()
+    Dict{Symbol, Any}(
+        :length      => u"m",
+        :thickness   => u"mm",
+        :span        => u"m",
+        :area        => u"m^2",
+        :volume      => u"m^3",
+        :force       => u"kN",
+        :moment      => u"kN*m",
+        :pressure    => u"kPa",
+        :stress      => u"MPa",
+        :weight      => u"kN",
+        :mass        => u"kg",
+        :deflection  => u"mm",
+        :spacing     => u"mm",
+        :rebar_dia   => u"mm",
+        :rebar_area  => u"mm^2",
+    )
+end
+
+const imperial = DisplayUnits(:imperial)
+const metric   = DisplayUnits(:metric)
+
+"""
+    fmt(du::DisplayUnits, category::Symbol, value; digits=2)
+
+Convert a Unitful value to display units and round.
+
+# Example
+```julia
+fmt(imperial, :span, 12.192u"m")       # → 40.0 ft
+fmt(imperial, :thickness, 0.2032u"m")  # → 8.0 inch
+fmt(metric, :force, 100.0u"kN")        # → 100.0 kN
+```
+"""
+fmt(du::DisplayUnits, cat::Symbol, val; digits=2) = round(du.units[cat], val; digits=digits)
 
 # =============================================================================
 # Foundation Parameters
@@ -26,23 +130,32 @@ Foundation sizing parameters.
 
 # Fields
 - `soil`: Soil profile (bearing capacity, settlement params)
-- `concrete`: Concrete grade for footings
-- `rebar`: Rebar grade for footings
-- `pier_width`: Column/pier width for sizing
-- `min_depth`: Minimum footing depth (frost line, etc.)
+- `options`: ACI/IS design options (`FoundationOptions` from StructuralSizer).
+  Controls code selection (`:aci` / `:is`), strategy (`:auto`, `:all_spread`,
+  `:all_strip`, `:mat`), and per-type knobs (spread, strip, mat options).
+- `concrete`: Concrete grade for footings (IS path only; ACI uses `options.spread.material`)
+- `rebar`: Rebar grade for footings (IS path only)
+- `pier_width`: Column/pier width (IS path only; ACI uses `options.spread.pier_c1`)
+- `min_depth`: Minimum footing depth (IS path only; ACI uses `options.spread.min_depth`)
 - `group_tolerance`: Tolerance for grouping similar foundations (default 0.15 = 15%)
 
 # Example
 ```julia
+# ACI (default) — material/detailing in options
+fp = FoundationParameters(soil = medium_sand)
+
+# IS legacy path
 fp = FoundationParameters(
-    soil = MEDIUM_SAND,
+    soil = medium_sand,
+    options = FoundationOptions(code = :is),
     concrete = NWC_4000,
     min_depth = 0.5u"m",
 )
 ```
 """
 Base.@kwdef struct FoundationParameters
-    soil::StructuralSizer.Soil = StructuralSizer.MEDIUM_SAND
+    soil::StructuralSizer.Soil = StructuralSizer.medium_sand
+    options::StructuralSizer.FoundationOptions = StructuralSizer.FoundationOptions()
     concrete::StructuralSizer.Concrete = StructuralSizer.NWC_4000
     rebar::StructuralSizer.RebarSteel = StructuralSizer.Rebar_60
     pier_width::typeof(1.0u"m") = 0.35u"m"
@@ -71,11 +184,15 @@ Optional overrides for column/beam sizing:
 - `columns`: `SteelColumnOptions` or `ConcreteColumnOptions`
 - `beams`: `SteelBeamOptions`
 
+# Loads
+- `loads::GravityLoads` - Unfactored service loads (default: `default_loads`)
+- `load_combinations::Vector{LoadCombination}` - Factored combinations for
+  envelope analysis. The Asap model uses `envelope_pressure(combos, D, L)`.
+
 # Analysis Settings
-- `load_combination::LoadCombination` - Load factors (default: STRENGTH_1_2D_1_6L)
 - `diaphragm_mode::Symbol` - `:none`, `:rigid`, or `:shell`
-- `default_frame_E/G/ρ` - Placeholder frame properties before sizing
-- `column_I_factor` / `beam_I_factor` - ACI cracking factors for effective stiffness
+- `default_frame_E/G/ρ` - Placeholder frame properties
+- `column_I_factor` / `beam_I_factor` - ACI cracking factors
 
 # Example
 ```julia
@@ -85,9 +202,13 @@ params = DesignParameters(
     concrete = NWC_5000,
 )
 
-# Full control: materials, sizing, and analysis
+# Full control: materials, loads, sizing, and analysis
 params = DesignParameters(
     name = "High-Rise Office",
+    
+    # Loads
+    loads = office_loads,                                # 50 psf LL
+    load_combinations = [strength_1_2D_1_6L, service],  # envelope + serviceability
     
     # Materials
     steel = A992_Steel,
@@ -105,26 +226,26 @@ params = DesignParameters(
     ),
     
     # Analysis settings
-    load_combination = STRENGTH_1_2D_1_6L,
     diaphragm_mode = :rigid,
-    
     optimize_for = :carbon,
 )
 
-# Use serviceability combination for deflection checks
-service_params = DesignParameters(
-    load_combination = SERVICE,  # 1.0D + 1.0L
-)
-
-# Then sizing auto-uses these:
-size_columns!(struc)  # uses params.columns
-size_beams!(struc)    # uses params.beams
+# Parametric live load sweep
+for ll in [40, 50, 65, 80, 100]
+    design = design_building(struc, DesignParameters(
+        loads = GravityLoads(floor_LL = Float64(ll) * psf),
+    ))
+end
 ```
 """
 Base.@kwdef mutable struct DesignParameters
     # Identifiers
     name::String = "default"
     description::String = ""
+    
+    # ─── Gravity Loads (unfactored service level) ───
+    # Stamped onto cells during initialize_cells!
+    loads::GravityLoads = GravityLoads()
     
     # ─── Materials ───
     # Defaults for the building (used when section-specific material not provided)
@@ -135,8 +256,8 @@ Base.@kwdef mutable struct DesignParameters
     
     # ─── Member Sizing Options ───
     # Override material defaults for specific member types
-    columns::Union{StructuralSizer.SteelColumnOptions, StructuralSizer.ConcreteColumnOptions, Nothing} = nothing
-    beams::Union{StructuralSizer.SteelBeamOptions, Nothing} = nothing
+    columns::Union{StructuralSizer.ColumnOptions, Nothing} = nothing
+    beams::Union{StructuralSizer.BeamOptions, Nothing} = nothing
     
     # ─── Floor Options ───
     floor_options::Union{StructuralSizer.FloorOptions, Nothing} = nothing
@@ -148,9 +269,11 @@ Base.@kwdef mutable struct DesignParameters
     deflection_limit::Symbol = :L_360        # :L_240, :L_360, :L_480
     optimize_for::Symbol = :weight           # :weight, :carbon, :cost
     
-    # ─── Analysis Settings ───
-    # Load combination (replaces hardcoded DL/LL factors)
-    load_combination::LoadCombination = DEFAULT_STRENGTH
+    # ─── Load Combinations (factored) ───
+    # Vector of combinations for envelope analysis.
+    # The Asap model applies max(factored_pressure(c, D, L) for c in combos).
+    # Default: standard gravity strength combination only.
+    load_combinations::Vector{LoadCombination} = [default_combo]
     
     # Diaphragm modeling for lateral analysis
     diaphragm_mode::Symbol = :none           # :none, :rigid, :shell
@@ -158,16 +281,27 @@ Base.@kwdef mutable struct DesignParameters
     diaphragm_ν::Float64 = 0.2
     
     # Default frame element properties (before member sizing)
-    # Used as placeholder section in to_asap! before actual sizing
-    default_frame_E::typeof(1.0u"Pa") = 200e9u"Pa"      # Steel default
-    default_frame_G::typeof(1.0u"Pa") = 77e9u"Pa"       # Steel default
-    default_frame_ρ::typeof(1.0u"kg/m^3") = 7850.0u"kg/m^3"
+    # Placeholder section in to_asap! before actual sizing.
+    # Defaults from A992 steel; override via params.steel material.
+    default_frame_E::typeof(1.0u"Pa") = uconvert(u"Pa", A992_Steel.E)
+    default_frame_G::typeof(1.0u"Pa") = uconvert(u"Pa", A992_Steel.G)
+    default_frame_ρ::typeof(1.0u"kg/m^3") = uconvert(u"kg/m^3", A992_Steel.ρ)
     
     # ─── ACI Cracking Factors ───
     # For converting RC sections to Asap.Section (effective stiffness)
     column_I_factor::Float64 = 0.70    # ACI 318-14 §6.6.3.1.1 for columns
     beam_I_factor::Float64 = 0.35      # ACI 318-14 §6.6.3.1.1 for beams
+    
+    # ─── Iteration Control ───
+    max_iterations::Int = 20              # Slab/column convergence loop limit
+    
+    # ─── Display Preferences ───
+    # Controls how SI-stored values are shown in summaries and reports
+    display_units::DisplayUnits = imperial
 end
+
+"""Primary (governing) strength combination from a DesignParameters."""
+governing_combo(p::DesignParameters) = first(p.load_combinations)
 
 # =============================================================================
 # Design Results
@@ -175,24 +309,26 @@ end
 
 """
 Strip reinforcement design at a moment location.
+All values stored in coherent SI (m, m², kN·m).
 """
 struct StripReinforcementDesign
     Mu::typeof(1.0u"kN*m")           # Factored moment
-    As_required::typeof(1.0u"mm^2")  # Required steel area
-    As_minimum::typeof(1.0u"mm^2")   # Minimum steel area
-    As_provided::typeof(1.0u"mm^2")  # Provided steel area
+    As_required::typeof(1.0u"m^2")   # Required steel area
+    As_minimum::typeof(1.0u"m^2")    # Minimum steel area
+    As_provided::typeof(1.0u"m^2")   # Provided steel area
     bar_size::String                  # e.g., "#5", "16M"
-    spacing::typeof(1.0u"mm")         # Bar spacing
+    spacing::typeof(1.0u"m")          # Bar spacing
     n_bars::Int                       # Number of bars
 end
 
 """
 Design result for a slab panel.
+All values stored in coherent SI (m, kPa, kN·m).
 """
 Base.@kwdef mutable struct SlabDesignResult
     # Sizing
-    thickness::typeof(1.0u"mm")
-    self_weight::typeof(1.0u"kN/m^2")
+    thickness::typeof(1.0u"m")
+    self_weight::typeof(1.0u"kPa")
     
     # Analysis
     M0::Union{typeof(1.0u"kN*m"), Nothing} = nothing  # Total static moment
@@ -208,13 +344,14 @@ end
 
 """
 Punching shear check result for a column.
+All values stored in coherent SI (kN, m, m²).
 """
-Base.@kwdef mutable struct PunchingCheckResult
+Base.@kwdef mutable struct PunchingDesignResult
     Vu::typeof(1.0u"kN")             # Demand
     φVc::typeof(1.0u"kN")            # Capacity (factored)
     ratio::Float64                    # Vu / φVc
     ok::Bool                          # ratio ≤ 1.0
-    critical_perimeter::typeof(1.0u"mm")
+    critical_perimeter::typeof(1.0u"m")
     tributary_area::typeof(1.0u"m^2")
 end
 
@@ -236,7 +373,7 @@ Base.@kwdef mutable struct ColumnDesignResult
     ok::Bool = true
     
     # Punching (if supporting flat slab)
-    punching::Union{PunchingCheckResult, Nothing} = nothing
+    punching::Union{PunchingDesignResult, Nothing} = nothing
 end
 
 """

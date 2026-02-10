@@ -162,12 +162,12 @@ end
         Asap.solve!(model)
         
         # 5. Size
-        size_members_discrete!(
+        size_steel_members!(
             struc;
             member_edge_group=:beams,
             material=A992_Steel,
             optimizer=:auto,
-            resolution=200,
+            resolution=20,
             reanalyze=true
         )
         
@@ -280,12 +280,12 @@ end
         Asap.solve!(model)
         
         # 5. Size (controlling moment ≈ 550.6 k-ft)
-        size_members_discrete!(
+        size_steel_members!(
             struc;
             member_edge_group=:beams,
             material=A992_Steel,
             optimizer=:auto,
-            resolution=200,
+            resolution=20,
             reanalyze=true
         )
         
@@ -365,12 +365,12 @@ end
         Asap.solve!(model)
         
         # 5. Size
-        size_members_discrete!(
+        size_steel_members!(
             struc;
             member_edge_group=:beams,
             material=A992_Steel,
             optimizer=:auto,
-            resolution=200,
+            resolution=20,
             reanalyze=true
         )
         

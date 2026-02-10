@@ -73,11 +73,18 @@ function optimize_continuous(
     maxiter::Int = 1000,
     tol::Float64 = 1e-6,
     verbose::Bool = false,
+    x0::Union{Nothing,Vector{Float64}} = nothing,
+    n_multistart::Int = 1,
 )
     if solver === :grid
         return _optimize_grid(problem, objective; n_grid, n_refine, verbose)
     elseif solver === :ipopt
-        return _optimize_ipopt(problem, objective; maxiter, tol, verbose)
+        if n_multistart > 1
+            return _multistart_ipopt(problem, objective;
+                maxiter, tol, verbose, x0, n_starts=n_multistart)
+        else
+            return _optimize_ipopt(problem, objective; maxiter, tol, verbose, x0)
+        end
     elseif solver === :nlopt
         return _optimize_nlopt(problem, objective; maxiter, tol, verbose)
     elseif solver === :nonconvex
@@ -101,10 +108,14 @@ Compute numerical gradient using central differences.
 function _numeric_gradient(f, x::Vector{Float64}; ε::Float64=1e-6)
     n = length(x)
     grad = zeros(n)
-    for i in 1:n
-        x_plus = copy(x); x_plus[i] += ε
-        x_minus = copy(x); x_minus[i] -= ε
-        grad[i] = (f(x_plus) - f(x_minus)) / (2ε)
+    @inbounds for i in 1:n
+        xi_orig = x[i]
+        x[i] = xi_orig + ε
+        fp = f(x)
+        x[i] = xi_orig - ε
+        fm = f(x)
+        grad[i] = (fp - fm) / (2ε)
+        x[i] = xi_orig
     end
     return grad
 end
@@ -118,12 +129,17 @@ Uses numerical derivatives since our constraint functions involve
 iterative solvers (elastic shortening) that aren't AD-compatible.
 """
 function _optimize_ipopt(problem::AbstractNLPProblem, objective::AbstractObjective; 
-                         maxiter::Int, tol::Float64, verbose::Bool)
+                         maxiter::Int, tol::Float64, verbose::Bool,
+                         x0::Union{Nothing,Vector{Float64}} = nothing)
     
     # Get problem dimensions
     n_vars = n_variables(problem)
     lb, ub = variable_bounds(problem)
-    x0 = initial_guess(problem)
+    x0 = isnothing(x0) ? initial_guess(problem) : copy(x0)
+    # Clamp x0 to variable bounds (e.g. MIP warm-start may exceed NLP bounds)
+    for i in 1:n_vars
+        x0[i] = clamp(x0[i], lb[i], ub[i])
+    end
     nc = n_constraints(problem)
     
     # Build JuMP model
@@ -132,6 +148,8 @@ function _optimize_ipopt(problem::AbstractNLPProblem, objective::AbstractObjecti
     # Set Ipopt options
     JuMP.set_optimizer_attribute(model, "max_iter", maxiter)
     JuMP.set_optimizer_attribute(model, "tol", tol)
+    JuMP.set_optimizer_attribute(model, "acceptable_tol", tol * 100)  # Accept relaxed KKT for non-smooth constraints
+    JuMP.set_optimizer_attribute(model, "acceptable_iter", 5)         # Accept after 5 acceptable iterations
     JuMP.set_optimizer_attribute(model, "print_level", verbose ? 5 : 0)
     
     # Decision variables with bounds
@@ -217,6 +235,8 @@ function _optimize_ipopt(problem::AbstractNLPProblem, objective::AbstractObjecti
     # Map termination status
     status = if term_status == JuMP.MOI.LOCALLY_SOLVED || term_status == JuMP.MOI.OPTIMAL
         :optimal
+    elseif term_status == JuMP.MOI.ALMOST_LOCALLY_SOLVED || term_status == JuMP.MOI.ALMOST_OPTIMAL
+        :feasible   # KKT satisfied to relaxed tolerance (common with piecewise-linear P-M constraints)
     elseif term_status == JuMP.MOI.LOCALLY_INFEASIBLE || term_status == JuMP.MOI.INFEASIBLE
         :infeasible
     else
@@ -241,6 +261,107 @@ function _optimize_ipopt(problem::AbstractNLPProblem, objective::AbstractObjecti
         status = status,
         iterations = -1,  # Ipopt doesn't easily expose this
     )
+end
+
+# ==============================================================================
+# Multi-start Ipopt: run from multiple starting points, pick best feasible
+# ==============================================================================
+
+"""
+    _multistart_ipopt(problem, objective; maxiter, tol, verbose, x0, n_starts)
+
+Run Ipopt from multiple starting points and return the best feasible result.
+Starting points: provided x0, lower-bound corner, midpoint, and random samples.
+This helps avoid local minima in non-smooth problems (e.g. RC P-M interaction).
+"""
+function _multistart_ipopt(problem::AbstractNLPProblem, objective::AbstractObjective;
+                           maxiter::Int, tol::Float64, verbose::Bool,
+                           x0::Union{Nothing,Vector{Float64}} = nothing,
+                           n_starts::Int = 3)
+    n_vars = n_variables(problem)
+    lb, ub = variable_bounds(problem)
+    nc = n_constraints(problem)
+    c_lb, c_ub = nc > 0 ? constraint_bounds(problem) : (Float64[], Float64[])
+
+    # Generate diverse starting points
+    starts = Vector{Float64}[]
+
+    # Start 1: provided x0 or default initial guess
+    s1 = isnothing(x0) ? initial_guess(problem) : copy(x0)
+    for i in 1:n_vars; s1[i] = clamp(s1[i], lb[i], ub[i]) end
+    push!(starts, s1)
+
+    # Start 2: lower-bound corner (smallest section — often optimal for min-area)
+    push!(starts, copy(lb))
+
+    # Start 3: upper-bound corner (largest section — guaranteed feasible if any is)
+    push!(starts, copy(ub))
+
+    # Start 4: midpoint of bounds
+    if n_starts >= 4
+        push!(starts, (lb .+ ub) ./ 2)
+    end
+
+    # Additional random starts within bounds
+    for k in (length(starts)+1):n_starts
+        push!(starts, lb .+ rand(n_vars) .* (ub .- lb))
+    end
+
+    # Helper: check if constraints are satisfied
+    function _is_feasible(result)
+        result.status in (:optimal, :feasible) || return false
+        nc == 0 && return true
+        cvals = result.constraints
+        for j in 1:nc
+            if cvals[j] > c_ub[j] + 1e-4
+                return false
+            end
+            if c_lb[j] > -Inf && cvals[j] < c_lb[j] - 1e-4
+                return false
+            end
+        end
+        return true
+    end
+
+    # Run starts in parallel — each Ipopt call creates its own JuMP.Model
+    n_st = length(starts)
+    results_vec = Vector{Any}(nothing, n_st)
+
+    if Threads.nthreads() > 1
+        tasks = map(1:n_st) do k
+            Threads.@spawn _optimize_ipopt(problem, objective; maxiter, tol, verbose=false, x0=starts[k])
+        end
+        for (k, t) in enumerate(tasks)
+            results_vec[k] = fetch(t)
+        end
+    else
+        for k in 1:n_st
+            results_vec[k] = _optimize_ipopt(problem, objective; maxiter, tol, verbose=false, x0=starts[k])
+        end
+    end
+
+    # Sequential reduction: pick the best feasible result
+    best_result = nothing
+    best_obj = Inf
+    for r in results_vec
+        r === nothing && continue
+        if _is_feasible(r) && r.objective_value < best_obj
+            best_result = r
+            best_obj = r.objective_value
+        end
+    end
+
+    # If no feasible solution found from any start, fall back to x0 result
+    if isnothing(best_result)
+        if verbose
+            @warn "Multi-start: no feasible solution from $n_starts starts, using x0 fallback"
+        end
+        best_result = _optimize_ipopt(problem, objective; maxiter, tol, verbose, x0)
+    elseif verbose
+        @info "Multi-start: best objective $best_obj from $n_starts starts"
+    end
+
+    return best_result
 end
 
 """
@@ -428,9 +549,9 @@ function _convert_objective(objective::MinCarbon, problem::AbstractNLPProblem, v
 end
 
 function _convert_objective(objective::MinCost, problem::AbstractNLPProblem, volume::Float64)
-    # Use material cost if available, otherwise estimate
-    cost_per_m3 = hasproperty(problem.material, :cost) ? problem.material.cost : 150.0
-    volume * cost_per_m3
+    isnan(problem.material.cost) && error("MinCost requires material.cost to be set (material has cost=NaN)")
+    density = ustrip(u"kg/m^3", problem.material.ρ)
+    volume * density * problem.material.cost  # m³ × kg/m³ × $/kg = $
 end
 
 # Fallback for custom objectives (will recompute - less efficient)
@@ -442,56 +563,77 @@ end
 # Grid Search Functions
 # ==============================================================================
 
-"""1D grid search."""
+"""1D grid search (parallelized over grid points)."""
 function _search_1d(problem, objective, lb, ub, n_points)
+    grid = collect(range(lb, ub, length=n_points))
+    n = length(grid)
+
+    local_feasible = Vector{Bool}(undef, n)
+    local_obj = fill(Inf, n)
+    local_result = Vector{Any}(undef, n)
+    local_x = Vector{Vector{Float64}}(undef, n)
+
+    Threads.@threads for k in 1:n
+        x = [grid[k]]
+        feasible, volume, result = evaluate(problem, x)
+        local_feasible[k] = feasible
+        local_obj[k] = feasible ? _convert_objective(objective, problem, volume) : Inf
+        local_result[k] = result
+        local_x[k] = x
+    end
+
     best_x = [lb]
     best_obj = Inf
     best_result = nothing
     best_feasible = false
-    
-    for x1 in range(lb, ub, length=n_points)
-        x = [x1]
-        feasible, volume, result = evaluate(problem, x)
-        
-        # Convert volume → requested objective without recomputing
-        obj = feasible ? _convert_objective(objective, problem, volume) : Inf
-        
-        if feasible && obj < best_obj
-            best_x = x
-            best_obj = obj
-            best_result = result
+
+    for k in 1:n
+        if local_feasible[k] && local_obj[k] < best_obj
+            best_x = local_x[k]
+            best_obj = local_obj[k]
+            best_result = local_result[k]
             best_feasible = true
         end
     end
-    
-    return best_x, best_obj, best_result, best_feasible, n_points
+
+    return best_x, best_obj, best_result, best_feasible, n
 end
 
-"""2D grid search."""
+"""2D grid search (parallelized over grid points)."""
 function _search_2d(problem, objective, lb, ub, n_points)
+    grid_x1 = collect(range(lb[1], ub[1], length=n_points))
+    grid_x2 = collect(range(lb[2], ub[2], length=n_points))
+    n_total = n_points * n_points
+
+    local_feasible = Vector{Bool}(undef, n_total)
+    local_obj = fill(Inf, n_total)
+    local_result = Vector{Any}(undef, n_total)
+    local_x = Vector{Vector{Float64}}(undef, n_total)
+
+    Threads.@threads for k in 1:n_total
+        i = div(k - 1, n_points) + 1
+        j = mod(k - 1, n_points) + 1
+        x = [grid_x1[i], grid_x2[j]]
+        feasible, volume, result = evaluate(problem, x)
+        local_feasible[k] = feasible
+        local_obj[k] = feasible ? _convert_objective(objective, problem, volume) : Inf
+        local_result[k] = result
+        local_x[k] = x
+    end
+
     best_x = [lb[1], lb[2]]
     best_obj = Inf
     best_result = nothing
     best_feasible = false
-    evals = 0
-    
-    for x1 in range(lb[1], ub[1], length=n_points)
-        for x2 in range(lb[2], ub[2], length=n_points)
-            x = [x1, x2]
-            feasible, volume, result = evaluate(problem, x)
-            evals += 1
-            
-            # Convert volume → requested objective without recomputing
-            obj = feasible ? _convert_objective(objective, problem, volume) : Inf
-            
-            if feasible && obj < best_obj
-                best_x = x
-                best_obj = obj
-                best_result = result
-                best_feasible = true
-            end
+
+    for k in 1:n_total
+        if local_feasible[k] && local_obj[k] < best_obj
+            best_x = local_x[k]
+            best_obj = local_obj[k]
+            best_result = local_result[k]
+            best_feasible = true
         end
     end
-    
-    return best_x, best_obj, best_result, best_feasible, evals
+
+    return best_x, best_obj, best_result, best_feasible, n_total
 end

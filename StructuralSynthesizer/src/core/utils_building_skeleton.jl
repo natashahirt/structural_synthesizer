@@ -300,33 +300,143 @@ function rebuild_stories!(skel::BuildingSkeleton{T}) where T
 end
 
 # =============================================================================
-# Geometry Query Helpers
+# Geometry Cache
 # =============================================================================
-# These wrap Meshes operations to avoid exposing Meshes types to downstream packages.
+
+"""
+    rebuild_geometry_cache!(skel::BuildingSkeleton)
+
+Precompute and cache all derived geometric properties on the skeleton.
+
+Call once after the skeleton is fully populated (vertices, edges, faces, stories).
+All downstream code should read from `skel.geometry` instead of calling
+`Meshes.measure` / `Meshes.coords` per-element.
+"""
+function rebuild_geometry_cache!(skel::BuildingSkeleton{T}) where T
+    n_verts = length(skel.vertices)
+    n_edges = length(skel.edges)
+    n_faces = length(skel.faces)
+
+    # ── Vertex coordinate matrix (Float64, meters) ──
+    vc = Matrix{Float64}(undef, n_verts, 3)
+    @inbounds for i in 1:n_verts
+        c = Meshes.coords(skel.vertices[i])
+        vc[i, 1] = ustrip(u"m", c.x)
+        vc[i, 2] = ustrip(u"m", c.y)
+        vc[i, 3] = ustrip(u"m", c.z)
+    end
+
+    # ── Edge lengths ──
+    # Infer the concrete length type from the first edge (fall back to Float64
+    # for edge-less skeletons so the cache is always well-typed).
+    if n_edges > 0
+        edge_lengths = [Meshes.measure(skel.edges[i]) for i in 1:n_edges]
+    else
+        edge_lengths = typeof(Meshes.measure(Meshes.Segment(Meshes.Point(0,0,0),
+                                                            Meshes.Point(1,0,0))))[]
+    end
+
+    # ── Face areas ──
+    if n_faces > 0
+        face_areas = [Meshes.measure(skel.faces[i]) for i in 1:n_faces]
+    else
+        face_areas = typeof(Meshes.measure(Meshes.Triangle(Meshes.Point(0,0,0),
+                                                           Meshes.Point(1,0,0),
+                                                           Meshes.Point(0,1,0))))[]
+    end
+
+    # ── Edge → face adjacency counts ──
+    efc = Dict{Int, Int}()
+    for face_edges in skel.face_edge_indices
+        for e in face_edges
+            efc[e] = get(efc, e, 0) + 1
+        end
+    end
+
+    # ── Edge → story index ──
+    es = Dict{Int, Int}()
+    for (e_idx, (v1, v2)) in enumerate(skel.edge_indices)
+        z1 = vc[v1, 3]
+        z2 = vc[v2, 3]
+        z_mid_m = (z1 + z2) / 2
+        z_mid = T <: Unitful.Quantity ? z_mid_m * u"m" : z_mid_m
+        tol = T <: Unitful.Quantity ? 0.1u"m" : 0.1
+
+        for (level_idx, story) in skel.stories
+            if abs(story.elevation - z_mid) < tol ||
+               (level_idx > 0 && length(skel.stories_z) >= level_idx &&
+                z_mid > skel.stories_z[level_idx] && z_mid <= story.elevation)
+                es[e_idx] = level_idx
+                break
+            end
+        end
+        haskey(es, e_idx) || (es[e_idx] = 0)
+    end
+
+    L = eltype(edge_lengths)
+    A = eltype(face_areas)
+    skel.geometry = GeometryCache{L, A}(vc, edge_lengths, face_areas, efc, es)
+    return skel
+end
+
+# =============================================================================
+# Geometry Query Helpers (cache-backed)
+# =============================================================================
 
 """
     edge_length(skel, edge_idx)
 
-Return the length of the edge at `edge_idx` in the skeleton.
-Wraps `Meshes.measure` so downstream packages don't need Meshes as a dependency.
+Return the precomputed length of an edge. Falls back to `Meshes.measure` if the
+geometry cache has not been built yet.
 """
-edge_length(skel::BuildingSkeleton, edge_idx::Int) = Meshes.measure(skel.edges[edge_idx])
+function edge_length(skel::BuildingSkeleton, edge_idx::Int)
+    isnothing(skel.geometry) && return Meshes.measure(skel.edges[edge_idx])
+    return skel.geometry.edge_lengths[edge_idx]
+end
 
 """
     face_area(skel, face_idx)
 
-Return the area of the face at `face_idx` in the skeleton.
+Return the precomputed area of a face.
 """
-face_area(skel::BuildingSkeleton, face_idx::Int) = Meshes.measure(skel.faces[face_idx])
+function face_area(skel::BuildingSkeleton, face_idx::Int)
+    isnothing(skel.geometry) && return Meshes.measure(skel.faces[face_idx])
+    return skel.geometry.face_areas[face_idx]
+end
 
 """
     vertex_coords(skel, vertex_idx)
 
-Return the coordinates of the vertex at `vertex_idx` as a NamedTuple (x, y, z).
+Return coordinates as a NamedTuple `(x, y, z)` in meters (Float64).
+Uses the cached coordinate matrix when available.
 """
 function vertex_coords(skel::BuildingSkeleton, vertex_idx::Int)
+    if !isnothing(skel.geometry)
+        vc = skel.geometry.vertex_coords
+        return (x=vc[vertex_idx, 1], y=vc[vertex_idx, 2], z=vc[vertex_idx, 3])
+    end
     c = Meshes.coords(skel.vertices[vertex_idx])
-    return (x=c.x, y=c.y, z=c.z)
+    return (x=ustrip(u"m", c.x), y=ustrip(u"m", c.y), z=ustrip(u"m", c.z))
+end
+
+"""
+    edge_face_count(skel, edge_idx) -> Int
+
+Number of faces that share this edge (1 = boundary, 2 = interior).
+"""
+function edge_face_count(skel::BuildingSkeleton, edge_idx::Int)
+    isnothing(skel.geometry) && error("Geometry cache not built — call rebuild_geometry_cache! first")
+    return get(skel.geometry.edge_face_counts, edge_idx, 0)
+end
+
+"""
+    edge_story(skel, edge_idx) -> Int
+
+Story index (0-based) that an edge belongs to.
+"""
+function edge_story(skel::BuildingSkeleton, edge_idx::Int)
+    isnothing(skel.geometry) && error("Geometry cache not built — call rebuild_geometry_cache! first")
+    return get(skel.geometry.edge_stories, edge_idx, 0)
 end
 
 """
@@ -346,27 +456,18 @@ face_vertices(skel::BuildingSkeleton, face_idx::Int) = skel.face_vertex_indices[
 """
     is_convex_face(skel, face_idx) -> Bool
 
-Check if a face in the skeleton is convex.
-
-Convenience wrapper around `Asap.is_convex_polygon` for BuildingSkeleton faces.
-
-# Example
-```julia
-if is_convex_face(skel, face_idx)
-    # Use DDM/EFM directly
-else
-    # Need to split into rectangular regions
-end
-```
+Check if a face in the skeleton is convex, using the cached coordinate matrix.
 """
 function is_convex_face(skel::BuildingSkeleton, face_idx::Int)
     v_indices = skel.face_vertex_indices[face_idx]
-    
-    # Extract 2D vertices (x, y) from skeleton
-    vertices_2d = map(v_indices) do vi
-        c = Meshes.coords(skel.vertices[vi])
-        (Float64(ustrip(c.x)), Float64(ustrip(c.y)))
+    if !isnothing(skel.geometry)
+        vc = skel.geometry.vertex_coords
+        vertices_2d = [(vc[vi, 1], vc[vi, 2]) for vi in v_indices]
+    else
+        vertices_2d = map(v_indices) do vi
+            c = Meshes.coords(skel.vertices[vi])
+            (ustrip(u"m", c.x), ustrip(u"m", c.y))
+        end
     end
-    
     return Asap.is_convex_polygon(vertices_2d)
 end

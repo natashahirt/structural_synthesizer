@@ -42,58 +42,49 @@ Classify cell position based on how many boundary edges it has.
 - 0 boundary edges → :interior
 
 A boundary edge is one that belongs to only one face (building perimeter).
+Reads from the geometry cache (`skel.geometry.edge_face_counts`).
 """
 function classify_cell_position(skel::BuildingSkeleton, face_idx::Int)
+    efc = skel.geometry.edge_face_counts
     face_edges = skel.face_edge_indices[face_idx]
-    
-    # Count edges that are on the building boundary
-    # Boundary edges only belong to one face
-    boundary_count = 0
-    for edge_idx in face_edges
-        # Count how many faces contain this edge
-        faces_with_edge = count(face_edges_list -> edge_idx in face_edges_list, 
-                                skel.face_edge_indices)
-        if faces_with_edge == 1
-            boundary_count += 1
-        end
-    end
-    
-    if boundary_count >= 2
-        return :corner
-    elseif boundary_count == 1
-        return :edge
-    else
-        return :interior
-    end
+    boundary_count = count(e -> get(efc, e, 0) == 1, face_edges)
+    return boundary_count >= 2 ? :corner : boundary_count == 1 ? :edge : :interior
 end
 
-"""Initialize cells from skeleton faces (geometry + service SDL/LL)."""
-function initialize_cells!(struc::BuildingStructure{T, A, P}) where {T, A, P}
+"""
+    initialize_cells!(struc; loads=GravityLoads())
+
+Initialize cells from skeleton faces with service-level SDL and LL.
+
+Loads are taken from the `GravityLoads` struct.  In the `design_building`
+pipeline, `params.loads` is passed here automatically.
+
+See also: [`GravityLoads`](@ref), [`initialize!`](@ref)
+"""
+function initialize_cells!(struc::BuildingStructure{T, A, P};
+                           loads::GravityLoads = GravityLoads()) where {T, A, P}
     skel = struc.skeleton
     empty!(struc.cells)
     
-    load_map = [
-        :grade => (Constants.LL_GRADE, Constants.SDL_FLOOR),
-        :floor => (Constants.LL_FLOOR, Constants.SDL_FLOOR),
-        :roof  => (Constants.LL_ROOF,  Constants.SDL_ROOF)
-    ]
+    lmap = load_map(loads)   # [:grade => (LL, SDL), :floor => ..., :roof => ...]
     
     processed_faces = Set{Int}()
     
-    for (grp_name, loads) in load_map
+    for (grp_name, (ll, sdl)) in lmap
         face_indices = get(skel.groups_faces, grp_name, Int[])
-        ll, sdl = loads
         
         for face_idx in face_indices
             face_idx in processed_faces && continue
             push!(processed_faces, face_idx)
             
-            polygon = skel.faces[face_idx]
-            area = Meshes.measure(polygon)
+            area = face_area(skel, face_idx)
             spans = get_cell_spans(skel, face_idx)
             position = classify_cell_position(skel, face_idx)
             
-            cell = Cell(face_idx, area, spans, sdl, ll; position=position)
+            # Ensure loads match the pressure type P of the BuildingStructure
+            sdl_p = convert(P, sdl)
+            ll_p = convert(P, ll)
+            cell = Cell(face_idx, area, spans, sdl_p, ll_p; position=position)
             # Set floor_type for grade cells (they don't need slab design)
             if grp_name == :grade
                 cell.floor_type = :grade
@@ -147,10 +138,11 @@ function initialize_slabs!(struc::BuildingStructure{T};
                            cell_groupings::Union{Symbol, Vector{Vector{Int}}}=:auto,
                            slab_group_ids::Union{Nothing, AbstractVector}=nothing) where T
     empty!(struc.slabs)
+    empty!(struc.slab_parallel_batches)  # clear stale coloring
     
     # Clear stale cell groups and tributary cache (floor type may have changed)
     empty!(struc.cell_groups)
-    clear_tributary_cache!(struc)
+    clear_geometry_caches!(struc)
     
     # Resolve cell_groupings to actual indices
     opts = get(floor_kwargs, :options, StructuralSizer.FloorOptions())
@@ -354,18 +346,29 @@ function _group_slab_specs(slab_specs)
 end
 
 function _size_slab_groups(groups, slab_specs, struc, material, floor_kwargs)
-    group_results = Dict{UInt64, AbstractFloorResult}()
-    group_sw = Dict{UInt64, Any}()  # pressure units vary by input type/units
-    group_spans = Dict{UInt64, SpanInfo}()
-
-    for (gid, spec_idxs) in groups
+    # Flatten to arrays for threaded iteration (Dict iteration is not thread-safe)
+    gids = collect(keys(groups))
+    n = length(gids)
+    
+    results_vec  = Vector{AbstractFloorResult}(undef, n)
+    sw_vec       = Vector{Any}(undef, n)
+    spans_vec    = Vector{SpanInfo}(undef, n)
+    
+    Threads.@threads for k in 1:n
+        gid = gids[k]
+        spec_idxs = groups[gid]
         specs = slab_specs[spec_idxs]
         result, sw_service, spans_gov = _process_single_slab_group(gid, specs, struc, material, floor_kwargs)
         
-        group_results[gid] = result
-        group_sw[gid] = sw_service
-        group_spans[gid] = spans_gov
+        results_vec[k] = result
+        sw_vec[k]      = sw_service
+        spans_vec[k]   = spans_gov
     end
+    
+    # Reconstruct Dicts from parallel results
+    group_results = Dict{UInt64, AbstractFloorResult}(gids[k] => results_vec[k] for k in 1:n)
+    group_sw      = Dict{UInt64, Any}(gids[k] => sw_vec[k] for k in 1:n)
+    group_spans   = Dict{UInt64, SpanInfo}(gids[k] => spans_vec[k] for k in 1:n)
 
     return group_results, group_sw, group_spans
 end
@@ -445,7 +448,7 @@ end
 function _compute_slab_volumes(result::R, floor_area, primary_mat, opts, floor_type::Symbol) where R<:AbstractFloorResult
     # Get material mapping: symbol → actual material object
     # Convert symbol to type for clean dispatch
-    ft = StructuralSizer.floor_system(floor_type)
+    ft = StructuralSizer.floor_type(floor_type)
     mat_map = StructuralSizer.result_materials(result, primary_mat, opts, ft)
     
     # Compute volumes: material → total volume
@@ -592,17 +595,12 @@ Returns:
 - `is_reversed`: Whether the canonical form is the reversed (reflected) sequence
 """
 function _cell_geometry_signature(struc::BuildingStructure, cell::Cell)
-    poly = struc.skeleton.faces[cell.face_idx]
-    pts = Meshes.vertices(poly)
+    skel = struc.skeleton
+    vc = skel.geometry.vertex_coords
+    v_indices = skel.face_vertex_indices[cell.face_idx]
     
-    # Get 2D coords in meters
-    coords = [(Float64(ustrip(u"m", Meshes.coords(p).x)),
-               Float64(ustrip(u"m", Meshes.coords(p).y))) for p in pts]
-    
-    # Compute edge lengths and interior angles
+    coords = [(vc[vi, 1], vc[vi, 2]) for vi in v_indices]
     features = _compute_polygon_features(coords)
-    
-    # Find canonical rotation (and check reversed)
     return _find_canonical_form(features)
 end
 
@@ -688,6 +686,7 @@ This returns the index of the edge that best aligns with the span direction.
 """
 function _find_span_edge_index(struc::BuildingStructure, cell::Cell)
     skel = struc.skeleton
+    vc = skel.geometry.vertex_coords
     v_indices = skel.face_vertex_indices[cell.face_idx]
     n = length(v_indices)
     
@@ -697,25 +696,18 @@ function _find_span_edge_index(struc::BuildingStructure, cell::Cell)
     
     ax_unit = (axis[1] / ax_norm, axis[2] / ax_norm)
     
-    # Find edge most parallel to axis (span runs along this edge direction)
     best_idx = 1
     best_alignment = -Inf
     
     for i in 1:n
-        v1 = skel.vertices[v_indices[i]]
-        v2 = skel.vertices[v_indices[mod1(i + 1, n)]]
-        
-        c1, c2 = Meshes.coords(v1), Meshes.coords(v2)
-        dx = Float64(ustrip(u"m", c2.x - c1.x))
-        dy = Float64(ustrip(u"m", c2.y - c1.y))
+        vi1 = v_indices[i]
+        vi2 = v_indices[mod1(i + 1, n)]
+        dx = vc[vi2, 1] - vc[vi1, 1]
+        dy = vc[vi2, 2] - vc[vi1, 2]
         edge_len = hypot(dx, dy)
         edge_len < 1e-9 && continue
         
-        edge_unit = (dx / edge_len, dy / edge_len)
-        
-        # Dot product: how parallel is edge to axis?
-        alignment = abs(ax_unit[1] * edge_unit[1] + ax_unit[2] * edge_unit[2])
-        
+        alignment = abs(ax_unit[1] * dx/edge_len + ax_unit[2] * dy/edge_len)
         if alignment > best_alignment
             best_alignment = alignment
             best_idx = i
@@ -750,7 +742,7 @@ Uses one-way directed partitioning for one-way floor types (along span axis),
 isotropic straight skeleton for two-way systems. The `tributary_axis` option
 in `FloorOptions` can override the default behavior.
 
-Results stored in `struc.tributaries.edge[key][cell_idx]` where key is derived
+Results stored in `struc._tributary_caches.edge[key][cell_idx]` where key is derived
 from (spanning_behavior, axis). Access via:
 - `cell_edge_tributaries(struc, cell_idx)` → Vector{TributaryPolygon}
 - `get_cached_edge_tributaries(struc, behavior, axis, cell_idx)` → CellTributaryResult
@@ -861,23 +853,19 @@ end
 # --- Vault geometry guard ---
 function _assert_rectangular_slab_face(struc::BuildingStructure, face_idx::Int; tol=1e-8)
     skel = struc.skeleton
-    poly = skel.faces[face_idx]
-    pts = Meshes.vertices(poly)
+    vc = skel.geometry.vertex_coords
+    v_idx = skel.face_vertex_indices[face_idx]
 
-    length(pts) == 4 || throw(ArgumentError("Vault requires a rectangular face (4 vertices); face $face_idx has $(length(pts)) vertices."))
+    length(v_idx) == 4 || throw(ArgumentError("Vault requires a rectangular face (4 vertices); face $face_idx has $(length(v_idx)) vertices."))
 
-    cs = Meshes.coords.(pts)
-    vs = [(cs[2].x - cs[1].x, cs[2].y - cs[1].y),
-          (cs[3].x - cs[2].x, cs[3].y - cs[2].y),
-          (cs[4].x - cs[3].x, cs[4].y - cs[3].y),
-          (cs[1].x - cs[4].x, cs[1].y - cs[4].y)]
+    # Edge vectors in meters (Float64)
+    vs = [(vc[v_idx[2], 1] - vc[v_idx[1], 1], vc[v_idx[2], 2] - vc[v_idx[1], 2]),
+          (vc[v_idx[3], 1] - vc[v_idx[2], 1], vc[v_idx[3], 2] - vc[v_idx[2], 2]),
+          (vc[v_idx[4], 1] - vc[v_idx[3], 1], vc[v_idx[4], 2] - vc[v_idx[3], 2]),
+          (vc[v_idx[1], 1] - vc[v_idx[4], 1], vc[v_idx[1], 2] - vc[v_idx[4], 2])]
 
-    norms = [sqrt(v[1]^2 + v[2]^2) for v in vs]
-    # `norms` carries length units (Unitful); interpret `tol` in the same length unit.
-    # (Default `tol=1e-8` means ~1e-8 of the coordinate length unit, typically meters.)
-    norm_unit = unit(first(norms))
-    tol_len = tol * norm_unit
-    all(n -> n > tol_len, norms) || throw(ArgumentError("Vault face $face_idx is degenerate (zero-length edge)."))
+    norms = [hypot(v[1], v[2]) for v in vs]
+    all(n -> n > tol, norms) || throw(ArgumentError("Vault face $face_idx is degenerate (zero-length edge)."))
 
     dot12 = abs((vs[1][1]*vs[2][1] + vs[1][2]*vs[2][2]) / (norms[1]*norms[2]))
     dot23 = abs((vs[2][1]*vs[3][1] + vs[2][2]*vs[3][2]) / (norms[2]*norms[3]))
@@ -929,9 +917,10 @@ end
 # =============================================================================
 
 """
-    slab_summary(struc::BuildingStructure)
+    slab_summary(design::BuildingDesign)
+    slab_summary(struc::BuildingStructure; du=imperial)
 
-Print a formatted summary of all designed slabs, similar to `foundation_group_summary`.
+Print a formatted summary of all designed slabs.
 
 Shows:
 - Floor type and thickness
@@ -939,8 +928,15 @@ Shows:
 - Design check results (punching shear, deflection)
 - Reinforcement summary (for flat plates)
 - Concrete volume
+
+Display units are controlled by `du` (default: `imperial`).
+When called with a `BuildingDesign`, uses `design.params.display_units`.
 """
-function slab_summary(struc::BuildingStructure)
+function slab_summary(design::BuildingDesign)
+    slab_summary(design.structure; du=design.params.display_units)
+end
+
+function slab_summary(struc::BuildingStructure; du::DisplayUnits=imperial)
     isempty(struc.slabs) && return println("No slabs. Call initialize_slabs!() first.")
     
     println("\n=== Slab Design Summary ===")
@@ -958,74 +954,82 @@ function slab_summary(struc::BuildingStructure)
         total_area += slab_area
         
         println("Slab $i: $(slab.floor_type) ($n_cells cells)")
-        println("  Area: $(round(u"m^2", slab_area, digits=1)) ($(round(u"ft^2", slab_area, digits=0)))")
+        println("  Area: $(fmt(du, :area, slab_area))")
         
         if r isa StructuralSizer.FlatPlatePanelResult
-            # Flat plate details
-            h_in = round(u"inch", r.h, digits=2)
-            h_mm = round(u"mm", r.h, digits=0)
-            println("  Thickness: $h_in ($h_mm)")
-            println("  Spans: $(round(u"ft", r.l1, digits=1)) × $(round(u"ft", r.l2, digits=1))")
-            println("  M₀ (static moment): $(round(u"kip*ft", r.M0, digits=1))")
+            println("  Thickness: $(fmt(du, :thickness, r.h))")
+            println("  Spans: $(fmt(du, :span, r.l1)) × $(fmt(du, :span, r.l2))")
+            println("  M₀ (static moment): $(fmt(du, :moment, r.M0))")
+            
+            # Moment detail (column strip governing)
+            if !isempty(r.column_strip_reinf)
+                cs_neg = r.column_strip_reinf[end]   # int_neg (last entry)
+                cs_pos = r.column_strip_reinf[2]      # pos (second entry)
+                println("  Mu (col strip): −$(fmt(du, :moment, cs_neg.Mu)), +$(fmt(du, :moment, cs_pos.Mu))")
+            end
+            if !isempty(r.middle_strip_reinf)
+                ms_pos = r.middle_strip_reinf[1]
+                println("  Mu (mid strip): +$(fmt(du, :moment, ms_pos.Mu))")
+            end
             
             # Punching check
             if hasproperty(r, :punching_check) && !isnothing(r.punching_check)
                 pc = r.punching_check
-                status = pc.passes ? "✓ OK" : "✗ FAIL"
+                status = pc.ok ? "✓ OK" : "✗ FAIL"
                 println("  Punching shear: $status (max ratio=$(round(pc.max_ratio, digits=2)))")
             end
             
             # Deflection check
             if hasproperty(r, :deflection_check) && !isnothing(r.deflection_check)
                 dc = r.deflection_check
-                status = dc.passes ? "✓ OK" : "✗ FAIL"
-                println("  Deflection: $status (Δ=$(round(u"mm", dc.Δ_total, digits=1)), limit=$(round(u"mm", dc.Δ_limit, digits=1)))")
+                status = dc.ok ? "✓ OK" : "✗ FAIL"
+                println("  Deflection: $status (Δ=$(fmt(du, :deflection, dc.Δ_total, digits=1)), limit=$(fmt(du, :deflection, dc.Δ_limit, digits=1)))")
             end
             
             # Reinforcement summary
             if !isempty(r.column_strip_reinf)
-                cs = r.column_strip_reinf[1]  # representative
-                println("  Column strip: #$(cs.bar_size) @ $(round(u"inch", cs.spacing, digits=1))")
+                cs = r.column_strip_reinf[1]
+                println("  Column strip: #$(cs.bar_size) @ $(fmt(du, :spacing, cs.spacing, digits=1))")
             end
             if !isempty(r.middle_strip_reinf)
-                ms = r.middle_strip_reinf[1]  # representative
-                println("  Middle strip: #$(ms.bar_size) @ $(round(u"inch", ms.spacing, digits=1))")
+                ms = r.middle_strip_reinf[1]
+                println("  Middle strip: #$(ms.bar_size) @ $(fmt(du, :spacing, ms.spacing, digits=1))")
             end
             
             # Concrete volume
             vol = r.h * slab_area
             total_concrete += vol
-            println("  Concrete volume: $(round(u"m^3", vol, digits=2))")
+            println("  Concrete volume: $(fmt(du, :volume, vol))")
             
         elseif r isa StructuralSizer.VaultResult
             # Vault details
-            println("  Thickness: $(round(u"inch", r.thickness, digits=2))")
-            println("  Rise: $(round(u"inch", r.rise, digits=1))")
+            println("  Thickness: $(fmt(du, :thickness, r.thickness))")
+            println("  Rise: $(fmt(du, :thickness, r.rise, digits=1))")
             println("  λ (rise ratio): $(round(r.lambda, digits=1))")
             println("  Thrust: $(round(u"kN/m", StructuralSizer.total_thrust(r), digits=1))")
             
             vol = r.volume_per_area * slab_area
             total_concrete += vol
-            println("  Concrete volume: $(round(u"m^3", vol, digits=2))")
+            println("  Concrete volume: $(fmt(du, :volume, vol))")
             
         elseif r isa StructuralSizer.CIPSlabResult
             # Standard one-way/two-way slab
-            println("  Thickness: $(round(u"inch", r.thickness, digits=2))")
-            println("  Self-weight: $(round(u"psf", r.self_weight, digits=1))")
+            println("  Thickness: $(fmt(du, :thickness, r.thickness))")
+            println("  Self-weight: $(fmt(du, :pressure, r.self_weight, digits=1))")
             
             vol = r.volume_per_area * slab_area
             total_concrete += vol
-            println("  Concrete volume: $(round(u"m^3", vol, digits=2))")
+            println("  Concrete volume: $(fmt(du, :volume, vol))")
             
         elseif !isnothing(r)
             # Generic result with total_depth accessor
             h = StructuralSizer.total_depth(r)
-            println("  Thickness: $(round(u"inch", h, digits=2))")
+            println("  Thickness: $(fmt(du, :thickness, h))")
             
             if hasproperty(r, :volume_per_area)
                 vol = r.volume_per_area * slab_area
                 total_concrete += vol
-                println("  Concrete volume: $(round(u"m^3", vol, digits=2))")
+                println("  Concrete volume: $(fmt(du, :volume, vol))")
             end
         else
             println("  (not sized)")
@@ -1037,7 +1041,189 @@ function slab_summary(struc::BuildingStructure)
     println("─" ^ 70)
     println("TOTALS:")
     println("  Slabs: $(length(struc.slabs))")
-    println("  Total area: $(round(u"m^2", total_area, digits=1)) ($(round(u"ft^2", total_area, digits=0)))")
-    println("  Concrete volume: $(round(u"m^3", total_concrete, digits=2))")
-    println("  Concrete weight: $(round(u"kg", total_concrete * 2400u"kg/m^3", digits=0)) ($(round(u"lbf", total_concrete * 150u"lbf/ft^3", digits=0)))")
+    println("  Total area: $(fmt(du, :area, total_area))")
+    println("  Concrete volume: $(fmt(du, :volume, total_concrete))")
+    println("  Concrete weight: $(fmt(du, :mass, total_concrete * 2400u"kg/m^3", digits=0))")
+end
+
+# =============================================================================
+# Flat Plate Moment Comparison (DDM / EFM / FEA)
+# =============================================================================
+
+"""
+    flat_plate_moment_comparison(struc, slab_idx; opts, column_opts, verbose)
+
+Run DDM, EFM, and FEA moment analyses on a single slab and print a comparison table.
+
+Useful for validating that FEA moments are consistent with analytical methods
+on regular geometries, and for seeing where they diverge on irregular ones.
+
+# Example
+```julia
+flat_plate_moment_comparison(struc, 1; verbose=false)
+```
+"""
+function flat_plate_moment_comparison(
+    struc::BuildingStructure,
+    slab_idx::Int;
+    opts::StructuralSizer.FlatPlateOptions = StructuralSizer.FlatPlateOptions(),
+    column_opts = StructuralSizer.ConcreteColumnOptions(),
+    verbose::Bool = false
+)
+    slab = struc.slabs[slab_idx]
+    material = opts.material
+    fc = material.concrete.fc′
+    γ_concrete = material.concrete.ρ
+    ν_concrete = material.concrete.ν
+    wc_pcf = ustrip(StructuralSizer.pcf, γ_concrete)
+    Ecs = StructuralSizer.Ec(fc, wc_pcf)
+
+    slab_cell_indices = Set(slab.cell_indices)
+    columns = StructuralSizer.find_supporting_columns(struc, slab_cell_indices)
+    isempty(columns) && return println("No supporting columns found for slab $slab_idx")
+
+    # Initialize column sizes if needed
+    ln_max = max(slab.spans.primary, slab.spans.secondary)
+    c_min = StructuralSizer.estimate_column_size_from_span(ln_max)
+    for col in columns
+        if isnothing(col.c1) || col.c1 <= 0u"inch"
+            col.c1 = c_min
+            col.c2 = c_min
+        end
+    end
+
+    has_edge = any(col.position != :interior for col in columns)
+    h = StructuralSizer.min_thickness_flat_plate(ln_max; discontinuous_edge=has_edge)
+
+    # Run each method (catch failures for inapplicable methods)
+    methods = [
+        ("DDM",  StructuralSizer.DDM()),
+        ("EFM",  StructuralSizer.EFM()),
+        ("FEA",  StructuralSizer.FEA()),
+    ]
+
+    results = Dict{String, Any}()
+    for (name, method) in methods
+        try
+            r = StructuralSizer.run_moment_analysis(
+                method, struc, slab, columns, h, fc, Ecs, γ_concrete;
+                ν_concrete=ν_concrete, verbose=verbose
+            )
+            results[name] = r
+        catch e
+            results[name] = e
+        end
+    end
+
+    # Print comparison table
+    println("\n=== Flat Plate Moment Comparison — Slab $slab_idx ===")
+    println("─" ^ 74)
+    println("  Spans: $(round(u"ft", slab.spans.primary, digits=1)) × $(round(u"ft", slab.spans.secondary, digits=1))")
+    println("  h = $(round(u"inch", h, digits=1)),  $(length(columns)) columns")
+    println("─" ^ 74)
+    @printf("  %-8s  %10s  %10s  %10s  %10s  %8s\n",
+            "Method", "M₀", "M⁻_ext", "M⁻_int", "M⁺", "∑/M₀")
+    println("  " * "─" ^ 64)
+
+    for (name, _) in methods
+        r = results[name]
+        if r isa Exception
+            @printf("  %-8s  %s\n", name, "N/A ($(typeof(r).name.name))")
+        else
+            M0  = ustrip(StructuralSizer.kip * u"ft", r.M0)
+            Mne = ustrip(StructuralSizer.kip * u"ft", r.M_neg_ext)
+            Mni = ustrip(StructuralSizer.kip * u"ft", r.M_neg_int)
+            Mp  = ustrip(StructuralSizer.kip * u"ft", r.M_pos)
+            check = (Mne + Mni) / 2 + Mp
+            ratio = M0 > 0 ? check / M0 : 0.0
+            @printf("  %-8s  %10.1f  %10.1f  %10.1f  %10.1f  %7.1f%%\n",
+                    name, M0, Mne, Mni, Mp, ratio * 100)
+        end
+    end
+    println("─" ^ 74)
+    println("  Units: kip·ft.  ∑/M₀ = (M⁻_ext/2 + M⁻_int/2 + M⁺) / M₀")
+
+    return results
+end
+
+# =============================================================================
+# Slab Parallel Coloring (graph coloring for concurrent slab sizing)
+# =============================================================================
+
+"""
+    slab_conflict_coloring(slab_column_sets::Vector{Set{Int}}) -> Vector{Vector{Int}}
+
+Graph-color slabs by column conflict. Two slabs conflict if they share
+any supporting column index. Returns batches of non-conflicting slab
+indices (1-based) suitable for `Threads.@threads` execution.
+
+Uses greedy coloring with largest-degree-first ordering.
+"""
+function slab_conflict_coloring(slab_column_sets::Vector{Set{Int}})
+    n = length(slab_column_sets)
+    n == 0 && return Vector{Int}[]
+
+    # Build conflict adjacency (edge if two slabs share a column)
+    neighbors = [Set{Int}() for _ in 1:n]
+    for i in 1:n, j in (i+1):n
+        if !isempty(intersect(slab_column_sets[i], slab_column_sets[j]))
+            push!(neighbors[i], j)
+            push!(neighbors[j], i)
+        end
+    end
+
+    # Greedy coloring (largest-degree-first for fewer colors)
+    colors = zeros(Int, n)
+    order = sortperm([length(neighbors[i]) for i in 1:n], rev=true)
+
+    for idx in order
+        used = Set(colors[nb] for nb in neighbors[idx] if colors[nb] > 0)
+        c = 1
+        while c in used
+            c += 1
+        end
+        colors[idx] = c
+    end
+
+    # Group by color → batches
+    n_colors = maximum(colors; init=0)
+    batches = [Int[] for _ in 1:n_colors]
+    for (idx, c) in enumerate(colors)
+        push!(batches[c], idx)
+    end
+
+    return batches
+end
+
+"""
+    compute_slab_parallel_batches!(struc)
+
+Build the slab conflict graph from slab–column tributary overlap and
+graph-color it so that slabs in each batch share no columns.
+
+Stores result in `struc.slab_parallel_batches` for reuse by `size_slabs!`.
+"""
+function compute_slab_parallel_batches!(struc)
+    n_slabs = length(struc.slabs)
+    if n_slabs == 0
+        struc.slab_parallel_batches = Vector{Int}[]
+        return struc
+    end
+
+    # Build slab → column set mapping via tributary cell overlap
+    slab_column_sets = Vector{Set{Int}}(undef, n_slabs)
+    for (s_idx, slab) in enumerate(struc.slabs)
+        slab_cells = Set(slab.cell_indices)
+        col_set = Set{Int}()
+        for (c_idx, col) in enumerate(struc.columns)
+            if !isempty(col.tributary_cell_indices) &&
+               !isempty(intersect(col.tributary_cell_indices, slab_cells))
+                push!(col_set, c_idx)
+            end
+        end
+        slab_column_sets[s_idx] = col_set
+    end
+
+    struc.slab_parallel_batches = slab_conflict_coloring(slab_column_sets)
+    return struc
 end

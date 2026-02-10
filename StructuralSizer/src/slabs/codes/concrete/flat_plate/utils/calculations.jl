@@ -40,7 +40,7 @@
 # Example:
 #   h = min_thickness_flat_plate(16.67u"ft")  # Returns Quantity in inches
 #   fc = 4000u"psi"
-#   Ec_val = Ec(fc)  # Returns Quantity in psi
+#   Ec_val = Ec(fc, 150)  # Returns Quantity in psi (wc=150 pcf)
 #
 # =============================================================================
 
@@ -49,58 +49,11 @@ using Unitful: @u_str
 using Asap: kip, ksi, ksf, psf, pcf
 using Asap: Length, Area, Volume, SecondMomentOfArea, TorsionalConstant, Pressure, Force, Moment, Torque, LinearLoad
 
-# Note: Asap units (kip, ksi, psf, etc.) are imported directly above.
-# Unitful.register(Asap) is called in StructuralSizer.__init__() for runtime u"" macro support.
-
-# =============================================================================
-# Material Properties
-# =============================================================================
-
-"""
-Concrete modulus of elasticity per ACI 19.2.2.1.
-
-Formula: Ec = 57000√f'c (psi units)
-"""
-function Ec(fc::Pressure)
-    # ACI formula defined in psi
-    return 57000 * sqrt(ustrip(u"psi", fc)) * u"psi"
-end
-
-"""
-Stress block factor β₁ per ACI 22.2.2.4.3.
-
-- f'c ≤ 4000 psi: β₁ = 0.85
-- f'c ≥ 8000 psi: β₁ = 0.65
-- Otherwise: β₁ = 0.85 - 0.05(f'c - 4000)/1000
-"""
-function β1(fc::Pressure)
-    # ACI formula defined with f'c in psi
-    fc_val = ustrip(u"psi", fc)
-    if fc_val <= 4000
-        return 0.85
-    elseif fc_val >= 8000
-        return 0.65
-    else
-        return 0.85 - 0.05 * (fc_val - 4000) / 1000
-    end
-end
-
-"""
-Concrete rupture modulus for deflection calculations per ACI 19.2.3.1.
-
-Formula: fr = 7.5√f'c (psi units)
-"""
-function fr(fc::Pressure)
-    # ACI formula defined in psi
-    return 7.5 * sqrt(ustrip(u"psi", fc)) * u"psi"
-end
 
 # =============================================================================
 # Self-Weight Calculation
 # =============================================================================
 
-# Standard gravitational acceleration
-const g_ACCEL = 9.80665u"m/s^2"
 
 """
     slab_self_weight(h, ρ) -> Pressure
@@ -124,7 +77,7 @@ h = 7u"inch"
 sw = slab_self_weight(h, ρ)  # ≈ 87.5 psf
 ```
 """
-slab_self_weight(h, ρ) = uconvert(psf, h * ρ * g_ACCEL)
+slab_self_weight(h, ρ) = uconvert(psf, h * ρ * GRAVITY)
 
 # =============================================================================
 # Phase 2: Slab Thickness (ACI 8.3.1.1)
@@ -156,16 +109,57 @@ function min_thickness_flat_plate(ln::Length; discontinuous_edge::Bool=false)
 end
 
 """
-    clear_span(l, c)
+    clear_span(l, c; shape=:rectangular)
 
 Clear span from face-to-face of supports.
 
+For circular columns, deducts the equivalent square dimension `c_eq = D√(π/4)`
+so that the cross-sectional area is preserved.
+
 # Arguments
 - `l`: Center-to-center span
-- `c`: Column dimension in span direction
+- `c`: Column dimension in span direction (diameter D for circular)
+- `shape`: Column shape — `:rectangular` or `:circular`
 """
-function clear_span(l::Length, c::Length)
-    return l - c
+function clear_span(l::Length, c::Length; shape::Symbol=:rectangular)
+    if shape == :circular
+        return l - equivalent_square_column(c)
+    else
+        return l - c
+    end
+end
+
+# =============================================================================
+# Circular Column Utilities (ACI 318-19 R22.6.4.1)
+# =============================================================================
+
+"""
+    equivalent_square_column(D) -> Length
+
+Equivalent square column dimension for a circular column of diameter D.
+
+    c_eq = D × √(π/4) ≈ 0.886 D
+
+Preserves cross-sectional area: π D²/4 = c_eq².
+Used for clear span, torsional constant, and EFM stiffness calculations.
+
+# Reference
+- ACI 318-19 R22.6.4.1
+- PCA Notes on ACI 318: "For circular columns, use equivalent square"
+"""
+function equivalent_square_column(D::Length)
+    return D * sqrt(π / 4)
+end
+
+"""
+    circular_column_Ic(D) -> SecondMomentOfArea
+
+Moment of inertia for a circular column section.
+
+    Ic = π D⁴ / 64
+"""
+function circular_column_Ic(D::Length)
+    return π * D^4 / 64
 end
 
 # =============================================================================
@@ -298,11 +292,94 @@ Without edge beam (βt = 0), always 100%.
 const ACI_COL_STRIP_EXT_NEG_NO_BEAM = 1.00
 
 """
+    edge_beam_βt(h, c1, c2, l2, Ecs_slab, Ecs_beam)
+
+Compute the torsional stiffness ratio β_t for an edge beam per ACI 318-19 §8.10.5.2.
+
+    β_t = E_cb × C / (2 × E_cs × I_s)
+
+When no explicit beam dimensions are provided, the "beam" is taken as the
+slab depth × column dimension at the edge (ACI R8.4.1.8), which gives a
+conservative (low) β_t for a flat plate with spandrel columns.
+
+# Arguments
+- `h`: Slab thickness
+- `c1`: Column dimension in span direction (torsional member length)
+- `c2`: Column dimension perpendicular to span (torsional member width)
+- `l2`: Panel width perpendicular to span
+- `Ecs_slab`: Slab concrete modulus (default: same as beam)
+- `Ecs_beam`: Beam concrete modulus (default: same as slab)
+
+# Returns
+Dimensionless torsional stiffness ratio β_t
+
+# Reference
+- ACI 318-19 §8.10.5.2, Eq. 8.10.5.2(a)
+- ACI 318-19 R8.4.1.8 (effective beam section)
+"""
+function edge_beam_βt(h::Length, c1::Length, c2::Length, l2::Length;
+                      Ecs_slab::Pressure = 1.0u"psi",
+                      Ecs_beam::Pressure = Ecs_slab)
+    # Torsional constant of the slab strip acting as edge beam
+    # x = h (slab thickness, short dimension), y = c2 (column width, long dimension)
+    C = torsional_constant_C(h, c2)
+    
+    # Slab moment of inertia for the full panel width
+    Is = slab_moment_of_inertia(l2, h)
+    
+    # β_t = E_cb × C / (2 × E_cs × I_s)
+    # When E_cb = E_cs (same concrete), simplifies to C / (2 × I_s)
+    E_ratio = ustrip(Ecs_beam) / ustrip(Ecs_slab)
+    βt = E_ratio * ustrip(u"inch^4", C) / (2.0 * ustrip(u"inch^4", Is))
+    
+    return βt
+end
+
+"""
+    aci_ddm_longitudinal_with_edge_beam(βt) -> NamedTuple
+
+ACI 318-19 Table 8.10.4.2 longitudinal distribution coefficients,
+interpolated for edge beam stiffness ratio β_t.
+
+Interpolates linearly between:
+- β_t = 0 (no edge beam): ext_neg=0.26, pos=0.52, int_neg=0.70
+- β_t ≥ 2.5 (full edge beam): ext_neg=0.30, pos=0.50, int_neg=0.70
+
+# Reference
+- ACI 318-19 Table 8.10.4.2 (both rows for αf×l₂/l₁ = 0)
+"""
+function aci_ddm_longitudinal_with_edge_beam(βt::Float64)
+    t = clamp(βt / 2.5, 0.0, 1.0)  # interpolation parameter [0,1]
+    
+    ext_neg = 0.26 + t * (0.30 - 0.26)  # 0.26 → 0.30
+    pos     = 0.52 + t * (0.50 - 0.52)  # 0.52 → 0.50
+    int_neg = 0.70                        # unchanged
+    
+    return (ext_neg=ext_neg, pos=pos, int_neg=int_neg)
+end
+
+"""
+    aci_col_strip_ext_neg_fraction(βt)
+
+ACI Table 8.10.5.2 — Column strip fraction of exterior negative moment.
+
+Interpolates linearly between:
+- β_t = 0: 100% to column strip
+- β_t ≥ 2.5: 75% to column strip
+
+# Reference
+- ACI 318-19 Table 8.10.5.2 (for l₂/l₁ = 1.0, αf = 0)
+"""
+function aci_col_strip_ext_neg_fraction(βt::Float64)
+    t = clamp(βt / 2.5, 0.0, 1.0)
+    return 1.00 - t * (1.00 - 0.75)  # 1.00 → 0.75
+end
+
+"""
 ACI Table 8.10.5.5 - Column strip positive moment.
-For flat plates, 60% for l₂/l₁ = 1.0, varies with ratio.
+For flat plates (αf = 0), constant at 60% regardless of l₂/l₁.
 """
 function aci_col_strip_positive(l2_l1::Float64)
-    # Interpolate between 60% (l2/l1=0.5) and 60% (l2/l1=2.0)
     # For αf = 0 (flat plate), it's constant at 60%
     return 0.60
 end
@@ -366,19 +443,33 @@ Distribute moments using full ACI DDM procedure (Tables 8.10.4-5).
 # Returns
 Named tuple with distributed moments to column and middle strips.
 """
-function distribute_moments_aci(M0, span_type::Symbol, l2_l1::Float64; edge_beam::Bool=false)
+function distribute_moments_aci(M0, span_type::Symbol, l2_l1::Float64;
+                                edge_beam::Bool=false, βt::Float64=0.0)
+    # When edge_beam=true but no explicit βt provided, use the threshold value
+    if edge_beam && βt ≈ 0.0
+        βt = 2.5  # ACI table threshold for "with edge beam"
+    end
+    
     if span_type == :end_span
         # Step 1: Longitudinal distribution (Table 8.10.4.2)
-        M_ext_neg = ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0
-        M_pos = ACI_DDM_LONGITUDINAL.end_span.pos * M0
-        M_int_neg = ACI_DDM_LONGITUDINAL.end_span.int_neg * M0
+        # With edge beam: interpolate coefficients based on βt
+        if βt > 0.0
+            long_coeffs = aci_ddm_longitudinal_with_edge_beam(βt)
+            M_ext_neg = long_coeffs.ext_neg * M0
+            M_pos = long_coeffs.pos * M0
+            M_int_neg = long_coeffs.int_neg * M0
+        else
+            M_ext_neg = ACI_DDM_LONGITUDINAL.end_span.ext_neg * M0
+            M_pos = ACI_DDM_LONGITUDINAL.end_span.pos * M0
+            M_int_neg = ACI_DDM_LONGITUDINAL.end_span.int_neg * M0
+        end
         
         # Step 2: Transverse distribution to column strip
         # Interior negative: Table 8.10.5.1 (75% for αf=0)
         cs_int_neg = ACI_COL_STRIP_INT_NEG * M_int_neg
         
-        # Exterior negative: Table 8.10.5.2
-        cs_ext_neg_frac = edge_beam ? 0.75 : ACI_COL_STRIP_EXT_NEG_NO_BEAM
+        # Exterior negative: Table 8.10.5.2 — interpolated with βt
+        cs_ext_neg_frac = aci_col_strip_ext_neg_fraction(βt)
         cs_ext_neg = cs_ext_neg_frac * M_ext_neg
         
         # Positive: Table 8.10.5.5
@@ -394,7 +485,7 @@ function distribute_moments_aci(M0, span_type::Symbol, l2_l1::Float64; edge_beam
             middle_strip = (ext_neg = ms_ext_neg, pos = ms_pos, int_neg = ms_int_neg)
         )
     else
-        # Interior span
+        # Interior span — edge beam doesn't affect interior span coefficients
         M_neg = ACI_DDM_LONGITUDINAL.interior_span.neg * M0
         M_pos = ACI_DDM_LONGITUDINAL.interior_span.pos * M0
         
@@ -450,15 +541,17 @@ function slab_moment_of_inertia(l2::Length, h::Length)
 end
 
 """
-    column_moment_of_inertia(c1, c2)
+    column_moment_of_inertia(c1, c2; shape=:rectangular)
 
-Gross moment of inertia for rectangular column section.
+Gross moment of inertia for column section.
 
-    Iᶜ = c₁ × c₂³ / 12   (bending about axis parallel to c1)
+- Rectangular/square: Iᶜ = c₁ × c₂³ / 12
+- Circular: Iᶜ = π D⁴ / 64  (c1 = c2 = D)
 
 # Arguments  
-- `c1`: Column dimension in span direction
-- `c2`: Column dimension perpendicular to span
+- `c1`: Column dimension in span direction (diameter D for circular)
+- `c2`: Column dimension perpendicular to span (diameter D for circular)
+- `shape`: Column shape — `:rectangular` or `:circular`
 
 # Returns
 Moment of inertia (Length⁴)
@@ -467,8 +560,12 @@ Moment of inertia (Length⁴)
 - ACI 318-14 Section 8.11.4
 - StructurePoint Example: c1=c2=16 in → Ic = 5,461 in⁴
 """
-function column_moment_of_inertia(c1::Length, c2::Length)
-    return c1 * c2^3 / 12
+function column_moment_of_inertia(c1::Length, c2::Length; shape::Symbol=:rectangular)
+    if shape == :circular
+        return circular_column_Ic(c1)
+    else
+        return c1 * c2^3 / 12
+    end
 end
 
 """
@@ -504,7 +601,7 @@ function torsional_constant_C(x::Length, y::Length)
 end
 
 """
-    slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=4.127)
+    slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=PCA_K_SLAB)
 
 Flexural stiffness of slab-beam at both ends per ACI 318-14 Section 8.11.3.
 
@@ -520,7 +617,7 @@ The stiffness factor k accounts for the non-prismatic section:
 - `l1`: Span length center-to-center of columns
 - `c1`: Column dimension in span direction (for N1 = c1/l1)
 - `c2`: Column dimension perpendicular to span (for N2 = c2/l2)
-- `k_factor`: Stiffness factor from PCA tables (default 4.127 for c/l ≈ 0.08-0.10)
+- `k_factor`: Stiffness factor from PCA tables (default `PCA_K_SLAB` = 4.127 for c/l ≈ 0.08-0.10)
 
 # Returns
 Slab-beam stiffness Ksb (Moment units, e.g., in-lb)
@@ -543,7 +640,7 @@ function slab_beam_stiffness_Ksb(
     l1::Length,
     c1::Length,
     c2::Length;
-    k_factor::Float64 = 4.127
+    k_factor::Float64 = PCA_K_SLAB
 )
     # Ksb = k × Ec × Is / l1 — units: (lbf/in²) × in⁴ / in = lbf*in = Moment
     # Convert to consistent units to avoid Unitful overflow
@@ -554,7 +651,7 @@ function slab_beam_stiffness_Ksb(
 end
 
 """
-    column_stiffness_Kc(Ecc, Ic, H, h; k_factor=4.74)
+    column_stiffness_Kc(Ecc, Ic, H, h; k_factor=PCA_K_COL)
 
 Flexural stiffness of column at slab-beam joint per ACI 318-14 Section 8.11.4.
 
@@ -564,14 +661,14 @@ The stiffness factor k accounts for:
 - Infinite moment of inertia within the slab depth (joint region)
 - Column clear height Hc = H - h
 
-Default k = 4.74 from PCA Notes Table A7 for ta/tb = 1, H/Hc ≈ 1.07.
+Default k = `PCA_K_COL` (4.74) from PCA Notes Table A7 for ta/tb = 1, H/Hc ≈ 1.07.
 
 # Arguments
 - `Ecc`: Modulus of elasticity of column concrete
 - `Ic`: Gross moment of inertia of column (from column_moment_of_inertia)
 - `H`: Story height (floor-to-floor)
 - `h`: Slab thickness
-- `k_factor`: Stiffness factor from PCA tables (default 4.74)
+- `k_factor`: Stiffness factor from PCA tables (default `PCA_K_COL` = 4.74)
 
 # Returns
 Column stiffness Kc (Moment units, e.g., in-lb)
@@ -592,7 +689,7 @@ function column_stiffness_Kc(
     Ic::SecondMomentOfArea,
     H::Length,
     h::Length;
-    k_factor::Float64 = 4.74
+    k_factor::Float64 = PCA_K_COL
 )
     # Kc = k × Ec × Ic / H — units: (lbf/in²) × in⁴ / in = lbf*in = Moment
     # Convert to consistent units to avoid Unitful overflow
@@ -713,11 +810,11 @@ function distribution_factor_DF(Ksb, Kec; is_exterior::Bool=false, Ksb_adjacent=
 end
 
 """
-    carryover_factor_COF(; k_factor=4.127)
+    carryover_factor_COF(; k_factor=PCA_K_SLAB)
 
 Carryover factor for non-prismatic slab-beam.
 
-For flat plates with enhanced stiffness at columns, COF ≈ 0.507.
+For flat plates with enhanced stiffness at columns, COF ≈ `PCA_COF` (0.507).
 This is larger than the prismatic beam value of 0.5 due to the
 increased stiffness at column regions.
 
@@ -731,11 +828,11 @@ Carryover factor COF (dimensionless)
 - PCA Notes on ACI 318-11 Table A1
 - StructurePoint Example: COF = 0.507
 """
-function carryover_factor_COF(; k_factor::Float64=4.127)
-    # For k ≈ 4.127, COF ≈ 0.507
+function carryover_factor_COF(; k_factor::Float64=PCA_K_SLAB)
+    # For k ≈ PCA_K_SLAB, COF ≈ PCA_COF
     # This relationship is from PCA Notes Table A1
     # For a more accurate value, interpolate from the table
-    return 0.507
+    return PCA_COF
 end
 
 """
@@ -808,58 +905,6 @@ end
 
 # =============================================================================
 # Phase 5: Reinforcement Design (ACI 8.6, 22.2)
-# =============================================================================
-
-"""
-    required_reinforcement(Mu, b, d, fc, fy)
-
-Required steel area per Supplementary Document Eq. 1.7 derivation.
-
-Uses the quadratic solution for As from moment equilibrium:
-    As = (β₁·f'c·b·d / fy) × (1 - √(1 - 2Rn/(β₁·f'c)))
-
-where Rn = Mu / (φ·b·d²)
-
-# Arguments
-- `Mu`: Factored moment demand
-- `b`: Strip width
-- `d`: Effective depth (h - cover - db/2)
-- `fc`: Concrete compressive strength
-- `fy`: Steel yield strength
-
-# Returns
-Required steel area As
-
-# Reference
-- Supplementary Document Section 1.7 (Setareh & Darvas derivation)
-- StructurePoint Example Section 3.1.3
-"""
-function required_reinforcement(Mu::Moment, b::Length, d::Length, fc::Pressure, fy::Pressure)
-    φ = 0.9  # Tension-controlled section (ACI 21.2.2)
-    
-    # Resistance coefficient Rn = Mu/(φ·b·d²) — has units of pressure
-    Rn = Mu / (φ * b * d^2)
-    
-    # Stress block factor
-    β = β1(fc)
-    
-    # Check if section is adequate (ACI limits)
-    Rn_max = 0.319 * β * fc  # Approximate limit for tension-controlled
-    if Rn > Rn_max
-        @warn "Section may not be tension-controlled, Rn=$(ustrip(u"psi", Rn)) psi > Rn_max=$(ustrip(u"psi", Rn_max)) psi"
-    end
-    
-    # Required steel ratio (from quadratic solution)
-    term = 2 * Rn / (β * fc)  # dimensionless
-    if term > 1.0
-        error("Section inadequate: required Rn exceeds capacity. Increase h or f'c.")
-    end
-    
-    ρ = (β * fc / fy) * (1 - sqrt(1 - term))  # dimensionless
-    
-    # Required area: As = ρ·b·d
-    return ρ * b * d
-end
 
 """
     minimum_reinforcement(b, h, fy)
@@ -884,39 +929,60 @@ Minimum reinforcement per ACI 318-14 Table 8.6.1.1 for shrinkage and temperature
 - StructurePoint Example: fy=60ksi → As_min = 0.0018 × b × h
 """
 function minimum_reinforcement(b::Length, h::Length, fy::Pressure)
-    # ACI 318-14 Table 8.6.1.1 thresholds (Grade 60 = 60 ksi, Grade 80 threshold = 77 ksi)
-    fy_grade60 = 60000u"psi"  # = 60 ksi
-    fy_grade80_threshold = 77000u"psi"  # = 77 ksi
+    # ACI 318-14 Table 8.6.1.1 thresholds
+    # Round to nearest psi to avoid Asap ksi ↔ Unitful psi conversion gap
+    fy_psi = round(Int, ustrip(u"psi", fy))
     
-    ρ_min = if fy < fy_grade60
+    ρ_min = if fy_psi < 60_000      # fy < 60 ksi (Grade 40/50)
         0.0020
-    elseif fy < fy_grade80_threshold
+    elseif fy_psi < 77_000          # 60 ksi ≤ fy < 77 ksi (Grade 60)
         0.0018
-    else
-        max(0.0014, 0.0018 * fy_grade60 / fy)  # dimensionless ratio
+    else                            # fy ≥ 77 ksi (Grade 80+)
+        max(0.0014, 0.0018 * 60_000 / fy_psi)
     end
     
-    # As_min = ρ_min × b × h
     return ρ_min * b * h
 end
 
-# Backward compatible method with default fy = 60 ksi (deprecated)
-function minimum_reinforcement(b::Length, h::Length)
-    return minimum_reinforcement(b, h, 60000u"psi")
-end
 
 """
-    effective_depth(h; cover=0.75u"inch", bar_diameter=0.5u"inch")
+    effective_depth(h; cover=0.75u"inch", bar_diameter=0.5u"inch", two_way=true)
 
-Effective depth d = h - cover - db/2.
+Effective depth for slab reinforcement design.
+
+For **two-way** slabs (default), bars run in both directions — the second layer
+sits below the first, so each direction has a different d:
+
+    d₁ = h − cover − db/2        (top layer)
+    d₂ = h − cover − 3·db/2      (bottom layer)
+    d_avg = (d₁ + d₂)/2 = h − cover − db
+
+ACI R22.6.1 and StructurePoint both use d_avg for two-way design (moments,
+punching shear, deflection).
+
+For **one-way** slabs (`two_way=false`), only one bar layer:
+
+    d = h − cover − db/2
 
 # Arguments
 - `h`: Total slab thickness
-- `cover`: Clear cover to reinforcement (default 0.75" for interior slab)
+- `cover`: Clear cover to reinforcement (default 0.75" per ACI Table 20.6.1.3.1)
 - `bar_diameter`: Assumed bar diameter (default #4 = 0.5")
+- `two_way`: Use average depth for two orthogonal bar layers (default `true`)
+
+# Reference
+- ACI 318-14 R22.6.1: "d shall be the average of the effective depths in the
+  two orthogonal directions"
+- StructurePoint Example: d_avg = 5.75 in (h=7", cover=0.75", #4 bars)
 """
-function effective_depth(h::Length; cover=0.75u"inch", bar_diameter=0.5u"inch")
-    return h - cover - bar_diameter / 2
+function effective_depth(h::Length; cover=0.75u"inch", bar_diameter=0.5u"inch", two_way=true)
+    if two_way
+        # d_avg = h − cover − db  (average of both bar layers)
+        return h - cover - bar_diameter
+    else
+        # d = h − cover − db/2  (single bar layer)
+        return h - cover - bar_diameter / 2
+    end
 end
 
 """
@@ -934,556 +1000,14 @@ function max_bar_spacing(h::Length)
     return min(2 * h, 18.0u"inch")
 end
 
-# =============================================================================
-# Phase 6: Punching Shear (ACI 22.6)
-# =============================================================================
 
-"""
-    punching_perimeter(c1, c2, d)
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 6 (Punching / Shear / Moment-Transfer): MOVED to codes/aci/punching.jl
+# All punching geometry, capacity, demand, gamma_f/v, Jc, combined stress,
+# one-way shear, effective_slab_width, and punching_check functions are now
+# shared between slabs and foundations via the shared ACI module.
+# ─────────────────────────────────────────────────────────────────────────────
 
-Critical perimeter for punching shear at d/2 from column face.
-
-# Arguments
-- `c1`: Column dimension in direction 1
-- `c2`: Column dimension in direction 2
-- `d`: Effective slab depth
-
-# Returns
-Perimeter b₀ = 2(c1 + d) + 2(c2 + d)
-
-# Reference
-- ACI 318-14 Section 22.6.4
-"""
-function punching_perimeter(c1::Length, c2::Length, d::Length)
-    return 2 * (c1 + d) + 2 * (c2 + d)
-end
-
-"""
-    punching_αs(position::Symbol) -> Int
-
-ACI 22.6.5.2(c) location factor αs for punching shear.
-
-# Arguments
-- `position`: Column position (:interior, :edge, or :corner)
-
-# Returns
-- αs = 40 for interior columns
-- αs = 30 for edge columns
-- αs = 20 for corner columns
-
-# Reference
-- ACI 318-14 Table 22.6.5.2
-"""
-function punching_αs(position::Symbol)
-    if position == :interior
-        return 40
-    elseif position == :edge
-        return 30
-    else  # :corner or unknown
-        return 20
-    end
-end
-
-"""
-    punching_capacity_interior(b0, d, fc; c1, c2, λ, position)
-
-Punching shear capacity per ACI 22.6.5.2.
-
-    Vc = min(4√f'c, (2 + 4/β)√f'c, (αs·d/b₀ + 2)√f'c) × b₀ × d
-
-# Arguments
-- `b0`: Critical perimeter from punching_perimeter()
-- `d`: Effective depth
-- `fc`: Concrete compressive strength
-- `c1`: Column dimension parallel to span (for β calculation)
-- `c2`: Column dimension perpendicular to span (for β calculation)
-- `λ`: Lightweight concrete factor (1.0 for normal weight)
-- `position`: Column position (:interior, :edge, :corner) for αs
-
-# Returns
-Nominal shear capacity Vn (unfactored)
-
-# Reference
-- ACI 318-14 Section 22.6.5.2
-- StructurePoint Example Section 3.3
-"""
-function punching_capacity_interior(
-    b0::Length,
-    d::Length,
-    fc::Pressure;
-    c1::Length = 0u"inch",
-    c2::Length = 0u"inch",
-    λ::Float64 = 1.0,
-    position::Symbol = :interior
-)
-    # ACI 22.6.5.2: Vc = coefficient × λ × √f'c × b0 × d
-    # The formula is empirically calibrated for psi/inch → produces lbf
-    # Strip to expected units at boundary, compute, return with units
-    sqrt_fc = sqrt(ustrip(u"psi", fc))
-    b0_val = ustrip(u"inch", b0)
-    d_val = ustrip(u"inch", d)
-    
-    # Common term: λ × √f'c × b0 × d (produces Float64 that represents lbf)
-    common = λ * sqrt_fc * b0_val * d_val
-    
-    # ACI 22.6.5.2(a): Basic 4√f'c
-    Vc_a = 4 * common
-    
-    # ACI 22.6.5.2(b): Column aspect ratio
-    if c1 > 0u"inch" && c2 > 0u"inch"
-        β = ustrip(max(c1, c2)) / ustrip(min(c1, c2))  # dimensionless
-        Vc_b = (2 + 4/β) * common
-    else
-        Vc_b = Vc_a  # Default for square column
-    end
-    
-    # ACI 22.6.5.2(c): Perimeter-to-depth ratio
-    αs = punching_αs(position)
-    Vc_c = (αs * d_val / b0_val + 2) * common
-    
-    return min(Vc_a, Vc_b, Vc_c) * u"lbf"
-end
-
-"""
-    punching_demand(qu, l1, l2, c1, c2)
-
-Punching shear demand at interior column.
-
-    Vu = qu × (l1 × l2 - (c1 + d)(c2 + d))
-
-Simplified as tributary area minus critical section area.
-
-# Reference
-- ACI 318-14 Section 22.6.4
-"""
-function punching_demand(
-    qu::Pressure,
-    At::Area,  # Tributary area from Voronoi
-    c1::Length,
-    c2::Length,
-    d::Length
-)
-    # Critical section area
-    Ac = (c1 + d) * (c2 + d)
-    
-    # Net loaded area
-    A_net = At - Ac
-    
-    return qu * A_net
-end
-
-"""
-    check_punching_shear(Vu, Vc; φ=0.75)
-
-Check punching shear adequacy.
-
-# Returns
-(passes::Bool, ratio::Float64, message::String)
-"""
-function check_punching_shear(Vu, Vc; φ::Float64=0.75)
-    φVc = φ * Vc
-    ratio = Vu / φVc
-    passes = ratio <= 1.0
-    
-    if passes
-        msg = "OK: Vu/φVc = $(round(ratio, digits=3))"
-    else
-        msg = "NG: Vu/φVc = $(round(ratio, digits=3)) > 1.0 - increase h or add shear reinforcement"
-    end
-    
-    return (passes=passes, ratio=ratio, message=msg)
-end
-
-# =============================================================================
-# Phase 6b: One-Way (Beam Action) Shear (ACI 22.5)
-# =============================================================================
-
-"""
-    one_way_shear_capacity(fc, bw, d; λ=1.0)
-
-One-way shear capacity per ACI 22.5.5.1.
-
-    Vc = 2λ√f'c × bw × d
-
-# Arguments
-- `fc`: Concrete compressive strength
-- `bw`: Width of section (typically tributary width)
-- `d`: Effective depth
-
-# Reference
-- ACI 318-14 Eq. 22.5.5.1
-- StructurePoint Section 5.1
-"""
-function one_way_shear_capacity(
-    fc::Pressure,
-    bw::Length,
-    d::Length;
-    λ::Float64 = 1.0
-)
-    # ACI 22.5: Vc = 2λ√f'c × bw × d
-    # Formula calibrated for psi/inch → lbf
-    Vc = 2 * λ * sqrt(ustrip(u"psi", fc)) * ustrip(u"inch", bw) * ustrip(u"inch", d)
-    return Vc * u"lbf"
-end
-
-"""
-    one_way_shear_demand(qu, bw, ln, c, d)
-
-One-way shear demand at distance d from column face.
-
-# Arguments
-- `qu`: Factored uniform load
-- `bw`: Tributary width
-- `ln`: Clear span (centerline to centerline minus column)
-- `c`: Column dimension in shear direction
-- `d`: Effective depth
-
-# Returns
-Vu at critical section (distance d from column face)
-
-# Reference
-- ACI 318-14 Section 22.5
-- StructurePoint Section 5.1
-"""
-function one_way_shear_demand(
-    qu::Pressure,
-    bw::Length,
-    ln::Length,
-    c::Length,
-    d::Length
-)
-    # Shear at face of support
-    Vu_face = qu * bw * ln / 2
-    
-    # Reduce to critical section at distance d from face
-    Vu = Vu_face - qu * bw * d
-    
-    return Vu
-end
-
-"""
-    check_one_way_shear(Vu, Vc; φ=0.75)
-
-Check one-way shear adequacy.
-
-# Returns
-NamedTuple (passes, ratio, message)
-"""
-function check_one_way_shear(Vu, Vc; φ::Float64=0.75)
-    φVc = φ * Vc
-    ratio = ustrip(Vu) / ustrip(φVc)
-    passes = ratio <= 1.0
-    
-    if passes
-        msg = "OK: Vu/φVc = $(round(ratio, digits=3))"
-    else
-        msg = "NG: Vu/φVc = $(round(ratio, digits=3)) > 1.0"
-    end
-    
-    return (passes=passes, ratio=ratio, message=msg)
-end
-
-# =============================================================================
-# Phase 6c: Moment Transfer Factors (ACI 8.4.2)
-# =============================================================================
-
-"""
-    gamma_f(b1, b2)
-
-Fraction of unbalanced moment transferred by flexure.
-
-    γf = 1 / (1 + (2/3)√(b1/b2))
-
-# Arguments
-- `b1`: Critical section dimension parallel to span
-- `b2`: Critical section dimension perpendicular to span
-
-# Reference
-- ACI 318-14 Eq. 8.4.2.3.2
-- StructurePoint Section 3.2.5
-"""
-function gamma_f(b1::Length, b2::Length)
-    # ACI 8.4.2.3.2: γf = 1 / (1 + (2/3)√(b1/b2))
-    # b1/b2 is dimensionless, result is dimensionless
-    return 1.0 / (1.0 + (2.0/3.0) * sqrt(b1 / b2))
-end
-
-"""
-    gamma_v(b1, b2)
-
-Fraction of unbalanced moment transferred by shear.
-
-    γv = 1 - γf
-
-# Reference
-- ACI 318-14 Eq. 8.4.4.2.2
-"""
-function gamma_v(b1::Length, b2::Length)
-    return 1.0 - gamma_f(b1, b2)
-end
-
-"""
-    effective_slab_width(c2, h)
-
-Effective slab width for moment transfer by flexure.
-
-    bb = c2 + 3h
-
-# Arguments
-- `c2`: Column dimension perpendicular to span
-- `h`: Slab thickness
-
-# Reference
-- ACI 318-14 Section 8.4.2.3.3
-"""
-function effective_slab_width(c2::Length, h::Length)
-    return c2 + 3 * h
-end
-
-# =============================================================================
-# Phase 6d: Edge/Corner Column Punching Geometry (ACI 22.6)
-# =============================================================================
-
-"""
-    punching_geometry_edge(c1, c2, d)
-
-Critical section geometry for edge column (3-sided perimeter).
-
-# Arguments
-- `c1`: Column dimension parallel to edge
-- `c2`: Column dimension perpendicular to edge
-
-# Returns
-NamedTuple with b1, b2, b0, cAB (centroid distance from column face)
-
-# Reference
-- ACI 318-14 Section 22.6.4
-- StructurePoint Section 5.2(a)
-"""
-function punching_geometry_edge(c1::Length, c2::Length, d::Length)
-    # b1 = parallel to span (perpendicular to free edge)
-    # For edge column: b1 = c1 + d/2 (extends d/2 into slab)
-    b1 = c1 + d / 2
-    
-    # b2 = perpendicular to span (parallel to free edge)
-    # Full width: b2 = c2 + d
-    b2 = c2 + d
-    
-    # Perimeter: 3-sided (2 sides of b1, 1 side of b2)
-    b0 = 2 * b1 + b2
-    
-    # Centroid of critical section from column face (into slab)
-    # For U-shaped section: cAB = b1² / (2×b1 + b2)
-    cAB = b1^2 / (2 * b1 + b2)
-    
-    return (b1=b1, b2=b2, b0=b0, cAB=cAB)
-end
-
-"""
-    punching_geometry_corner(c1, c2, d)
-
-Critical section geometry for corner column (2-sided perimeter).
-
-# Returns
-NamedTuple with b1, b2, b0, cAB_x, cAB_y (centroids in both directions)
-
-# Reference
-- ACI 318-14 Section 22.6.4
-"""
-function punching_geometry_corner(c1::Length, c2::Length, d::Length)
-    # Both sides only extend d/2 into slab
-    b1 = c1 + d / 2
-    b2 = c2 + d / 2
-    
-    # Perimeter: 2-sided (1 side each direction)
-    b0 = b1 + b2
-    
-    # Centroid from corner (both directions)
-    # cAB = b² / (2 × (b1 + b2))
-    denom = 2 * (b1 + b2)
-    cAB_x = b1^2 / denom
-    cAB_y = b2^2 / denom
-    
-    return (b1=b1, b2=b2, b0=b0, cAB_x=cAB_x, cAB_y=cAB_y)
-end
-
-"""
-    punching_geometry_interior(c1, c2, d)
-
-Critical section geometry for interior column (4-sided perimeter).
-
-# Returns
-NamedTuple with b1, b2, b0, cAB
-
-# Reference
-- ACI 318-14 Section 22.6.4
-"""
-function punching_geometry_interior(c1::Length, c2::Length, d::Length)
-    b1 = c1 + d
-    b2 = c2 + d
-    b0 = 2 * b1 + 2 * b2
-    cAB = b1 / 2  # Symmetric, centroid at center
-    
-    return (b1=b1, b2=b2, b0=b0, cAB=cAB)
-end
-
-"""
-    polar_moment_Jc_edge(b1, b2, d, cAB)
-
-Polar moment of inertia Jc for edge column critical section.
-
-Used for combined shear stress with unbalanced moment.
-
-# Formula (from StructurePoint page 42-43):
-    Jc = 2×[b1×d³/12 + d×b1³/12 + (b1×d)×(b1/2 - cAB)²] + b2×d×cAB²
-
-# Reference
-- ACI 318-14 R8.4.4.2.3
-- StructurePoint Section 5.2(a)
-"""
-function polar_moment_Jc_edge(b1::Length, b2::Length, d::Length, cAB::Length)
-    # Two parallel sides (b1 legs)
-    Jc_parallel = 2 * (b1 * d^3 / 12 + d * b1^3 / 12 + 
-                       (b1 * d) * (b1 / 2 - cAB)^2)
-    
-    # Perpendicular side (b2 leg)
-    Jc_perp = b2 * d * cAB^2
-    
-    return Jc_parallel + Jc_perp
-end
-
-"""
-    polar_moment_Jc_interior(b1, b2, d, cAB)
-
-Polar moment of inertia Jc for interior column critical section.
-
-# Formula (from StructurePoint page 44):
-    Jc = 2×[b1×d³/12 + d×b1³/12 + (b1×d)×(b1/2 - cAB)²] + 2×b2×d×cAB²
-
-For symmetric section (cAB = b1/2), simplifies to:
-    Jc = 2×[b1×d³/12 + d×b1³/12] + 2×b2×d×(b1/2)²
-
-# Reference
-- ACI 318-14 R8.4.4.2.3
-- StructurePoint Section 5.2(b)
-"""
-function polar_moment_Jc_interior(b1::Length, b2::Length, d::Length)
-    cAB = b1 / 2  # Symmetric section
-    
-    # Two parallel sides (b1 legs) - no eccentricity term for symmetric
-    Jc_parallel = 2 * (b1 * d^3 / 12 + d * b1^3 / 12)
-    
-    # Two perpendicular sides (b2 legs)
-    Jc_perp = 2 * b2 * d * cAB^2
-    
-    return Jc_parallel + Jc_perp
-end
-
-"""
-    combined_punching_stress(Vu, Mub, b0, d, γv, Jc, cAB)
-
-Combined punching shear stress with unbalanced moment transfer.
-
-    vu = Vu/(b0×d) + γv×Mub×cAB/Jc
-
-# Arguments
-- `Vu`: Factored shear force
-- `Mub`: Factored unbalanced moment
-- `b0`: Critical perimeter
-- `d`: Effective depth
-- `γv`: Fraction transferred by shear (1 - γf)
-- `Jc`: Polar moment of inertia
-- `cAB`: Distance from centroid to extreme fiber
-
-# Returns
-Maximum shear stress vu (psi)
-
-# Reference
-- ACI 318-14 R8.4.4.2.3
-- StructurePoint Section 5.2
-"""
-function combined_punching_stress(
-    Vu::Force,
-    Mub::Torque,
-    b0::Length,
-    d::Length,
-    γv::Float64,
-    Jc::SecondMomentOfArea,
-    cAB::Length
-)
-    # ACI R8.4.4.2.3: vu = Vu/(b0×d) + γv×Mub×cAB/Jc
-    # Direct shear stress
-    v_direct = Vu / (b0 * d)
-    
-    # Moment transfer stress
-    v_moment = γv * Mub * cAB / Jc
-    
-    # Combined (maximum at tension face)
-    return v_direct + v_moment
-end
-
-"""
-    punching_capacity_stress(fc, β, αs, b0, d; λ=1.0)
-
-Punching shear capacity as stress per ACI 22.6.5.2.
-
-    vc = min(4√f'c, (2 + 4/β)√f'c, (αs×d/b0 + 2)√f'c)
-
-# Arguments
-- `fc`: Concrete compressive strength
-- `β`: Column aspect ratio (long/short)
-- `αs`: Location factor (40 interior, 30 edge, 20 corner)
-- `b0`: Critical perimeter
-- `d`: Effective depth
-- `λ`: Lightweight factor
-
-# Returns
-Nominal shear stress capacity vc (psi)
-
-# Reference
-- ACI 318-14 Table 22.6.5.2
-"""
-function punching_capacity_stress(
-    fc::Pressure,
-    β::Float64,
-    αs::Int,
-    b0::Length,
-    d::Length;
-    λ::Float64 = 1.0
-)
-    # ACI formulas are defined with √f'c in psi units
-    sqrt_fc = sqrt(ustrip(u"psi", fc))
-    
-    # ACI 22.6.5.2(a): Basic 4√f'c
-    vc_a = 4 * λ * sqrt_fc
-    
-    # ACI 22.6.5.2(b): Aspect ratio (2 + 4/β)√f'c
-    vc_b = (2 + 4/β) * λ * sqrt_fc
-    
-    # ACI 22.6.5.2(c): Perimeter-to-depth (αs×d/b0 + 2)√f'c
-    vc_c = (αs * d / b0 + 2) * λ * sqrt_fc  # d/b0 is dimensionless
-    
-    return min(vc_a, vc_b, vc_c) * u"psi"
-end
-
-"""
-    check_combined_punching(vu, vc; φ=0.75)
-
-Check combined punching shear stress adequacy.
-
-# Returns
-NamedTuple (passes, ratio, message)
-"""
-function check_combined_punching(vu::Pressure, vc::Pressure; φ::Float64=0.75)
-    # Ratio is dimensionless: vu/(φ×vc)
-    ratio = vu / (φ * vc)
-    passes = ratio <= 1.0
-    
-    msg = passes ? "OK: vu/φvc = $(round(ratio, digits=3))" :
-                   "NG: vu/φvc = $(round(ratio, digits=3)) > 1.0"
-    
-    return (passes=passes, ratio=ratio, message=msg)
-end
 
 # =============================================================================
 # Phase 6d+: Shear Stud Design (ACI 318-19 §22.6.8 / Ancon Shearfix)
@@ -1516,8 +1040,8 @@ Punching shear capacity with headed shear stud reinforcement per ACI 318-19 §22
 2. Combined concrete + steel within studs (vcs + vs)
 3. Outer critical section (checked separately)
 
-# Formulas (Ancon Manual):
-- vc,max = 0.66√f'c (if s ≤ 0.5d), else 0.50√f'c
+# Formulas (ACI 318-19, US customary psi):
+- vc,max = 8√f'c (if s ≤ 0.5d), else 6√f'c
 - vcs = 0.75 × vc (reduced concrete contribution)
 - vs = Av × fyt / (b0 × s)
 - Combined: φ(vcs + vs) ≤ φ × vc,max
@@ -1555,23 +1079,26 @@ function punching_capacity_with_studs(
     Av_in2 = ustrip(u"inch^2", Av)
     fyt_psi = ustrip(u"psi", fyt)
     
-    # Reduced concrete contribution with studs (Ancon Eq. 12a-c, factor of 0.75)
+    # Reduced concrete contribution with studs (ACI 318-19 §22.6.6.1)
     # vcs = 0.75 × vc (concrete capacity is reduced when studs are used)
-    vcs_a = 0.25 * λs * λ * sqrt_fc  # Was 0.33, reduced by 0.75
-    vcs_b = 0.17 * (1 + 2/β) * λs * λ * sqrt_fc
-    vcs_c = 0.083 * (2 + αs * d_in / b0_in) * λs * λ * sqrt_fc
+    # US customary coefficients (psi): 0.75 × {4, (2+4/β), (αs·d/b0+2)} √f'c
+    #   → {3.0, 1.5(1+2/β) ≈ Ancon rounds to 2.0, 0.75(2+αs·d/b0) ≈ 1.0×(...)}
+    # Note: sqrt_fc is √f'c in psi, so coefficients must be US customary.
+    vcs_a = 3.0 * λs * λ * sqrt_fc
+    vcs_b = (1.5 + 3.0/β) * λs * λ * sqrt_fc
+    vcs_c = 0.75 * (2 + αs * d_in / b0_in) * λs * λ * sqrt_fc
     vcs = min(vcs_a, vcs_b, vcs_c)
     
     # Steel contribution (Ancon Eq. 13)
     # vs = Av × fyt / (b0 × s)
     vs = s_in > 0 ? Av_in2 * fyt_psi / (b0_in * s_in) : 0.0
     
-    # Compression strut limit (Ancon Eq. 9-10)
-    # vc,max = 0.66√f'c if s ≤ 0.5d, else 0.50√f'c
+    # Compression strut limit (ACI 318-19 §22.6.6.2)
+    # US customary: vc,max = 8√f'c if s ≤ 0.5d, else 6√f'c
     if s_in <= 0.5 * d_in
-        vc_max = 0.66 * sqrt_fc
+        vc_max = 8.0 * sqrt_fc
     else
-        vc_max = 0.50 * sqrt_fc
+        vc_max = 6.0 * sqrt_fc
     end
     
     # Combined capacity (but limited by compression strut)
@@ -1592,13 +1119,14 @@ end
 
 Punching capacity at outer critical section (beyond shear studs) per ACI 318-19.
 
-    vc,out = 0.17 × λs × λ × √f'c
+    vc,out = 4 × λs × λ × √f'c  (psi)
 
-This is a reduced capacity compared to the column face, used to determine
-how far the stud zone must extend.
+Uses the ACI 22.6.5.2(a) basic two-way shear limit at the outer perimeter.
+The outer critical section is at d/2 beyond the last stud rail, where β ≈ 1
+and b0 is large enough that (a) and (c) don't reduce below 4√f'c.
 
 # Reference
-- Ancon Eq. 16
+- ACI 318-19 §22.6.5.2(a)
 """
 function punching_capacity_outer(fc::Pressure, d::Length; λ::Float64 = 1.0)
     # At the outer critical section (beyond stud zone), concrete is unreinforced
@@ -1712,10 +1240,11 @@ function design_shear_studs(
         )
     end
     
-    # Reduced concrete contribution with studs
-    vcs_a = 0.25 * λs * λ * sqrt_fc
-    vcs_b = 0.17 * (1 + 2/β) * λs * λ * sqrt_fc
-    vcs_c = 0.083 * (2 + αs * d_in / b0_in) * λs * λ * sqrt_fc
+    # Reduced concrete contribution with studs (US customary, psi)
+    # vcs = 0.75 × vc per ACI 318-19 §22.6.6.1
+    vcs_a = 3.0 * λs * λ * sqrt_fc
+    vcs_b = (1.5 + 3.0/β) * λs * λ * sqrt_fc
+    vcs_c = 0.75 * (2 + αs * d_in / b0_in) * λs * λ * sqrt_fc
     vcs = min(vcs_a, vcs_b, vcs_c)
     
     # Required steel contribution
@@ -1739,9 +1268,9 @@ function design_shear_studs(
         s_reqd = 0.75 * d_in  # Use max allowed if no steel required
     end
     
-    # Apply detailing limits
-    # Max spacing = 0.75d (or 0.5d if vu > 0.5φ√f'c)
-    high_stress = vu_psi > 0.5 * φ * sqrt_fc
+    # Apply detailing limits (ACI 318-19 Table 22.6.8.1)
+    # Max spacing = 0.75d (or 0.5d when steel contribution vs > 2√f'c)
+    high_stress = vs_reqd > 2.0 * λ * sqrt_fc
     s_max = high_stress ? 0.5 * d_in : min(0.75 * d_in, 500.0 / 25.4)  # 500mm limit
     s = min(s_reqd, s_max)
     
@@ -1805,11 +1334,11 @@ end
 Check punching shear adequacy with shear stud reinforcement.
 
 # Returns
-NamedTuple (passes, ratio, message)
+NamedTuple (ok, ratio, message)
 """
 function check_punching_with_studs(vu::Pressure, studs::ShearStudDesign; φ::Float64 = 0.75)
     if !studs.required || studs.n_rails == 0
-        return (passes=false, ratio=Inf, message="Studs not designed or inadequate")
+        return (ok=false, ratio=Inf, message="Studs not designed or inadequate")
     end
     
     vu_psi = ustrip(u"psi", vu)
@@ -1821,9 +1350,9 @@ function check_punching_with_studs(vu::Pressure, studs::ShearStudDesign; φ::Flo
     vc_total = min(vcs_psi + vs_psi, vc_max_psi)
     
     ratio = vu_psi / (φ * vc_total)
-    passes = ratio <= 1.0 && studs.outer_ok
+    ok = ratio <= 1.0 && studs.outer_ok
     
-    msg = if passes
+    msg = if ok
         "OK (with studs): vu/φvc = $(round(ratio, digits=3))"
     elseif !studs.outer_ok
         "NG: Outer section fails - extend stud zone"
@@ -1831,7 +1360,7 @@ function check_punching_with_studs(vu::Pressure, studs::ShearStudDesign; φ::Flo
         "NG (with studs): vu/φvc = $(round(ratio, digits=3)) > 1.0"
     end
     
-    return (passes=passes, ratio=ratio, message=msg)
+    return (ok=ok, ratio=ratio, message=msg)
 end
 
 # =============================================================================
@@ -2015,155 +1544,6 @@ function check_integrity_reinforcement(
     )
 end
 
-# =============================================================================
-# Phase 7: Deflection (ACI 24.2)
-# =============================================================================
-
-"""
-    cracked_moment_of_inertia(As, b, d, Ec, Es)
-
-Cracked section moment of inertia Icr per ACI 24.2.3.5.
-
-Uses transformed section analysis with modular ratio n = Es/Ec.
-"""
-function cracked_moment_of_inertia(
-    As::Area,
-    b::Length,
-    d::Length,
-    Ec::Pressure,
-    Es::Pressure = 29000ksi
-)
-    # Convert everything to consistent units (psi, inches) to avoid Unitful issues
-    As_in = ustrip(u"inch^2", As)
-    b_in = ustrip(u"inch", b)
-    d_in = ustrip(u"inch", d)
-    Ec_psi = ustrip(u"psi", Ec)
-    Es_psi = ustrip(u"psi", Es)
-    
-    # Modular ratio n = Es/Ec (dimensionless)
-    n = Es_psi / Ec_psi
-    
-    # Neutral axis depth from transformed section analysis
-    # Equilibrium: b·c²/2 = n·As·(d-c)
-    # Quadratic: c² + (2n·As/b)·c - (2n·As·d/b) = 0
-    k1 = 2 * n * As_in / b_in       # inches
-    k2 = -k1 * d_in                 # inch² (negative coefficient)
-    c = (-k1 + sqrt(k1^2 - 4*k2)) / 2  # inches
-    
-    # Cracked moment of inertia: Icr = b·c³/3 + n·As·(d-c)²
-    Icr = b_in * c^3 / 3 + n * As_in * (d_in - c)^2  # in⁴
-    
-    return Icr * u"inch^4"
-end
-
-"""
-    effective_moment_of_inertia(Mcr, Ma, Ig, Icr)
-
-Effective moment of inertia per ACI 24.2.3.5.
-
-    Ie = Icr + (Ig - Icr) × (Mcr/Ma)³  when Ma > Mcr
-    Ie = Ig                             when Ma ≤ Mcr
-
-# Arguments
-- `Mcr`: Cracking moment = fr × Ig / yt
-- `Ma`: Service moment
-- `Ig`: Gross moment of inertia
-- `Icr`: Cracked moment of inertia
-
-# Reference
-- ACI 318-14 Eq. 24.2.3.5a
-"""
-function effective_moment_of_inertia(Mcr, Ma, Ig, Icr)
-    if Ma <= Mcr
-        return Ig
-    end
-    
-    ratio = Mcr / Ma
-    Ie = Icr + (Ig - Icr) * ratio^3
-    
-    # Ie cannot exceed Ig
-    return min(Ie, Ig)
-end
-
-"""
-    cracking_moment(fr, Ig, h)
-
-Cracking moment per ACI 24.2.3.5.
-
-    Mcr = fr × Ig / yt
-
-where yt = h/2 for rectangular sections.
-
-# Arguments
-- `fr`: Modulus of rupture (Pressure)
-- `Ig`: Gross second moment of area (L⁴)
-- `h`: Section depth (Length)
-"""
-function cracking_moment(fr::Pressure, Ig::SecondMomentOfArea, h::Length)
-    yt = h / 2
-    return fr * Ig / yt
-end
-
-"""
-    immediate_deflection(w, l, Ec, Ie)
-
-Immediate deflection for uniformly loaded member.
-
-    Δi = 5 × w × l⁴ / (384 × Ec × Ie)
-
-# Reference
-- Standard beam formula
-"""
-function immediate_deflection(
-    w::Force,  # Load per unit length
-    l::Length,
-    Ec::Pressure,
-    Ie::Volume
-)
-    return 5 * w * l^4 / (384 * Ec * Ie)
-end
-
-"""
-    long_term_deflection_factor(ξ, ρ_prime)
-
-Long-term deflection multiplier per ACI 24.2.4.1.
-
-    λΔ = ξ / (1 + 50ρ')
-
-where:
-- ξ = time-dependent factor (2.0 for 5+ years)
-- ρ' = compression reinforcement ratio
-
-# Reference
-- ACI 318-14 Section 24.2.4.1
-"""
-function long_term_deflection_factor(ξ::Float64=2.0, ρ_prime::Float64=0.0)
-    return ξ / (1 + 50 * ρ_prime)
-end
-
-"""
-    deflection_limit(l, limit_type::Symbol)
-
-Allowable deflection per ACI Table 24.2.2.
-
-# Arguments
-- `l`: Span length
-- `limit_type`: :immediate_ll (l/360), :total (l/240), :sensitive (l/480)
-"""
-function deflection_limit(l::Length, limit_type::Symbol)
-    divisor = if limit_type == :immediate_ll
-        360  # Immediate deflection due to live load
-    elseif limit_type == :total
-        240  # Total deflection after attachment of elements
-    elseif limit_type == :sensitive
-        480  # Members supporting sensitive elements
-    else
-        240  # Default
-    end
-    
-    # l/divisor preserves length units
-    return l / divisor
-end
 
 """
     load_distribution_factor(strip::Symbol, position::Symbol)
@@ -2196,16 +1576,14 @@ function load_distribution_factor(strip::Symbol, position::Symbol)
     
     if position == :exterior
         # End span: 
-        # LDF⁺ = 0.60, LDF⁻_ext = 1.00, LDF⁻_int = 0.75
+        # ACI 8.10.5: LDF⁺ = 0.60, LDF⁻_ext = 1.00, LDF⁻_int = 0.75
         # LDFc = (2×0.60 + 1.00 + 0.75) / 4 = 2.95/4 = 0.7375 ≈ 0.738
         LDF_c = (2 * 0.60 + 1.00 + 0.75) / 4
     else
         # Interior span:
-        # LDF⁺ = 0.35 (from Table 6), LDF⁻ = 0.75 both sides
-        # LDFc = (2×0.35 + 0.75 + 0.75) / 4 = 2.20/4 = 0.55
-        # But SP reports 0.675 for interior spans
-        # This uses higher positive fraction: (2×0.525 + 0.75 + 0.75) / 4 = 0.675
-        LDF_c = 0.675
+        # ACI 8.10.5: LDF⁺ = 0.60, LDF⁻ = 0.75 both sides
+        # LDFc = (2×0.60 + 0.75 + 0.75) / 4 = 2.70/4 = 0.675
+        LDF_c = (2 * 0.60 + 0.75 + 0.75) / 4
     end
     
     return strip == :column ? LDF_c : 1.0 - LDF_c
@@ -2471,53 +1849,270 @@ function estimate_column_size_from_span(span::Length; ratio::Float64=15.0)
     return ceil(ustrip(u"inch", c)) * u"inch"
 end
 
-# Note: scale_column_section is now in members/sections/concrete/rc_rect_column_section.jl
-# Note: StripReinforcement and FlatPlatePanelResult are defined in slabs/types.jl
 
 # =============================================================================
-# Exports
+# Flat Slab (Drop Panel) Calculations — ACI 318-19
 # =============================================================================
 
-export Ec, β1, fr
-export min_thickness_flat_plate, clear_span
-export total_static_moment, distribute_moments_mddm, distribute_moments_aci
-export required_reinforcement, minimum_reinforcement, effective_depth, max_bar_spacing
-export punching_perimeter, punching_capacity_interior, punching_demand, check_punching_shear
-export cracked_moment_of_inertia, effective_moment_of_inertia, cracking_moment
-export immediate_deflection, long_term_deflection_factor, deflection_limit
-export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
-export estimate_column_size, estimate_column_size_from_span
-# Note: scale_column_section exported from members/sections/concrete/
+"""
+    min_thickness_flat_slab(ln; discontinuous_edge=false)
 
-# One-way shear
-export one_way_shear_capacity, one_way_shear_demand, check_one_way_shear
+Minimum flat slab thickness per ACI 318-14 Table 8.3.1.1.
 
-# Moment transfer factors
-export gamma_f, gamma_v, effective_slab_width
+Flat slabs with drop panels conforming to §8.2.4 have reduced minimum
+thickness compared to flat plates:
+- Exterior panel: h_min = ln / 33  (vs ln / 30 for flat plate)
+- Interior panel: h_min = ln / 36  (vs ln / 33 for flat plate)
 
-# Edge/corner punching geometry
-export punching_geometry_edge, punching_geometry_corner, punching_geometry_interior
-export polar_moment_Jc_edge, polar_moment_Jc_interior
-export combined_punching_stress, punching_capacity_stress, check_combined_punching
-export punching_αs
+Absolute minimum: 4 inches (vs 5 inches for flat plate).
 
-# Shear stud design (ACI 318-19 §22.6.8)
-export size_effect_factor_λs, punching_capacity_with_studs, punching_capacity_outer
-export minimum_stud_reinforcement, stud_area, design_shear_studs, check_punching_with_studs
+# Arguments
+- `ln`: Clear span (face-to-face of columns) - longer span governs
+- `discontinuous_edge`: true if slab has discontinuous edge (exterior panel)
 
-# Moment transfer reinforcement
-export transfer_reinforcement, additional_transfer_bars
+# Returns
+Minimum slab thickness h (the slab portion, NOT including drop panel projection)
 
-# Structural integrity reinforcement
-export integrity_reinforcement, check_integrity_reinforcement
+# Reference
+- ACI 318-14 Table 8.3.1.1, Row 2 (with drop panels)
+- ACI 318-14 §8.3.1.1(b): minimum 4 inches
+- StructurePoint DE-Two-Way-Flat-Slab:
+    ln = 340 in. → exterior h_min = 340/33 = 10.30 in.
+                  → interior h_min = 340/36 = 9.44 in.
+                  → try 10 in. slab
+"""
+function min_thickness_flat_slab(ln::Length; discontinuous_edge::Bool=false)
+    # ACI formula: h_min = ln/33 (exterior) or ln/36 (interior)
+    divisor = discontinuous_edge ? 33 : 36
+    h_min = ln / divisor
+    
+    # Absolute minimum per ACI 8.3.1.1(b): 4 inches (flat slab)
+    return max(h_min, 4.0u"inch")
+end
 
-# EFM stiffness calculations
-export slab_moment_of_inertia, column_moment_of_inertia, torsional_constant_C
-export slab_beam_stiffness_Ksb, column_stiffness_Kc, torsional_member_stiffness_Kt
-export equivalent_column_stiffness_Kec, distribution_factor_DF, carryover_factor_COF
-export fixed_end_moment_FEM, face_of_support_moment
+"""
+    slab_self_weight_with_drop(h_slab, drop::DropPanelGeometry, ρ) -> (w_slab, w_drop)
 
-# Two-way deflection
-export load_distribution_factor, frame_deflection_fixed, strip_deflection_fixed
-export deflection_from_rotation, support_rotation, two_way_panel_deflection
-# StripReinforcement, FlatPlatePanelResult exported from slabs/types.jl
+Compute self-weight pressures for flat slab with drop panels.
+
+Returns two pressures:
+- `w_slab`: Self-weight of slab alone (applied everywhere)
+- `w_drop`: *Additional* self-weight from drop panel projection (applied on drop zone only)
+
+The caller applies w_slab as a uniform load on the full span, and w_drop
+as a patch load on the drop panel zone.
+
+# Arguments
+- `h_slab`: Slab thickness (constant portion)
+- `drop`: Drop panel geometry
+- `ρ`: Concrete mass density
+
+# Reference
+- StructurePoint DE-Two-Way-Flat-Slab:
+    w_slab = 150 pcf × 10"/12 = 125.00 psf
+    w_drop = 150 pcf × 4.25"/12 = 53.13 psf (additional from drop panel)
+"""
+function slab_self_weight_with_drop(h_slab::Length, drop::DropPanelGeometry, ρ)
+    w_slab = uconvert(psf, h_slab * ρ * GRAVITY)
+    w_drop = uconvert(psf, drop.h_drop * ρ * GRAVITY)
+    return (w_slab, w_drop)
+end
+
+"""
+    DropSectionProperties
+
+Composite section properties at the drop panel (support) location.
+
+# Fields
+- `Ig::SecondMomentOfArea`: Gross moment of inertia about composite centroid
+- `yt::Length`: Distance from centroid to extreme tension fiber
+- `A_total::Area`: Total cross-sectional area (slab + drop)
+- `y_bar::Length`: Centroid location measured from bottom of drop panel
+- `h_total::Length`: Total depth at drop (h_slab + h_drop)
+"""
+struct DropSectionProperties{I<:SecondMomentOfArea, L<:Length, A<:Area}
+    Ig::I
+    yt::L
+    A_total::A
+    y_bar::L
+    h_total::L
+end
+
+"""
+    gross_section_at_drop(l2, h_slab, drop::DropPanelGeometry) -> DropSectionProperties
+
+Gross moment of inertia and neutral axis depth for the non-prismatic section
+at the drop panel (support) location.
+
+The composite section is:
+- Full-width slab strip: l2 × h_slab (top)
+- Drop panel: (2 × a_drop_2) × h_drop (bottom, centered under slab)
+
+Returns a `DropSectionProperties` with Ig about the composite centroid and yt
+(distance from centroid to extreme tension fiber).
+
+# Reference
+- StructurePoint DE-Two-Way-Flat-Slab:
+    h_total = 14.25 in., yt = 5.88 in., Ig = 53,445 in⁴
+"""
+function gross_section_at_drop(l2::Length, h_slab::Length, drop::DropPanelGeometry)
+    # Total depth at drop = h_slab + h_drop
+    h_total = h_slab + drop.h_drop
+    
+    # Width of drop panel strip (perpendicular to span)
+    b_drop = drop_extent_2(drop)  # = 2 × a_drop_2
+    
+    # Slab strip: l2 × h_slab, centroid at h_total - h_slab/2 from bottom
+    A_slab = l2 * h_slab
+    y_slab = h_total - h_slab / 2   # from bottom of drop panel
+    
+    # Drop panel: b_drop × h_drop, centroid at h_drop/2 from bottom
+    A_drop = b_drop * drop.h_drop
+    y_drop = drop.h_drop / 2   # from bottom of drop panel
+    
+    # Composite centroid
+    A_total = A_slab + A_drop
+    y_bar = (A_slab * y_slab + A_drop * y_drop) / A_total
+    
+    # Parallel axis theorem for Ig about composite centroid
+    Ig_slab = l2 * h_slab^3 / 12 + A_slab * (y_slab - y_bar)^2
+    Ig_drop = b_drop * drop.h_drop^3 / 12 + A_drop * (y_drop - y_bar)^2
+    Ig = Ig_slab + Ig_drop
+    
+    # Distance from centroid to tension face
+    # For negative bending (hogging), tension is on top → yt = h_total - y_bar
+    # For positive bending, tension is on bottom → yt = y_bar
+    # Use the larger (more conservative for Mcr):
+    yt = max(y_bar, h_total - y_bar)
+    
+    return DropSectionProperties(Ig, yt, A_total, y_bar, h_total)
+end
+
+"""
+    weighted_slab_thickness(h_slab, drop::DropPanelGeometry, l_strip) -> Length
+
+Weighted average thickness across a strip for minimum reinforcement calculations.
+
+Per StructurePoint procedure, the weighted thickness accounts for the
+variable depth across the column strip:
+
+    h_w = (h_total × a_drop + h_slab × (l_strip/2 - a_drop)) / (l_strip/2)
+
+Where:
+- h_total = h_slab + h_drop
+- a_drop = drop panel half-extent in the strip direction
+- l_strip = strip total width
+
+# Reference
+- StructurePoint DE-Two-Way-Flat-Slab:
+    h_w = (14.25 × 10/2 + 10 × (15 - 10/2)) / 15 = 12.83 in.
+"""
+function weighted_slab_thickness(h_slab::Length, drop::DropPanelGeometry, l_strip::Length)
+    h_total = h_slab + drop.h_drop
+    a = drop.a_drop_2  # half-extent (use direction 2 for column strip width direction)
+    half_strip = l_strip / 2
+    
+    # Clamp a to half-strip (drop can't be wider than strip)
+    a_eff = min(a, half_strip)
+    
+    # Weighted average
+    h_w = (h_total * a_eff + h_slab * (half_strip - a_eff)) / half_strip
+    return h_w
+end
+
+"""
+    fixed_end_moment_FEM_flat_slab(qu_slab, qu_drop, l2, l1, drop::DropPanelGeometry)
+
+Fixed-end moment for non-prismatic slab-beam with drop panels using
+PCA multi-term FEM coefficients.
+
+    FEM = m_NF1 × w_slab × l₂ × l₁² + m_NF2 × w_drop × b_drop × l₁² + m_NF3 × w_drop × b_drop × l₁²
+
+Where:
+- m_NF1: FEM coefficient for uniform load on full span
+- m_NF2: FEM coefficient for drop panel patch load at near end (a=0, b-a=2a_drop/l1)
+- m_NF3: FEM coefficient for drop panel patch load at far end (a=1-2a_drop/l1, b-a=2a_drop/l1)
+
+# Arguments
+- `qu_slab`: Factored uniform slab load (pressure)
+- `qu_drop`: Factored additional drop panel load (pressure) — weight of projection only
+- `l2`: Panel width perpendicular to span
+- `l1`: Span length center-to-center
+- `drop`: Drop panel geometry
+
+# Reference
+- PCA Notes on ACI 318-11, Tables A2 & A3
+- StructurePoint DE-Two-Way-Flat-Slab:
+    FEM = 0.0915 × 0.270 × 30 × 30² + 0.0163 × 0.064 × 10 × 30² + 0.002 × 0.064 × 10 × 30²
+        = 677.53 ft-kips
+"""
+function fixed_end_moment_FEM_flat_slab(
+    qu_slab::Pressure,
+    qu_drop::Pressure,
+    l2::Length,
+    l1::Length,
+    drop::DropPanelGeometry;
+    m_uniform::Float64 = PCA_M_NP_UNIFORM,
+    m_near::Float64 = PCA_M_NP_NEAR,
+    m_far::Float64 = PCA_M_NP_FAR,
+)
+    # Drop panel extent (full width in direction 2 for the tributary width,
+    # extent in direction 1 is the patch length for the load)
+    b_drop = drop_extent_1(drop)  # 2 × a_drop_1
+
+    # Term 1: Uniform slab load on full span
+    FEM_slab = m_uniform * qu_slab * l2 * l1^2
+    
+    # Term 2: Drop panel patch load at near column
+    FEM_near = m_near * qu_drop * b_drop * l1^2
+    
+    # Term 3: Drop panel patch load at far column
+    FEM_far = m_far * qu_drop * b_drop * l1^2
+    
+    return FEM_slab + FEM_near + FEM_far
+end
+
+"""
+    column_stiffness_Kc_flat_slab(Ecc, Ic, H, h_slab, drop::DropPanelGeometry;
+                                   position=:bottom)
+
+Column stiffness for flat slab accounting for asymmetric joint depth.
+
+With drop panels, the column clear height and joint depths differ for
+columns above and below the slab:
+- Bottom column: ta = h_slab/2 + h_drop, tb = h_slab/2
+- Top column: ta = h_slab/2, tb = h_slab/2 + h_drop (reversed)
+
+The PCA Table A7 k-factor changes because ta/tb ≠ 1.
+
+# Arguments
+- `Ecc`: Column concrete modulus
+- `Ic`: Column moment of inertia
+- `H`: Story height (floor-to-floor)
+- `h_slab`: Slab thickness
+- `drop`: Drop panel geometry
+- `position`: `:bottom` or `:top` column at the joint
+
+# Reference
+- PCA Notes on ACI 318-11, Table A7
+- StructurePoint DE-Two-Way-Flat-Slab:
+    Bottom: ta=9.25", tb=5.00", k=5.318 → Kc = 2,134,472,479 in-lb
+    Top:    ta=5.00", tb=9.25", k=4.879 → Kc = 1,958,272,137 in-lb
+"""
+function column_stiffness_Kc_flat_slab(
+    Ecc::Pressure,
+    Ic::SecondMomentOfArea,
+    H::Length,
+    h_slab::Length,
+    drop::DropPanelGeometry;
+    position::Symbol = :bottom,
+)
+    # Select the appropriate k-factor based on column position
+    k_factor = position == :bottom ? PCA_K_COL_NP_BOTTOM : PCA_K_COL_NP_TOP
+    
+    # Use the same formula as prismatic, but with the non-prismatic k
+    Ec = ustrip(u"psi", Ecc)
+    I = ustrip(u"inch^4", Ic)
+    Hval = ustrip(u"inch", H)
+    return k_factor * Ec * I / Hval * u"lbf*inch"
+end

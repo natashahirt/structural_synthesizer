@@ -1,139 +1,304 @@
 # Foundation visualization utilities
+#
+# Draws spread, strip (combined), and mat footings as 3D boxes.
+# Shared helpers keep geometry code DRY across footing types.
+
+# =============================================================================
+# Shared Geometry Helpers
+# =============================================================================
 
 """
-    draw_spread_footing!(ax, fdn::Foundation, struc::BuildingStructure; kwargs...)
+    _footing_box_mesh(cx, cy, z_top, half_bx, half_by, D)
+
+Create a triangulated box mesh for a footing centered at `(cx, cy)`.
+Returns `(vertices, faces)` for `GLMakie.mesh!`.
+"""
+function _footing_box_mesh(cx, cy, z_top, half_bx, half_by, D)
+    z_bot = z_top - D
+    x0, x1 = cx - half_bx, cx + half_bx
+    y0, y1 = cy - half_by, cy + half_by
+
+    verts = GLMakie.Point3f[
+        (x0, y0, z_bot), (x1, y0, z_bot),
+        (x1, y1, z_bot), (x0, y1, z_bot),
+        (x0, y0, z_top), (x1, y0, z_top),
+        (x1, y1, z_top), (x0, y1, z_top),
+    ]
+
+    tris = GLMakie.TriangleFace[
+        (1,2,3), (1,3,4),   # bottom
+        (5,7,6), (5,8,7),   # top
+        (1,6,2), (1,5,6),   # front  (y_min)
+        (3,8,4), (3,7,8),   # back   (y_max)
+        (1,4,8), (1,8,5),   # left   (x_min)
+        (2,6,7), (2,7,3),   # right  (x_max)
+    ]
+
+    return verts, tris
+end
+
+"""Draw box outline edges for visual clarity."""
+function _draw_box_edges!(ax, verts; color=:gray40, linewidth=0.5)
+    edge_pairs = [
+        (1,2),(2,3),(3,4),(4,1),   # bottom
+        (5,6),(6,7),(7,8),(8,5),   # top
+        (1,5),(2,6),(3,7),(4,8),   # verticals
+    ]
+    for (a, b) in edge_pairs
+        GLMakie.lines!(ax, [verts[a], verts[b]], color=color, linewidth=linewidth)
+    end
+end
+
+"""Get support positions (in meters) for a foundation's support indices."""
+function _support_positions_m(fdn, struc)
+    return [let pos = struc.asap_model.nodes[struc.supports[i].node_idx].position
+        (ustrip(u"m", pos[1]), ustrip(u"m", pos[2]), ustrip(u"m", pos[3]))
+    end for i in fdn.support_indices]
+end
+
+"""Compute centroid of (x, y, z) tuples."""
+function _centroid_xyz(pts)
+    n = length(pts)
+    cx = sum(p[1] for p in pts) / n
+    cy = sum(p[2] for p in pts) / n
+    cz = sum(p[3] for p in pts) / n
+    return (cx, cy, cz)
+end
+
+# =============================================================================
+# Spread Footing
+# =============================================================================
+
+"""
+    draw_spread_footing!(ax, fdn, struc; color, alpha, show_rebar)
 
 Draw a spread footing as a 3D box at the support location.
-
-# Arguments
-- `ax`: Makie Axis3
-- `fdn`: Foundation with SpreadFootingResult
-- `struc`: BuildingStructure (for support positions)
-- `color`: Footing color (default: concrete gray)
-- `alpha`: Transparency (default: 0.7)
-- `show_rebar`: Whether to show rebar pattern (default: false)
 """
 function draw_spread_footing!(ax, fdn::Foundation, struc::BuildingStructure;
                                color=:gray70, alpha=0.7, show_rebar=false)
     result = fdn.result
     result isa StructuralSizer.SpreadFootingResult || return
-    
-    # Get footing dimensions
+
     B = ustrip(u"m", result.B)
     L = ustrip(u"m", result.L_ftg)
     D = ustrip(u"m", result.D)
-    
-    # Get support position (centroid if multiple supports)
-    positions = [struc.asap_model.nodes[struc.supports[i].node_idx].position 
-                 for i in fdn.support_indices]
-    centroid = sum(positions) ./ length(positions)
-    cx, cy, cz = ustrip(u"m", centroid[1]), ustrip(u"m", centroid[2]), ustrip(u"m", centroid[3])
-    
-    # Footing bottom is at grade (z=0) or below
-    z_top = 0.0  # Top of footing at grade
-    z_bot = z_top - D
-    
-    # Create box vertices (8 corners)
-    x_min, x_max = cx - B/2, cx + B/2
-    y_min, y_max = cy - L/2, cy + L/2
-    
-    vertices = GLMakie.Point3f[
-        (x_min, y_min, z_bot), (x_max, y_min, z_bot),
-        (x_max, y_max, z_bot), (x_min, y_max, z_bot),
-        (x_min, y_min, z_top), (x_max, y_min, z_top),
-        (x_max, y_max, z_top), (x_min, y_max, z_top),
-    ]
-    
-    # Box faces (triangulated)
-    faces = GLMakie.TriangleFace[
-        # Bottom
-        (1, 2, 3), (1, 3, 4),
-        # Top
-        (5, 7, 6), (5, 8, 7),
-        # Front (y_min)
-        (1, 6, 2), (1, 5, 6),
-        # Back (y_max)
-        (3, 8, 4), (3, 7, 8),
-        # Left (x_min)
-        (1, 4, 8), (1, 8, 5),
-        # Right (x_max)
-        (2, 6, 7), (2, 7, 3),
-    ]
-    
-    mesh = GLMakie.GeometryBasics.Mesh(vertices, faces)
+
+    pts = _support_positions_m(fdn, struc)
+    cx, cy, _ = _centroid_xyz(pts)
+
+    verts, tris = _footing_box_mesh(cx, cy, 0.0, B / 2, L / 2, D)
+    mesh = GLMakie.GeometryBasics.Mesh(verts, tris)
     GLMakie.mesh!(ax, mesh, color=(color, alpha), transparency=true)
-    
-    # Outline edges for clarity
-    edges = [
-        # Bottom
-        [vertices[1], vertices[2]], [vertices[2], vertices[3]],
-        [vertices[3], vertices[4]], [vertices[4], vertices[1]],
-        # Top
-        [vertices[5], vertices[6]], [vertices[6], vertices[7]],
-        [vertices[7], vertices[8]], [vertices[8], vertices[5]],
-        # Verticals
-        [vertices[1], vertices[5]], [vertices[2], vertices[6]],
-        [vertices[3], vertices[7]], [vertices[4], vertices[8]],
-    ]
-    
-    for edge in edges
-        GLMakie.lines!(ax, edge, color=:gray40, linewidth=0.5)
-    end
-    
-    # Optional: show rebar pattern on top face
+    _draw_box_edges!(ax, verts)
+
     if show_rebar && result.rebar_count > 0
-        _draw_footing_rebar!(ax, cx, cy, z_top, B, L, result)
+        _draw_spread_rebar!(ax, cx, cy, 0.0, B, L, result)
     end
 end
 
-"""Draw rebar grid on top of footing."""
-function _draw_footing_rebar!(ax, cx, cy, z_top, B, L, result::StructuralSizer.SpreadFootingResult)
-    n_bars = result.rebar_count
-    n_bars <= 0 && return
-    
-    # Cover offset
-    cover = 0.075  # 75mm typical
-    
-    # Rebar in X direction
-    y_positions = range(cy - L/2 + cover, cy + L/2 - cover, length=n_bars)
-    for y in y_positions
-        pts = [GLMakie.Point3f(cx - B/2 + cover, y, z_top + 0.01),
-               GLMakie.Point3f(cx + B/2 - cover, y, z_top + 0.01)]
-        GLMakie.lines!(ax, pts, color=:brown, linewidth=1.5)
+"""Draw rebar grid on top of a spread footing."""
+function _draw_spread_rebar!(ax, cx, cy, z_top, B, L,
+                              result::StructuralSizer.SpreadFootingResult)
+    n = result.rebar_count
+    n <= 0 && return
+    cover = 0.075  # 75 mm
+
+    # X-direction bars
+    for y in range(cy - L/2 + cover, cy + L/2 - cover; length=n)
+        GLMakie.lines!(ax,
+            [GLMakie.Point3f(cx - B/2 + cover, y, z_top + 0.01),
+             GLMakie.Point3f(cx + B/2 - cover, y, z_top + 0.01)],
+            color=:brown, linewidth=1.5)
     end
-    
-    # Rebar in Y direction
-    x_positions = range(cx - B/2 + cover, cx + B/2 - cover, length=n_bars)
-    for x in x_positions
-        pts = [GLMakie.Point3f(x, cy - L/2 + cover, z_top + 0.01),
-               GLMakie.Point3f(x, cy + L/2 - cover, z_top + 0.01)]
-        GLMakie.lines!(ax, pts, color=:brown, linewidth=1.5)
+
+    # Y-direction bars
+    for x in range(cx - B/2 + cover, cx + B/2 - cover; length=n)
+        GLMakie.lines!(ax,
+            [GLMakie.Point3f(x, cy - L/2 + cover, z_top + 0.01),
+             GLMakie.Point3f(x, cy + L/2 - cover, z_top + 0.01)],
+            color=:brown, linewidth=1.5)
     end
 end
+
+# =============================================================================
+# Strip (Combined) Footing
+# =============================================================================
 
 """
-    draw_foundations!(ax, struc::BuildingStructure; kwargs...)
+    draw_strip_footing!(ax, fdn, struc; color, alpha, show_columns)
 
-Draw all foundations in the structure.
+Draw a strip/combined footing as an elongated 3D box aligned along its
+support axis, with optional column markers.
+"""
+function draw_strip_footing!(ax, fdn::Foundation, struc::BuildingStructure;
+                              color=RGBAf(0.55, 0.55, 0.60, 1.0),
+                              alpha=0.7, show_columns=true)
+    result = fdn.result
+    result isa StructuralSizer.StripFootingResult || return
 
-# Arguments
-- `color`: Foundation color (default: :gray70)
-- `alpha`: Transparency (default: 0.7)
-- `show_rebar`: Show rebar pattern (default: false)
+    B = ustrip(u"m", result.B)
+    L = ustrip(u"m", result.L_ftg)
+    D = ustrip(u"m", result.D)
+
+    pts = _support_positions_m(fdn, struc)
+    cx, cy, _ = _centroid_xyz(pts)
+
+    # Determine strip orientation from support spread
+    if length(pts) >= 2
+        xs = [p[1] for p in pts]
+        ys = [p[2] for p in pts]
+        Δx = maximum(xs) - minimum(xs)
+        Δy = maximum(ys) - minimum(ys)
+        along_x = Δx >= Δy
+    else
+        along_x = true
+    end
+
+    half_long = L / 2
+    half_short = B / 2
+    half_bx = along_x ? half_long : half_short
+    half_by = along_x ? half_short : half_long
+
+    verts, tris = _footing_box_mesh(cx, cy, 0.0, half_bx, half_by, D)
+    mesh = GLMakie.GeometryBasics.Mesh(verts, tris)
+    GLMakie.mesh!(ax, mesh, color=(color, alpha), transparency=true)
+    _draw_box_edges!(ax, verts)
+
+    # Dashed centreline along the strip axis
+    if along_x
+        GLMakie.lines!(ax,
+            [GLMakie.Point3f(cx - half_bx, cy, 0.005),
+             GLMakie.Point3f(cx + half_bx, cy, 0.005)],
+            color=:gray30, linewidth=0.8, linestyle=:dash)
+    else
+        GLMakie.lines!(ax,
+            [GLMakie.Point3f(cx, cy - half_by, 0.005),
+             GLMakie.Point3f(cx, cy + half_by, 0.005)],
+            color=:gray30, linewidth=0.8, linestyle=:dash)
+    end
+
+    # Column location markers on top face
+    if show_columns
+        for p in pts
+            GLMakie.scatter!(ax,
+                [GLMakie.Point3f(p[1], p[2], 0.01)],
+                color=:gray20, markersize=6, marker=:cross)
+        end
+    end
+end
+
+# =============================================================================
+# Mat Footing
+# =============================================================================
+
+"""
+    draw_mat_footing!(ax, fdn, struc; color, alpha, show_columns, show_grid)
+
+Draw a mat foundation as a large 3D slab with optional column markers and
+internal grid lines representing analysis strips.
+"""
+function draw_mat_footing!(ax, fdn::Foundation, struc::BuildingStructure;
+                            color=RGBAf(0.60, 0.60, 0.65, 1.0),
+                            alpha=0.55, show_columns=true, show_grid=true)
+    result = fdn.result
+    result isa StructuralSizer.MatFootingResult || return
+
+    B = ustrip(u"m", result.B)
+    L = ustrip(u"m", result.L_ftg)
+    D = ustrip(u"m", result.D)
+
+    pts = _support_positions_m(fdn, struc)
+    cx, cy, _ = _centroid_xyz(pts)
+
+    verts, tris = _footing_box_mesh(cx, cy, 0.0, B / 2, L / 2, D)
+    mesh = GLMakie.GeometryBasics.Mesh(verts, tris)
+    GLMakie.mesh!(ax, mesh, color=(color, alpha), transparency=true)
+    _draw_box_edges!(ax, verts; linewidth=0.8)
+
+    z_top = 0.005  # slight offset above mat top for overlay lines
+
+    # Grid lines (analysis strip representation)
+    if show_grid && length(pts) >= 2
+        xs = sort(unique(round(p[1]; digits=3) for p in pts))
+        ys = sort(unique(round(p[2]; digits=3) for p in pts))
+
+        for x in xs
+            GLMakie.lines!(ax,
+                [GLMakie.Point3f(x, cy - L/2, z_top),
+                 GLMakie.Point3f(x, cy + L/2, z_top)],
+                color=(:gray40, 0.4), linewidth=0.6, linestyle=:dash)
+        end
+        for y in ys
+            GLMakie.lines!(ax,
+                [GLMakie.Point3f(cx - B/2, y, z_top),
+                 GLMakie.Point3f(cx + B/2, y, z_top)],
+                color=(:gray40, 0.4), linewidth=0.6, linestyle=:dash)
+        end
+    end
+
+    # Column location markers
+    if show_columns
+        col_pts = [GLMakie.Point3f(p[1], p[2], z_top + 0.005) for p in pts]
+        GLMakie.scatter!(ax, col_pts,
+            color=:gray15, markersize=7, marker=:cross)
+    end
+end
+
+# =============================================================================
+# Top-Level Dispatch
+# =============================================================================
+
+"""
+    draw_foundations!(ax, struc; color, alpha, show_rebar, strip_color, mat_color)
+
+Draw all foundations in the structure, dispatching to the appropriate
+drawing function based on result type.
+
+# Keyword Arguments
+- `color`: Spread footing color (default `:gray70`)
+- `alpha`: Spread footing transparency (default `0.7`)
+- `show_rebar`: Show rebar grid on spread footings (default `false`)
+- `strip_color`: Strip footing color (default slightly blue-gray)
+- `strip_alpha`: Strip footing transparency (default `0.7`)
+- `mat_color`: Mat footing color (default slightly cool gray)
+- `mat_alpha`: Mat footing transparency (default `0.55`)
+- `show_columns`: Show column markers on strip/mat (default `true`)
+- `show_grid`: Show analysis grid on mat (default `true`)
 """
 function draw_foundations!(ax, struc::BuildingStructure;
-                           color=:gray70, alpha=0.7, show_rebar=false)
+                           color=:gray70, alpha=0.7, show_rebar=false,
+                           strip_color=RGBAf(0.55, 0.55, 0.60, 1.0),
+                           strip_alpha=0.7,
+                           mat_color=RGBAf(0.60, 0.60, 0.65, 1.0),
+                           mat_alpha=0.55,
+                           show_columns=true, show_grid=true)
     isempty(struc.foundations) && return
-    
+
     for fdn in struc.foundations
-        if fdn.result isa StructuralSizer.SpreadFootingResult
-            draw_spread_footing!(ax, fdn, struc; color=color, alpha=alpha, show_rebar=show_rebar)
-        elseif fdn.result isa StructuralSizer.CombinedFootingResult
-            # TODO: Implement combined footing visualization
-            draw_spread_footing!(ax, fdn, struc; color=color, alpha=alpha, show_rebar=show_rebar)
-        elseif fdn.result isa StructuralSizer.PileCapResult
-            # TODO: Implement pile cap visualization
-            @warn "Pile cap visualization not yet implemented"
+        r = fdn.result
+        if r isa StructuralSizer.SpreadFootingResult
+            draw_spread_footing!(ax, fdn, struc;
+                color=color, alpha=alpha, show_rebar=show_rebar)
+
+        elseif r isa StructuralSizer.StripFootingResult
+            draw_strip_footing!(ax, fdn, struc;
+                color=strip_color, alpha=strip_alpha, show_columns=show_columns)
+
+        elseif r isa StructuralSizer.MatFootingResult
+            draw_mat_footing!(ax, fdn, struc;
+                color=mat_color, alpha=mat_alpha,
+                show_columns=show_columns, show_grid=show_grid)
+
+        elseif r isa StructuralSizer.CombinedFootingResult
+            # Legacy combined result — draw as spread box at centroid
+            draw_spread_footing!(ax, fdn, struc;
+                color=color, alpha=alpha, show_rebar=show_rebar)
+
+        elseif r isa StructuralSizer.PileCapResult
+            @debug "Pile cap visualization not yet implemented"
+
+        else
+            @debug "Unknown foundation result type: $(typeof(r))"
         end
     end
 end

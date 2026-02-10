@@ -6,6 +6,7 @@
 
 # Problem definitions (implement AbstractNLPProblem)
 include("problems.jl")
+include("flat_plate_problem.jl")
 
 # High-level API
 include("api.jl")

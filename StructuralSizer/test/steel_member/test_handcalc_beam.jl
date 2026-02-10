@@ -98,12 +98,12 @@ end
         Mu_expected_Nm = ustrip(u"N*m", Mu_expected_kft * u"kip*ft")
         
         # 5. Size
-        size_members_discrete!(
+        size_steel_members!(
             struc;
             member_edge_group=:beams,
             material=A992_Steel,
             optimizer=:auto,
-            resolution=200,
+            resolution=20,
             reanalyze=true
         )
         

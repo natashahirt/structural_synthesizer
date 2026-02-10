@@ -19,9 +19,9 @@ println("Testing B1 Moment Amplification in AISCChecker...")
     
     # Create checker
     checker = AISCChecker()
-    catalogue = [section]
+    catalog = [section]
     cache = StructuralSizer.create_cache(checker, 1)
-    StructuralSizer.precompute_capacities!(checker, cache, catalogue, material, MinWeight())
+    StructuralSizer.precompute_capacities!(checker, cache, catalog, material, MinWeight())
     
     @testset "Low compression - B1 ≈ 1.0" begin
         # Low axial load: B1 should be near 1.0

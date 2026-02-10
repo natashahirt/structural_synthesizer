@@ -28,11 +28,55 @@ function size_slabs!(
     max_iterations::Int = 10,
     verbose::Bool = false,
 )
-    for slab_idx in eachindex(struc.slabs)
-        size_slab!(struc, slab_idx; options=options, column_opts=column_opts,
-                   max_iterations=max_iterations, verbose=verbose)
+    # Pre-build column P-M cache once if flat-plate slabs exist (expensive P-M diagrams)
+    _col_cache = nothing
+    if any(s -> s.floor_type in (:flat_plate, :flat_slab), struc.slabs)
+        _col_cache = _precompute_flat_plate_col_cache(column_opts)
+    end
+
+    # Use parallel batches if available and multi-threaded
+    batches = hasproperty(struc, :slab_parallel_batches) ? struc.slab_parallel_batches : nothing
+    use_parallel = Threads.nthreads() > 1 && !isnothing(batches) && !isempty(batches)
+
+    if use_parallel
+        for batch in batches
+            tasks = map(batch) do slab_idx
+                Threads.@spawn size_slab!(struc, slab_idx; options=options,
+                    column_opts=column_opts, max_iterations=max_iterations,
+                    verbose=verbose, _col_cache=_col_cache)
+            end
+            fetch.(tasks)
+        end
+    else
+        for slab_idx in eachindex(struc.slabs)
+            size_slab!(struc, slab_idx; options=options, column_opts=column_opts,
+                       max_iterations=max_iterations, verbose=verbose,
+                       _col_cache=_col_cache)
+        end
     end
     return struc
+end
+
+"""Pre-build the column P-M capacity cache for flat plate design (shared across all slabs)."""
+function _precompute_flat_plate_col_cache(column_opts)
+    col_opts = isnothing(column_opts) ? ConcreteColumnOptions() : column_opts
+    col_opts isa ConcreteColumnOptions || return nothing
+
+    cat = isnothing(col_opts.custom_catalog) ?
+        rc_column_catalog(col_opts.section_shape, col_opts.catalog) :
+        col_opts.custom_catalog
+
+    checker = ACIColumnChecker(;
+        include_slenderness = col_opts.include_slenderness,
+        include_biaxial = col_opts.include_biaxial,
+        fy_ksi = ustrip(ksi, col_opts.rebar_grade.Fy),
+        Es_ksi = ustrip(ksi, col_opts.rebar_grade.E),
+        max_depth = col_opts.max_depth,
+    )
+
+    cache = create_cache(checker, length(cat))
+    precompute_capacities!(checker, cache, cat, col_opts.grade, col_opts.objective)
+    return cache
 end
 
 """
@@ -47,12 +91,14 @@ function size_slab!(
     column_opts = nothing,
     max_iterations::Int = 10,
     verbose::Bool = false,
+    _col_cache = nothing,
 )
     slab = struc.slabs[slab_idx]
     ft = floor_type(slab.floor_type)
     return _size_slab!(ft, struc, slab, slab_idx;
                       options=options, column_opts=column_opts,
-                      max_iterations=max_iterations, verbose=verbose)
+                      max_iterations=max_iterations, verbose=verbose,
+                      _col_cache=_col_cache)
 end
 
 # =============================================================================
@@ -74,9 +120,15 @@ function _analysis_method_from_options(opts::FlatPlateOptions)::FlatPlateAnalysi
     elseif opts.analysis_method == :mddm
         return DDM(:simplified)
     elseif opts.analysis_method == :efm
-        return EFM()
+        return EFM()              # default solver (:asap)
+    elseif opts.analysis_method == :efm_hc
+        return EFM(:moment_distribution)
+    elseif opts.analysis_method == :efm_asap
+        return EFM(:asap)
+    elseif opts.analysis_method == :fea
+        return FEA()
     else
-        throw(ArgumentError("Unknown FlatPlateOptions.analysis_method=$(opts.analysis_method). Expected :ddm, :mddm, or :efm."))
+        throw(ArgumentError("Unknown FlatPlateOptions.analysis_method=$(opts.analysis_method). Expected :ddm, :mddm, :efm, :efm_hc, :efm_asap, or :fea."))
     end
 end
 
@@ -84,7 +136,8 @@ function _size_slab!(::FlatPlate, struc, slab, slab_idx;
                      options::FloorOptions = FloorOptions(),
                      column_opts = nothing,
                      max_iterations::Int = 10,
-                     verbose::Bool = false)
+                     verbose::Bool = false,
+                     _col_cache = nothing)
     # Default column options for concrete flat plates
     col_opts = isnothing(column_opts) ? ConcreteColumnOptions() : column_opts
     method = _analysis_method_from_options(options.flat_plate)
@@ -96,12 +149,118 @@ function _size_slab!(::FlatPlate, struc, slab, slab_idx;
                               method=method,
                               opts=options.flat_plate,
                               max_iterations=max_iterations,
-                              verbose=verbose)
+                              verbose=verbose,
+                              _col_cache=_col_cache,
+                              slab_idx=slab_idx)
     
     # Set slab.result to the FlatPlatePanelResult (like Vault does)
     slab.result = result.slab_result
     
     return result
+end
+
+# =============================================================================
+# Concrete: Flat slab (with drop panels — shared pipeline with FlatPlate)
+# =============================================================================
+
+function _size_slab!(::FlatSlab, struc, slab, slab_idx;
+                     options::FloorOptions = FloorOptions(),
+                     column_opts = nothing,
+                     max_iterations::Int = 10,
+                     verbose::Bool = false,
+                     _col_cache = nothing)
+    # Default column options for concrete flat slabs (same as flat plate)
+    col_opts = isnothing(column_opts) ? ConcreteColumnOptions() : column_opts
+
+    # Convert FlatSlabOptions to FlatPlateOptions for the shared pipeline
+    fs_opts = options.flat_slab
+    fp_opts = as_flat_plate_options(fs_opts)
+    method = _analysis_method_from_options(fp_opts)
+
+    verbose && @info "Sizing flat slab (with drop panels) $slab_idx" cells=length(slab.cell_indices) method=typeof(method)
+
+    # Build drop panel geometry from options + slab geometry
+    # This will be passed as a keyword to size_flat_plate! which propagates it
+    # through the pipeline hooks.
+    drop_panel = _build_drop_panel_geometry(fs_opts, struc, slab)
+
+    # Use the shared flat plate design pipeline with drop panel injection
+    result = size_flat_plate!(struc, slab, col_opts;
+                              method=method,
+                              opts=fp_opts,
+                              max_iterations=max_iterations,
+                              verbose=verbose,
+                              _col_cache=_col_cache,
+                              slab_idx=slab_idx,
+                              drop_panel=drop_panel)
+    
+    # Set slab.result and drop_panel geometry (may have been adjusted by pipeline)
+    slab.result = result.slab_result
+    slab.drop_panel = result.drop_panel
+    
+    return result
+end
+
+"""
+    _build_drop_panel_geometry(opts::FlatSlabOptions, struc, slab) -> DropPanelGeometry
+
+Construct drop panel geometry from FlatSlabOptions and slab geometry.
+
+Auto-sizes dimensions when not explicitly provided:
+- `h_drop`: Smallest standard lumber depth satisfying ACI 8.2.4(a)
+- `a_drop`: ACI minimum extent of l/6 from column center
+"""
+function _build_drop_panel_geometry(opts::FlatSlabOptions, struc, slab)
+    # Get representative span lengths for drop panel sizing
+    l1 = slab.spans.primary
+    l2 = slab.spans.secondary
+    
+    # Get slab thickness estimate (for h_drop auto-sizing)
+    # Use a rough initial estimate: ln/36 for interior (flat slab minimum)
+    # The pipeline will refine this iteratively
+    h_est = l1 / 36
+    
+    # h_drop: user-specified or auto-size to smallest standard depth ≥ h/4
+    if !isnothing(opts.h_drop)
+        h_drop = opts.h_drop
+    else
+        h_drop = auto_size_drop_depth(h_est)
+    end
+    
+    # a_drop: user-specified ratio or ACI minimum (l/6)
+    ratio = isnothing(opts.a_drop_ratio) ? (1.0 / 6.0) : opts.a_drop_ratio
+    a_drop_1 = ratio * l1
+    a_drop_2 = ratio * l2
+    
+    # Normalize to consistent units
+    h_drop_m = uconvert(u"m", h_drop)
+    a1_m = uconvert(u"m", a_drop_1)
+    a2_m = uconvert(u"m", a_drop_2)
+    
+    return DropPanelGeometry(h_drop_m, a1_m, a2_m)
+end
+
+"""
+    auto_size_drop_depth(h_slab) -> Length
+
+Select the smallest standard lumber depth satisfying ACI 8.2.4(a):
+h_drop ≥ h_slab / 4.
+
+Standard depths (with 3/4" plyform): 2.25", 4.25", 6.25", 8.0".
+"""
+function auto_size_drop_depth(h_slab::Length)
+    min_proj = h_slab / 4
+    min_proj_inch = ustrip(u"inch", min_proj)
+    
+    for d in STANDARD_DROP_DEPTHS_INCH
+        if d >= min_proj_inch
+            return d * u"inch"
+        end
+    end
+    
+    # If none of the standard depths work, use the largest + extra
+    @warn "No standard drop depth satisfies ACI 8.2.4(a) for h_slab=$(h_slab). Using minimum projection."
+    return uconvert(u"inch", min_proj)
 end
 
 # =============================================================================

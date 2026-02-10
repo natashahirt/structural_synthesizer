@@ -9,6 +9,7 @@
 using Test
 using Unitful
 using StructuralSizer
+using Asap: ksi
 
 # Load verified StructurePoint test data (guard against redefinition)
 if !@isdefined(TIED_16X16_SPCOLUMN)
@@ -77,18 +78,18 @@ end
     # ==========================================================================
     @testset "Beta1 Factor" begin
         # f'c ≤ 4 ksi → β₁ = 0.85
-        @test StructuralSizer.beta1(3.0) == 0.85
-        @test StructuralSizer.beta1(4.0) == 0.85
+        @test StructuralSizer.beta1(3.0ksi) == 0.85
+        @test StructuralSizer.beta1(4.0ksi) == 0.85
         
         # f'c = 5 ksi → β₁ = 0.85 - 0.05(5-4)/1 = 0.80 (from PDF)
-        @test StructuralSizer.beta1(5.0) ≈ 0.80
+        @test StructuralSizer.beta1(5.0ksi) ≈ 0.80
         
         # f'c = 6 ksi → β₁ = 0.85 - 0.05(6-4) = 0.75
-        @test StructuralSizer.beta1(6.0) ≈ 0.75
+        @test StructuralSizer.beta1(6.0ksi) ≈ 0.75 atol=1e-6
         
         # f'c ≥ 8 ksi → β₁ = 0.65 (minimum)
-        @test StructuralSizer.beta1(8.0) == 0.65
-        @test StructuralSizer.beta1(10.0) == 0.65
+        @test StructuralSizer.beta1(8.0ksi) ≈ 0.65 atol=1e-6
+        @test StructuralSizer.beta1(10.0ksi) ≈ 0.65 atol=1e-6
     end
     
     # ==========================================================================
@@ -278,25 +279,27 @@ end
     @testset "Phi Factor" begin
         # Yield strain for Grade 60: εy = 60/29000 = 0.00207
         εy = 60.0 / 29000.0
+        fy_ksi = 60.0
+        Es_ksi = 29000.0
         
         # Compression controlled (εt ≤ εy)
-        @test StructuralSizer.phi_factor(0.0, :tied) ≈ 0.65
-        @test StructuralSizer.phi_factor(εy, :tied) ≈ 0.65
-        @test StructuralSizer.phi_factor(0.0, :spiral) ≈ 0.75
+        @test StructuralSizer.phi_factor(0.0, :tied; fy_ksi, Es_ksi) ≈ 0.65
+        @test StructuralSizer.phi_factor(εy, :tied; fy_ksi, Es_ksi) ≈ 0.65
+        @test StructuralSizer.phi_factor(0.0, :spiral; fy_ksi, Es_ksi) ≈ 0.75
         
         # Tension controlled (εt ≥ εy + 0.003 = 0.00507)
-        @test StructuralSizer.phi_factor(0.00507, :tied) ≈ 0.90
-        @test StructuralSizer.phi_factor(0.01, :tied) ≈ 0.90
-        @test StructuralSizer.phi_factor(0.00507, :spiral) ≈ 0.90
+        @test StructuralSizer.phi_factor(0.00507, :tied; fy_ksi, Es_ksi) ≈ 0.90
+        @test StructuralSizer.phi_factor(0.01, :tied; fy_ksi, Es_ksi) ≈ 0.90
+        @test StructuralSizer.phi_factor(0.00507, :spiral; fy_ksi, Es_ksi) ≈ 0.90
         
         # Transition zone: φ = 0.65 + 0.25(εt - εy)/0.003 for tied
         # At εt = εy + 0.0015 (midpoint): φ = 0.65 + 0.25 × 0.5 = 0.775
         εt_mid = εy + 0.0015
-        @test StructuralSizer.phi_factor(εt_mid, :tied) ≈ 0.775 rtol=0.01
+        @test StructuralSizer.phi_factor(εt_mid, :tied; fy_ksi, Es_ksi) ≈ 0.775 rtol=0.01
         
         # For spiral: φ = 0.75 + 0.15(εt - εy)/0.003
         # At midpoint: φ = 0.75 + 0.15 × 0.5 = 0.825
-        @test StructuralSizer.phi_factor(εt_mid, :spiral) ≈ 0.825 rtol=0.01
+        @test StructuralSizer.phi_factor(εt_mid, :spiral; fy_ksi, Es_ksi) ≈ 0.825 rtol=0.01
     end
     
     # ==========================================================================

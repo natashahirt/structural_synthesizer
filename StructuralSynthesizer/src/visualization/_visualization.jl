@@ -4,6 +4,7 @@ import StructuralPlots
 include("vis_building_skeleton.jl")
 include("vis_building_structure_utils/vis_slabs.jl")
 include("vis_building_structure_utils/vis_foundations.jl")
+include("vis_vault.jl")  # After vis_slabs (draw_slab! dispatches here), before vis_design (deflected mode uses it)
 include("vis_building_structure.jl")
 include("vis_tributaries.jl")
 include("vis_design.jl")

@@ -1,34 +1,43 @@
 # ==============================================================================
 # Member Sizing Options (Configuration Structs)
 # ==============================================================================
-# Clean, material-specific configuration for column and beam sizing.
-# Each type has sensible defaults - override only what you need.
+# Material-specific configuration for column and beam sizing.
+# Each type has sensible defaults — override only what you need.
 #
-# Note: Catalog builder functions (steel_column_catalog, rc_column_catalog)
-# are in members/optimize/catalogs.jl since they depend on section definitions.
+# Steel uses a single struct (SteelMemberOptions) with aliases:
+#   SteelColumnOptions = SteelMemberOptions
+#   SteelBeamOptions   = SteelMemberOptions
+# because AISC discrete sizing uses the same checker for both.
+#
+# Concrete has separate structs for columns vs beams because
+# ACI design rules differ significantly (P-M interaction vs flexure/shear).
 
 # ==============================================================================
-# Steel Column Options
+# Steel Member Options (columns + beams)
 # ==============================================================================
 
 """
-    SteelColumnOptions
+    SteelMemberOptions
 
-Configuration for steel column sizing.
+Configuration for steel member sizing (columns **and** beams).
+
+The same AISC checker + MIP optimizer serves both, so one struct covers both
+use-cases.  The type aliases `SteelColumnOptions` and `SteelBeamOptions` are
+provided for readability; they are the *same* type.
 
 # Example
 ```julia
-# Use all defaults (W shapes, A992 steel)
+# Columns — W shapes, A992
 opts = SteelColumnOptions()
 
 # HSS columns with depth limit
-opts = SteelColumnOptions(
-    section_type = :hss,
-    max_depth = 0.4,  # meters
-)
+opts = SteelColumnOptions(section_type = :hss, max_depth = 0.4)
 
-# Combined W + HSS catalog
-opts = SteelColumnOptions(section_type = :w_and_hss)
+# Floor beams with L/360 deflection check
+opts = SteelBeamOptions(deflection_limit = 1/360)
+
+# Roof beams — relaxed deflection
+opts = SteelBeamOptions(deflection_limit = 1/240)
 ```
 
 # Fields
@@ -37,20 +46,29 @@ opts = SteelColumnOptions(section_type = :w_and_hss)
 - `catalog`: `:common`, `:preferred`, `:all` (default: `:preferred`)
 - `custom_catalog`: Custom section vector (overrides catalog)
 - `max_depth`: Maximum depth in meters (default: Inf)
+- `deflection_limit`: L/δ ratio for serviceability, e.g. `1/360`.
+  `nothing` = no deflection check (default: `nothing`)
 - `n_max_sections`: Limit unique sections, 0 = no limit (default: 0)
 - `objective`: MinVolume(), MinWeight(), MinCost(), MinCarbon() (default: MinVolume())
 - `optimizer`: `:auto`, `:highs`, `:gurobi` (default: `:auto`)
 """
-Base.@kwdef struct SteelColumnOptions
+Base.@kwdef struct SteelMemberOptions
     material::StructuralSteel = A992_Steel
     section_type::Symbol = :w           # :w, :hss, :pipe, :w_and_hss
     catalog::Symbol = :preferred        # :common, :preferred, :all
     custom_catalog::Union{Nothing, Vector} = nothing
-    max_depth::Float64 = Inf            # meters
+    max_depth::Length = Inf * u"m"
+    deflection_limit::Union{Nothing, Float64} = nothing  # L/δ (beams)
     n_max_sections::Int = 0             # 0 = no limit
     objective::AbstractObjective = MinVolume()
     optimizer::Symbol = :auto           # :auto, :highs, :gurobi
 end
+
+"""Alias — steel columns and beams share the same AISC checker."""
+const SteelColumnOptions = SteelMemberOptions
+
+"""Alias — steel columns and beams share the same AISC checker."""
+const SteelBeamOptions = SteelMemberOptions
 
 # ==============================================================================
 # Concrete Column Options
@@ -63,24 +81,20 @@ Configuration for reinforced concrete column sizing.
 
 # Example
 ```julia
-# Use all defaults (4000 psi, rectangular, slenderness + biaxial enabled)
 opts = ConcreteColumnOptions()
 
-# Circular spiral columns
 opts = ConcreteColumnOptions(section_shape = :circular)
 
-# High-strength rectangular with depth limit
 opts = ConcreteColumnOptions(
     grade = NWC_6000,
     section_shape = :rect,
-    max_depth = 0.6,  # meters
+    max_depth = 0.6,
 )
 
-# Full control over materials and detailing
 opts = ConcreteColumnOptions(
     grade = NWC_5000,
     rebar_grade = Rebar_75,
-    cover = 50.8u"mm",  # 2.0 inch
+    cover = 50.8u"mm",
     transverse_bar_size = :no4,
 )
 ```
@@ -116,7 +130,7 @@ Base.@kwdef struct ConcreteColumnOptions
     transverse_bar_size::Symbol = :no4         # :no3, :no4, :no5
     catalog::Symbol = :standard         # :standard, :low_capacity, :high_capacity, :all
     custom_catalog::Union{Nothing, Vector} = nothing
-    max_depth::Float64 = Inf            # meters (depth for rect, diameter for circular)
+    max_depth::Length = Inf * u"m"       # depth for rect, diameter for circular
     n_max_sections::Int = 0             # 0 = no limit
     include_slenderness::Bool = true
     include_biaxial::Bool = true
@@ -150,63 +164,127 @@ function get_transverse_bar_diameter(opts::ConcreteColumnOptions)
 end
 
 # ==============================================================================
-# Steel Beam Options
+# Concrete Beam Options
 # ==============================================================================
 
 """
-    SteelBeamOptions
+    ConcreteBeamOptions
 
-Configuration for steel beam sizing.
+Configuration for reinforced concrete beam sizing (ACI 318 flexure + shear).
 
 # Example
 ```julia
-# Standard floor beams (L/360)
-opts = SteelBeamOptions()
+opts = ConcreteBeamOptions()
 
-# Strict deflection for sensitive equipment
-opts = SteelBeamOptions(deflection_limit = 1/480)
+opts = ConcreteBeamOptions(
+    grade = NWC_5000,
+    rebar_grade = Rebar_75,
+    deflection_limit = 1/480,
+)
 
-# Roof beams
-opts = SteelBeamOptions(deflection_limit = 1/240)
+opts = ConcreteBeamOptions(
+    cover = 50.8u"mm",
+    transverse_bar_size = :no4,
+    max_depth = 0.6,
+)
 ```
 
 # Fields
-- `material`: Steel grade (default: A992_Steel)
-- `catalog`: `:preferred`, `:all` (default: `:preferred`)
+## Materials
+- `grade`: Concrete material (default: NWC_4000)
+- `rebar_grade`: RebarSteel for longitudinal bars (default: Rebar_60)
+- `transverse_rebar_grade`: RebarSteel for stirrups (default: same as rebar_grade)
+- `cover`: Clear cover to stirrups (default: 1.5" or 38mm)
+- `transverse_bar_size`: Stirrup bar size :no3, :no4, :no5 (default: :no3)
+
+## Catalog (discrete sizing)
+- `catalog`: `:standard`, `:all` (default: `:standard`)
 - `custom_catalog`: Custom section vector (overrides catalog)
-- `max_depth`: Maximum depth in meters (default: Inf)
-- `deflection_limit`: L/δ limit as fraction (default: 1/360)
+
+## Dimension Constraints
+- `max_depth`: Maximum overall depth in meters (default: Inf)
+- `max_width`: Maximum width in meters (default: Inf)
+
+## Design Settings
+- `deflection_limit`: L/δ ratio, e.g. `1/360`.
+  `nothing` = no check (default: `1/360`)
+- `include_flange`: If `true`, the building-level sizing dispatcher
+  (`size_beams!`) auto-computes the effective T-beam flange width and slab
+  thickness from adjacent slabs and routes to the T-beam sizing API.
+  The ACI 318-19 §6.3.2.1 effective flange width limits are applied
+  automatically, using beam tributary width as `sw` and `edge_face_counts`
+  for interior/edge classification.  (default: `false`)
+- `catalog_size_tbeam`: T-beam catalog density when `include_flange=true`
+  and method=`:discrete`.  `:standard`, `:small`, `:large` (default: `:standard`)
+
+## Optimization
 - `n_max_sections`: Limit unique sections, 0 = no limit (default: 0)
 - `objective`: MinVolume(), MinWeight(), MinCost(), MinCarbon() (default: MinVolume())
 - `optimizer`: `:auto`, `:highs`, `:gurobi` (default: `:auto`)
 """
-Base.@kwdef struct SteelBeamOptions
-    material::StructuralSteel = A992_Steel
-    catalog::Symbol = :preferred
+Base.@kwdef struct ConcreteBeamOptions
+    # Materials
+    grade::Concrete = NWC_4000
+    rebar_grade::RebarSteel = Rebar_60
+    transverse_rebar_grade::Union{Nothing, RebarSteel} = nothing
+    cover::Length = 38.1u"mm"            # ≈ 1.5" to stirrups
+    transverse_bar_size::Symbol = :no3   # Stirrup bar size
+
+    # Catalog (discrete)
+    catalog::Symbol = :standard
     custom_catalog::Union{Nothing, Vector} = nothing
-    max_depth::Float64 = Inf
-    deflection_limit::Float64 = 1/360
+
+    # Dimension constraints
+    max_depth::Length = Inf * u"m"
+    max_width::Length = Inf * u"m"
+
+    # Design settings
+    deflection_limit::Union{Nothing, Float64} = 1/360
+    include_flange::Bool = false
+    catalog_size_tbeam::Symbol = :standard
+
+    # Optimization
     n_max_sections::Int = 0
     objective::AbstractObjective = MinVolume()
     optimizer::Symbol = :auto
 end
 
+# Helpers for ConcreteBeamOptions (same API as column helpers)
+function get_rebar_fy(opts::ConcreteBeamOptions)
+    uconvert(ksi, opts.rebar_grade.Fy)
+end
+
+function get_transverse_rebar(opts::ConcreteBeamOptions)
+    isnothing(opts.transverse_rebar_grade) ? opts.rebar_grade : opts.transverse_rebar_grade
+end
+
+function get_transverse_bar_diameter(opts::ConcreteBeamOptions)
+    get(TRANSVERSE_BAR_DIAMETERS, opts.transverse_bar_size, 0.5)
+end
+
 # ==============================================================================
-# Union Type for Dispatch
+# Union Types for Dispatch
 # ==============================================================================
 
 """Column sizing options (either steel or concrete)."""
-const ColumnOptions = Union{SteelColumnOptions, ConcreteColumnOptions}
+const ColumnOptions = Union{SteelMemberOptions, ConcreteColumnOptions}
+
+"""Beam sizing options (steel, concrete, or nothing)."""
+const BeamOptions = Union{SteelMemberOptions, ConcreteBeamOptions}
+
+"""Any member sizing options."""
+const MemberOptions = Union{SteelMemberOptions, ConcreteColumnOptions, ConcreteBeamOptions}
 
 # ==============================================================================
 # Display
 # ==============================================================================
 
-function Base.show(io::IO, opts::SteelColumnOptions)
+function Base.show(io::IO, opts::SteelMemberOptions)
     mat_str = material_name(opts.material)
     sec_type = uppercase(string(opts.section_type))
-    print(io, "SteelColumnOptions(", mat_str, " ", sec_type)
-    opts.max_depth < Inf && print(io, ", max_depth=", opts.max_depth, "m")
+    print(io, "SteelMemberOptions(", mat_str, " ", sec_type)
+    isfinite(opts.max_depth) && print(io, ", max_depth=", opts.max_depth)
+    !isnothing(opts.deflection_limit) && print(io, ", L/", Int(round(1/opts.deflection_limit)))
     opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
     print(io, ")")
 end
@@ -215,18 +293,21 @@ function Base.show(io::IO, opts::ConcreteColumnOptions)
     mat_str = material_name(opts.grade)
     shape_str = opts.section_shape == :circular ? "CIRCULAR" : "RECT"
     print(io, "ConcreteColumnOptions(", mat_str, " ", shape_str)
-    opts.max_depth < Inf && print(io, ", max_depth=", opts.max_depth, "m")
+    isfinite(opts.max_depth) && print(io, ", max_depth=", opts.max_depth)
     opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
     !opts.include_slenderness && print(io, ", no_slenderness")
     !opts.include_biaxial && print(io, ", no_biaxial")
     print(io, ")")
 end
 
-function Base.show(io::IO, opts::SteelBeamOptions)
-    mat_str = material_name(opts.material)
-    print(io, "SteelBeamOptions(", mat_str)
-    opts.max_depth < Inf && print(io, ", max_depth=", opts.max_depth, "m")
-    print(io, ", L/", Int(round(1/opts.deflection_limit)))
+function Base.show(io::IO, opts::ConcreteBeamOptions)
+    mat_str = material_name(opts.grade)
+    print(io, "ConcreteBeamOptions(", mat_str)
+    isfinite(opts.max_depth) && print(io, ", max_depth=", opts.max_depth)
+    isfinite(opts.max_width) && print(io, ", max_width=", opts.max_width)
+    if !isnothing(opts.deflection_limit)
+        print(io, ", L/", Int(round(1/opts.deflection_limit)))
+    end
     opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
     print(io, ")")
 end
@@ -246,21 +327,18 @@ to find the minimum-volume section that satisfies ACI 318 requirements.
 
 # Example
 ```julia
-# Basic usage with defaults
 opts = NLPColumnOptions()
 
-# Custom bounds and materials
 opts = NLPColumnOptions(
     grade = NWC_5000,
     min_dim = 14.0u"inch",
     max_dim = 36.0u"inch",
-    prefer_square = 0.1,  # Slight penalty for non-square
+    prefer_square = 0.1,
 )
 
-# Strict aspect ratio for architectural constraints
 opts = NLPColumnOptions(
-    aspect_limit = 1.5,   # h/b ≤ 1.5
-    dim_increment = 2.0u"inch",  # Round to 2" increments
+    aspect_limit = 1.5,
+    dim_increment = 2.0u"inch",
 )
 ```
 
@@ -272,7 +350,7 @@ opts = NLPColumnOptions(
 - `tie_type`: :tied or :spiral (default: :tied)
 
 ## Dimension Bounds
-- `min_dim`: Minimum column dimension (default: 12")
+- `min_dim`: Minimum column dimension (default: 8" — no ACI code minimum; practical floor from cover+ties+bars)
 - `max_dim`: Maximum column dimension (default: 48")
 - `dim_increment`: Round final dimensions to this increment (default: 2")
 - `aspect_limit`: Maximum aspect ratio max(b,h)/min(b,h) (default: 3.0)
@@ -297,8 +375,8 @@ Base.@kwdef struct NLPColumnOptions
     cover::Length = 38.1u"mm"           # ≈ 1.5"
     tie_type::Symbol = :tied
     
-    # Dimension bounds
-    min_dim::Length = 12.0u"inch"
+    # Dimension bounds (no ACI code minimum; 8" is practical floor from cover+ties+bars)
+    min_dim::Length = 8.0u"inch"
     max_dim::Length = 48.0u"inch"
     dim_increment::Length = 2.0u"inch"
     aspect_limit::Float64 = 3.0
@@ -308,6 +386,7 @@ Base.@kwdef struct NLPColumnOptions
     include_slenderness::Bool = true
     βdns::Float64 = 0.6
     bar_size::Int = 8
+    ρ_max::Float64 = 0.06          # Practical max ρg for NLP (ACI allows 0.08, practical ≤ 0.06)
     
     # Solver settings
     solver::Symbol = :ipopt
@@ -315,6 +394,10 @@ Base.@kwdef struct NLPColumnOptions
     maxiter::Int = 200
     tol::Float64 = 1e-4
     verbose::Bool = false
+    n_multistart::Int = 1  # >1 enables multi-start for non-smooth P-M problems
+
+    # Post-processing
+    snap::Bool = true   # Round final dimensions to dim_increment
 end
 
 function Base.show(io::IO, opts::NLPColumnOptions)
@@ -344,10 +427,8 @@ approximations of AISC functions for compatibility with automatic differentiatio
 
 # Example
 ```julia
-# Basic usage with defaults
 opts = NLPHSSOptions()
 
-# Custom bounds
 opts = NLPHSSOptions(
     min_outer = 4.0u"inch",
     max_outer = 20.0u"inch",
@@ -355,10 +436,8 @@ opts = NLPHSSOptions(
     max_thickness = 0.625u"inch",
 )
 
-# Prefer square sections for architectural reasons
 opts = NLPHSSOptions(prefer_square = 0.2)
 
-# Use automatic differentiation for gradients
 opts = NLPHSSOptions(use_ad = true)
 ```
 
@@ -413,6 +492,9 @@ Base.@kwdef struct NLPHSSOptions
     tol::Float64 = 1e-4
     verbose::Bool = false
     smooth_k::Float64 = 20.0  # Smoothing parameter for AISC functions
+
+    # Post-processing
+    snap::Bool = true   # Round final dimensions to outer_increment / thickness_increment
 end
 
 function Base.show(io::IO, opts::NLPHSSOptions)
@@ -441,25 +523,19 @@ minimum-weight section that satisfies AISC 360 requirements. Treats the
 section as a parameterized I-shape (similar to a built-up or welded section).
 
 **Note**: Unlike catalog W sections which have fixed proportions, this optimizer
-finds optimal dimensions that may not match standard rolled shapes. Use
-`snap_to_catalog=true` to round the result to the nearest catalog section.
+finds optimal dimensions that may not match standard rolled shapes. The result
+is a custom continuous section, not a catalog section.
 
 # Example
 ```julia
-# Basic usage with defaults
 opts = NLPWOptions()
 
-# Custom depth bounds
 opts = NLPWOptions(
     min_depth = 10.0u"inch",
     max_depth = 24.0u"inch",
-    snap_to_catalog = true,  # Round to nearest W shape
 )
 
-# Constrain flange width for architectural clearance
-opts = NLPWOptions(
-    max_flange_width = 12.0u"inch",
-)
+opts = NLPWOptions(max_flange_width = 12.0u"inch")
 ```
 
 # Design Variables
@@ -490,7 +566,6 @@ The optimizer treats the W section as having 4 independent dimensions:
 - `tf_tw_max`: Maximum tf/tw ratio (default: 3.0)
 
 ## Design Settings
-- `snap_to_catalog`: Round result to nearest catalog W section (default: false)
 - `require_compact`: Require compact flanges/web for plastic capacity (default: true)
 
 ## Solver Settings
@@ -522,7 +597,6 @@ Base.@kwdef struct NLPWOptions
     tf_tw_max::Float64 = 3.0   # Maximum tf/tw
     
     # Design settings
-    snap_to_catalog::Bool = false   # Round to nearest catalog section
     require_compact::Bool = true    # Require compact for full plastic capacity
     
     # Solver settings
@@ -532,6 +606,80 @@ Base.@kwdef struct NLPWOptions
     tol::Float64 = 1e-4
     verbose::Bool = false
     smooth_k::Float64 = 20.0
+
+    # Post-processing
+    snap::Bool = true   # Round final dimensions to 1/16" increments
+end
+
+"""
+    NLPBeamOptions
+
+Configuration for continuous (NLP) RC beam sizing.
+
+Optimizes beam width (b), depth (h), and reinforcement ratio (ρ) to find the
+minimum-area section satisfying ACI 318 flexure and shear requirements.
+
+# Fields
+## Materials
+- `grade`: Concrete material (default: NWC_4000)
+- `rebar_grade`: RebarSteel for longitudinal bars (default: Rebar_60)
+- `cover`: Clear cover to stirrups (default: 1.5")
+- `stirrup_size`: Stirrup bar size (default: 3)
+- `bar_size`: Longitudinal bar size (default: 8)
+
+## Dimension Bounds
+- `min_width`: Minimum beam width (default: 10")
+- `max_width`: Maximum beam width (default: 24")
+- `min_depth`: Minimum beam depth (default: 12")
+- `max_depth`: Maximum beam depth (default: 36")
+- `dim_increment`: Round final dimensions to this increment (default: 2")
+
+## Solver Settings
+- `solver`: Optimization backend :ipopt, :grid (default: :ipopt)
+- `objective`: Optimization objective (default: MinVolume())
+- `maxiter`: Maximum solver iterations (default: 200)
+- `tol`: Convergence tolerance (default: 1e-4)
+- `verbose`: Print solver progress (default: false)
+
+## Post-processing
+- `snap`: Round final dimensions to dim_increment (default: true)
+"""
+Base.@kwdef struct NLPBeamOptions
+    # Materials
+    grade::Concrete = NWC_4000
+    rebar_grade::RebarSteel = Rebar_60
+    cover::Length = 38.1u"mm"           # ≈ 1.5"
+    stirrup_size::Int = 3
+    bar_size::Int = 8
+
+    # Dimension bounds
+    min_width::Length = 10.0u"inch"
+    max_width::Length = 24.0u"inch"
+    min_depth::Length = 12.0u"inch"
+    max_depth::Length = 36.0u"inch"
+    dim_increment::Length = 2.0u"inch"
+
+    # Solver settings
+    solver::Symbol = :ipopt
+    objective::AbstractObjective = MinVolume()
+    maxiter::Int = 200
+    tol::Float64 = 1e-4
+    verbose::Bool = false
+
+    # Post-processing
+    snap::Bool = true
+end
+
+function Base.show(io::IO, opts::NLPBeamOptions)
+    mat_str = material_name(opts.grade)
+    bmin = round(Int, ustrip(u"inch", opts.min_width))
+    bmax = round(Int, ustrip(u"inch", opts.max_width))
+    hmin = round(Int, ustrip(u"inch", opts.min_depth))
+    hmax = round(Int, ustrip(u"inch", opts.max_depth))
+    print(io, "NLPBeamOptions(", mat_str,
+          ", b=", bmin, "\"-", bmax, "\"",
+          ", h=", hmin, "\"-", hmax, "\"",
+          ", solver=:", opts.solver, ")")
 end
 
 function Base.show(io::IO, opts::NLPWOptions)
@@ -540,7 +688,6 @@ function Base.show(io::IO, opts::NLPWOptions)
     d_max = round(Int, ustrip(u"inch", opts.max_depth))
     print(io, "NLPWOptions(", mat_str)
     print(io, ", d=", d_min, "\"-", d_max, "\"")
-    opts.snap_to_catalog && print(io, ", snap_to_catalog")
     !opts.require_compact && print(io, ", allow_noncompact")
     print(io, ", solver=:", opts.solver, ")")
 end

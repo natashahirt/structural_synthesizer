@@ -134,12 +134,12 @@ Named tuple with Unitful quantities:
 - `vertical::Force`: Vertical reaction at support
 """
 function vault_stress_symmetric(
-    span::Unitful.Length,
-    rise::Unitful.Length,
-    trib_depth::Unitful.Length,
-    thickness::Unitful.Length,
-    rib_depth::Unitful.Length,
-    rib_apex_rise::Unitful.Length,
+    span::Length,
+    rise::Length,
+    trib_depth::Length,
+    thickness::Length,
+    rib_depth::Length,
+    rib_apex_rise::Length,
     density::Unitful.Density,
     applied_load::Unitful.Pressure,
     finishing_load::Unitful.Pressure
@@ -209,12 +209,12 @@ Named tuple with same fields as `vault_stress_symmetric`.
 Reference: Haile's VaultStress_Asymmetric.m
 """
 function vault_stress_asymmetric(
-    span::Unitful.Length,
-    rise::Unitful.Length,
-    trib_depth::Unitful.Length,
-    thickness::Unitful.Length,
-    rib_depth::Unitful.Length,
-    rib_apex_rise::Unitful.Length,
+    span::Length,
+    rise::Length,
+    trib_depth::Length,
+    thickness::Length,
+    rib_depth::Length,
+    rib_apex_rise::Length,
     density::Unitful.Density,
     applied_load::Unitful.Pressure,
     finishing_load::Unitful.Pressure
@@ -282,13 +282,13 @@ Named tuple with:
 Ref: Haile's solveFullyCoupledRise.m
 """
 function solve_equilibrium_rise(
-    span::Unitful.Length,
-    initial_rise::Unitful.Length,
+    span::Length,
+    initial_rise::Length,
     total_load::Unitful.Pressure,
-    thickness::Unitful.Length,
-    trib_depth::Unitful.Length,
+    thickness::Length,
+    trib_depth::Length,
     E::Unitful.Pressure;
-    deflection_limit::Unitful.Length = span / 240
+    deflection_limit::Length = span / 240
 )
     # Strip to consistent SI base units for root finding (which needs Float64)
     span_m = ustrip(u"m", span)
@@ -608,13 +608,10 @@ function _size_span_floor(::Vault, span::L, sdl::F, live::F;
     props = get_vault_properties(span_m, final_rise_m, t_m, trib_m, rib_d_m, rib_h_m)
     vol_per_area = props.total_vol / (span_m * trib_m)  # m³/m² = m
     
-    # Convert outputs to match input unit system
-    len_unit = unit(span)
-    force_area_unit = unit(sdl)
-    
-    t_out = uconvert(len_unit, actual_thickness)
-    rise_out = uconvert(len_unit, final_rise)
-    arc_len_out = uconvert(len_unit, props.arc_length * u"m")
+    # Normalize all outputs to coherent SI (m, kPa, kN/m)
+    t_out = uconvert(u"m", actual_thickness)
+    rise_out = uconvert(u"m", final_rise)
+    arc_len_out = props.arc_length * u"m"
     
     # Thrust: force / trib_depth = force per unit length (line load at support)
     thrust_dead_line = thrust_dead / trib_depth
@@ -623,9 +620,9 @@ function _size_span_floor(::Vault, span::L, sdl::F, live::F;
     thrust_live_out = uconvert(u"kN/m", thrust_live_line)
     
     # Volume per area (m³/m² = m)
-    vol_out = uconvert(len_unit, vol_per_area * u"m")
+    vol_out = vol_per_area * u"m"
     
-    sw_out = uconvert(force_area_unit, sw)
+    sw_out = uconvert(u"kPa", sw)
     
     return VaultResult(
         t_out, rise_out, arc_len_out,
@@ -647,21 +644,21 @@ Find minimum thickness satisfying stress and deflection constraints.
 All arguments are Unitful quantities. Returns minimum thickness as Unitful Length.
 """
 function _find_min_thickness(
-    span::Unitful.Length,
-    rise::Unitful.Length,
-    trib_depth::Unitful.Length,
-    rib_depth::Unitful.Length,
-    rib_apex_rise::Unitful.Length,
+    span::Length,
+    rise::Length,
+    trib_depth::Length,
+    rib_depth::Length,
+    rib_apex_rise::Length,
     density::Unitful.Density,
     E::Unitful.Pressure,
     applied_load::Unitful.Pressure,
     finishing_load::Unitful.Pressure,
     allowable_stress::Union{Unitful.Pressure, Nothing},
-    deflection_limit::Unitful.Length,
+    deflection_limit::Length,
     check_asymmetric::Bool;
-    t_min::Unitful.Length = 0.03u"m",
-    t_max::Unitful.Length = 0.50u"m",
-    t_step::Unitful.Length = 0.005u"m"
+    t_min::Length = 0.03u"m",
+    t_max::Length = 0.50u"m",
+    t_step::Length = 0.005u"m"
 )
     has_stress_check = !isnothing(allowable_stress)
     

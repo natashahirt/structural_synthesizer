@@ -46,7 +46,7 @@ function load_rebar_catalog!()
     for (sz, d, w, a) in data
         REBAR_CATALOG[sz] = Rebar(sz, Rebar_60, d * u"inch", w * u"lb/ft", a * u"inch^2")
     end
-    @debug "Loaded $(length(REBAR_CATALOG)) rebar sizes"
+    nothing
 end
 
 """Get rebar by size (e.g., `rebar(4)` for #4 bar)."""

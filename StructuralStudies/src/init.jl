@@ -2,14 +2,19 @@
 # StructuralStudies Init
 # ==============================================================================
 # Include this file at the top of any study script to load all dependencies.
+# Safe to include multiple times (guarded).
+#
 # Usage: include(joinpath(@__DIR__, "..", "init.jl"))
+# ==============================================================================
+
+if !@isdefined(_STRUCTURAL_STUDIES_INIT)
 
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 # Core structural modules
-# StructuralSizer re-exports units from Asap
 using StructuralSizer
+using StructuralSynthesizer
 using Unitful
 
 # Analysis dependencies
@@ -18,7 +23,7 @@ using CSV
 using Dates
 using ProgressMeter
 
-# Visualization (optional - loads if available)
+# Visualization (optional — loads if available)
 try
     using GLMakie
     using ColorSchemes
@@ -56,7 +61,7 @@ function print_header(title::String)
 end
 
 """Print study footer with summary."""
-function print_footer(n_created::Int, n_failed::Int, output_file::String)
+function print_footer(n_created::Int, n_failed::Int, output_file)
     println()
     println("=" ^ 60)
     println("Study Complete!")
@@ -90,4 +95,7 @@ function calc_embodied_carbon(vol_concrete_m3::Float64, vol_steel_m3::Float64)
     )
 end
 
+const _STRUCTURAL_STUDIES_INIT = true
 println("StructuralStudies initialized ✓")
+
+end  # if !@isdefined

@@ -43,7 +43,7 @@ include("aisc/_aisc.jl")
 # NDS: Wood (stub)
 include("nds/_nds.jl")
 
-# ACI 318: Concrete (stub)
+# ACI 318: Concrete
 include("aci/_aci.jl")
 
 # Future:

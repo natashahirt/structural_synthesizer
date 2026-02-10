@@ -5,8 +5,10 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 StructuralPlots = "a1b2c3d4-5678-90ab-cdef-123456789abc"
 StructuralSizer = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
+StructuralSynthesizer = "fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [sources]
-StructuralPlots = {path = "../StructuralPlots"}
-StructuralSizer = {path = "../StructuralSizer"}
+StructuralPlots = {path = "..\\StructuralPlots"}
+StructuralSizer = {path = "..\\StructuralSizer"}
+StructuralSynthesizer = {path = "..\\StructuralSynthesizer"}

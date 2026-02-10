@@ -13,8 +13,6 @@
 
 using Logging
 
-# Re-export Asap's is_convex_polygon for convenience
-const is_convex_polygon = Asap.is_convex_polygon
 
 # =============================================================================
 # Cell Grid Operations
@@ -277,7 +275,7 @@ function validate_and_split_slab(
     boundary = get_boundary_fn(cell_indices)
     
     # Check convexity
-    if is_convex_polygon(boundary)
+    if Asap.is_convex_polygon(boundary)
         return [cell_indices]  # No split needed
     end
     

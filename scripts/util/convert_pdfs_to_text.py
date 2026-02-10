@@ -68,9 +68,9 @@ def find_and_convert_pdfs(root_dir: Path):
 
 
 if __name__ == "__main__":
-    # Find the workspace root
+    # Find the workspace root (scripts/util/ -> scripts/ -> workspace root)
     script_dir = Path(__file__).parent
-    workspace_root = script_dir.parent
+    workspace_root = script_dir.parent.parent
     
     # Directories to search for PDFs
     reference_dirs = [
@@ -82,7 +82,8 @@ if __name__ == "__main__":
         workspace_root / "StructuralSizer" / "src" / "slabs" / "codes" / "concrete" / "reference" / "two_way",
         workspace_root / "StructuralSizer" / "src" / "foundations" / "codes" / "reference",
         workspace_root / "StructuralSizer" / "src" / "members" / "codes" / "aisc" / "reference",
-        Path(r"C:\Users\nhirt\MIT Dropbox\Natasha Hirt\_MIT\DS Research\Synthetic_Buildings\structural_synthesizer\StructuralSizer\src\slabs\codes\concrete\reference\two_way\Ancon_Shearfix_Design_Manual_to_ACI_318-19.pdf").parent,
+        workspace_root / "StructuralSizer" / "src" / "members" / "codes" / "pixelframe" / "reference",
+        workspace_root / "StructuralSizer" / "src" / "codes" / "reference"
     ]
     
     for ref_dir in reference_dirs:

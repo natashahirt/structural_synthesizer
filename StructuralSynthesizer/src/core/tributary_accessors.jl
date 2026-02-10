@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Higher-level convenience functions for accessing tributary data stored in
-# BuildingStructure.tributaries (TributaryCache).
+# BuildingStructure._tributary_caches (TributaryCache).
 #
 # These operate on BuildingStructure and provide a clean API for:
 # - Column tributary areas (Voronoi)
@@ -54,7 +54,7 @@ tributary_cache_key(behavior::SpanningBehavior, axis) = TributaryCacheKey(behavi
 Get cached Voronoi tributary for a column, or nothing if not cached.
 """
 function get_cached_column_tributary(struc::BuildingStructure, story::Int, vertex_idx::Int)
-    return get_vertex_tributary(struc.tributaries, story, vertex_idx)
+    return get_vertex_tributary(struc._tributary_caches, story, vertex_idx)
 end
 
 """
@@ -72,7 +72,7 @@ function cache_column_tributary!(struc::BuildingStructure, story::Int, vertex_id
                                   by_cell::Dict{Int, AreaQuantity},
                                   polygons::Dict{Int, Vector{NTuple{2, LengthQuantity}}})
     result = ColumnTributaryResult(total_area, by_cell, polygons)
-    set_vertex_tributary!(struc.tributaries, story, vertex_idx, result)
+    set_vertex_tributary!(struc._tributary_caches, story, vertex_idx, result)
     return result
 end
 
@@ -90,7 +90,7 @@ isnothing(At) && error("Tributaries not computed!")
 ```
 """
 function column_tributary_area(struc::BuildingStructure, col)
-    cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
+    cached = get_vertex_tributary(struc._tributary_caches, col.story, col.vertex_idx)
     isnothing(cached) && return nothing
     return cached.total_area  # Already Unitful
 end
@@ -110,7 +110,7 @@ end
 ```
 """
 function column_tributary_by_cell(struc::BuildingStructure, col)
-    cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
+    cached = get_vertex_tributary(struc._tributary_caches, col.story, col.vertex_idx)
     isnothing(cached) && return Dict{Int, AreaQuantity}()
     return cached.by_cell
 end
@@ -133,7 +133,7 @@ end
 ```
 """
 function column_tributary_polygons(struc::BuildingStructure, col)
-    cached = get_vertex_tributary(struc.tributaries, col.story, col.vertex_idx)
+    cached = get_vertex_tributary(struc._tributary_caches, col.story, col.vertex_idx)
     isnothing(cached) && return Dict{Int, Vector{NTuple{2, LengthQuantity}}}()
     return cached.polygons
 end
@@ -155,7 +155,7 @@ Get cached edge tributaries for a cell, or nothing if not cached.
 """
 function get_cached_edge_tributaries(struc::BuildingStructure, behavior, axis, cell_idx::Int)
     key = tributary_cache_key(behavior, axis)
-    return get_edge_tributaries(struc.tributaries, key, cell_idx)
+    return get_edge_tributaries(struc._tributary_caches, key, cell_idx)
 end
 
 """
@@ -168,7 +168,7 @@ function cache_edge_tributaries!(struc::BuildingStructure, behavior, axis, cell_
                                   strip_geometry::Union{PanelStripGeometry, Nothing}=nothing)
     key = tributary_cache_key(behavior, axis)
     result = CellTributaryResult(tributaries, strip_geometry)
-    set_edge_tributaries!(struc.tributaries, key, cell_idx, result)
+    set_edge_tributaries!(struc._tributary_caches, key, cell_idx, result)
     return result
 end
 
@@ -224,11 +224,18 @@ end
 # =============================================================================
 
 """
-    clear_tributary_cache!(struc)
+    clear_geometry_caches!(struc)
 
-Clear all cached tributaries. Forces recalculation on next access.
+Clear all geometry-dependent caches: tributaries AND analysis models
+(FEA meshes, EFM frames, etc.).  Call when the skeleton changes.
 """
-clear_tributary_cache!(struc::BuildingStructure) = clear!(struc.tributaries)
+function clear_geometry_caches!(struc::BuildingStructure)
+    clear!(struc._tributary_caches)
+    empty!(struc._analysis_caches)
+end
+
+"""Backward-compatible alias."""
+clear_tributary_cache!(struc::BuildingStructure) = clear_geometry_caches!(struc)
 
 """
     list_cached_tributary_keys(struc)
@@ -236,5 +243,28 @@ clear_tributary_cache!(struc::BuildingStructure) = clear!(struc.tributaries)
 List all cached tributary configuration keys.
 """
 function list_cached_tributary_keys(struc::BuildingStructure)
-    return collect(keys(struc.tributaries.edge))
+    return collect(keys(struc._tributary_caches.edge))
+end
+
+# =============================================================================
+# Analysis Cache Accessors
+# =============================================================================
+
+"""
+    _get_analysis_cache(struc, slab_idx, method) -> cache or nothing
+
+Lazily retrieve or create an analysis cache for a (slab, method) pair.
+DDM is stateless (returns nothing).  EFM and FEA caches are created on
+first access and persist across design runs until `clear_geometry_caches!`.
+"""
+function _get_analysis_cache(struc, slab_idx::Int, method)
+    # Import method types from StructuralSizer
+    SR = StructuralSizer
+    method isa SR.DDM && return nothing
+
+    key = method isa SR.FEA ? :fea : :efm
+    slab_caches = get!(struc._analysis_caches, slab_idx, Dict{Symbol, Any}())
+    return get!(slab_caches, key) do
+        key == :fea ? SR.FEAModelCache() : SR.EFMModelCache()
+    end
 end

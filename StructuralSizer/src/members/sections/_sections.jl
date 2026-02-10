@@ -1,16 +1,6 @@
 # ==============================================================================
 # Section Interface
 # ==============================================================================
-# Generic functions for each AbstractSection subtype.
-
-"""Cross-sectional area."""
-function area end
-
-"""Total section depth."""
-function depth end
-
-"""Section width."""
-function width end
 
 """Weight per unit length. Default: section_area(s) * mat.ρ"""
 weight_per_length(s::AbstractSection, mat::AbstractMaterial) = section_area(s) * mat.ρ

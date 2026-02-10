@@ -10,20 +10,81 @@ catch
     _HAS_GUROBI[] = false
 end
 
-# Cache a single Gurobi environment to avoid repeated license checks
-const _GUROBI_ENV = Ref{Any}(nothing)
+# Thread-local Gurobi environment pool.
+# Each thread gets its own Env to avoid contention when parallel solves run.
+const _GUROBI_ENV_POOL = Dict{Int, Any}()
+const _GUROBI_ENV_LOCK = ReentrantLock()
+
+"""
+    _reset_gurobi_env!()
+
+Reset all cached Gurobi environments. Called from `__init__` to clear stale
+pointers that survive precompilation (C pointers are invalid after deserialisation).
+"""
+function _reset_gurobi_env!()
+    lock(_GUROBI_ENV_LOCK) do
+        empty!(_GUROBI_ENV_POOL)
+    end
+end
 
 """
     _get_gurobi_env()
 
-Get or create a cached Gurobi environment. This avoids repeated license
-checks when creating multiple models.
+Get or create a thread-local cached Gurobi environment.  Each thread keeps
+its own `Gurobi.Env` so that parallel `@threads` solves are safe.
 """
 function _get_gurobi_env()
-    if _GUROBI_ENV[] === nothing
-        _GUROBI_ENV[] = Gurobi.Env()
+    tid = Threads.threadid()
+    env = lock(_GUROBI_ENV_LOCK) do
+        get(_GUROBI_ENV_POOL, tid, nothing)
     end
-    return _GUROBI_ENV[]
+    if env === nothing || env.ptr_env == C_NULL
+        new_env = Gurobi.Env()
+        lock(_GUROBI_ENV_LOCK) do
+            _GUROBI_ENV_POOL[tid] = new_env
+        end
+        return new_env
+    end
+    return env
+end
+
+# =============================================================================
+# JuMP / Solver Warm-up
+# =============================================================================
+
+"""
+    _warmup_jump_solvers()
+
+Solve a trivial one-variable MIP through each available backend so that
+JuMP's bridge / MOI layers are JIT-compiled once during package loading.
+Called from `__init__`.
+"""
+function _warmup_jump_solvers()
+    # ── HiGHS ──
+    try
+        m = JuMP.Model(HiGHS.Optimizer)
+        JuMP.set_optimizer_attribute(m, "output_flag", false)
+        JuMP.@variable(m, x >= 0, Int)
+        JuMP.@objective(m, Min, x)
+        JuMP.optimize!(m)
+    catch e
+        @debug "JuMP/HiGHS warmup skipped" exception = e
+    end
+
+    # ── Gurobi ──
+    if _HAS_GUROBI[]
+        try
+            env = _get_gurobi_env()
+            m = JuMP.Model(() -> Gurobi.Optimizer(env))
+            JuMP.set_silent(m)
+            JuMP.@variable(m, x >= 0, Int)
+            JuMP.@objective(m, Min, x)
+            JuMP.optimize!(m)
+        catch e
+            @debug "JuMP/Gurobi warmup skipped" exception = e
+        end
+    end
+    nothing
 end
 
 # =============================================================================
@@ -61,7 +122,7 @@ end
         checker::AbstractCapacityChecker,
         demands::AbstractVector{<:AbstractDemand},
         geometries::AbstractVector{<:AbstractMemberGeometry},
-        catalogue::AbstractVector{<:AbstractSection},
+        catalog::AbstractVector{<:AbstractSection},
         material::AbstractMaterial;
         objective::AbstractObjective = MinVolume(),
         n_max_sections::Integer = 0,
@@ -79,7 +140,7 @@ implements the `is_feasible` interface for the specific design code.
 - `checker`: Capacity checker implementing `is_feasible(checker, ...)` 
 - `demands`: Vector of demand objects (material-specific type)
 - `geometries`: Vector of geometry objects (material-specific type)
-- `catalogue`: Vector of sections to choose from
+- `catalog`: Vector of sections to choose from
 - `material`: Material for capacity calculations
 
 # Keyword Arguments
@@ -88,6 +149,7 @@ implements the `is_feasible` interface for the specific design code.
 - `optimizer`: `:auto`, `:highs`, or `:gurobi`
 - `mip_gap`: MIP optimality gap tolerance
 - `output_flag`: Solver verbosity (0 = silent)
+- `time_limit_sec`: Maximum solver wall-clock time in seconds (default 30)
 
 # Returns
 Named tuple: `(; section_indices, sections, status, objective_value)`
@@ -104,40 +166,67 @@ function optimize_discrete(
     checker::AbstractCapacityChecker,
     demands::AbstractVector{<:AbstractDemand},
     geometries::AbstractVector{<:AbstractMemberGeometry},
-    catalogue::AbstractVector{<:AbstractSection},
+    catalog::AbstractVector{<:AbstractSection},
     material::AbstractMaterial;
     objective::AbstractObjective = MinVolume(),
     n_max_sections::Integer = 0,
     optimizer::Symbol = :auto,
     mip_gap::Real = 1e-4,
     output_flag::Integer = 0,
+    time_limit_sec::Real = 30.0,
+    cache::Union{Nothing, AbstractCapacityCache} = nothing,
 )
     n_groups = length(demands)
     n_groups == length(geometries) || throw(ArgumentError("demands and geometries must have the same length"))
-    n_sections = length(catalogue)
+    n_sections = length(catalog)
     
     # Extract lengths for objective calculation
-    lengths = [g.L for g in geometries]
+    # Strip units — JuMP can't handle Unitful quantities in expressions
+    lengths = [g.L isa Length ? ustrip(u"m", g.L) : Float64(g.L) for g in geometries]
     
-    # Initialize capacity cache (checker creates its own type)
-    cache = create_cache(checker, n_sections)
-    precompute_capacities!(checker, cache, catalogue, material, objective)
+    # Reuse provided cache or create a fresh one
+    if cache === nothing
+        cache = create_cache(checker, n_sections)
+        precompute_capacities!(checker, cache, catalog, material, objective)
+    end
     
-    # Filter feasible sections per group
-    feasible = Dict{Int, Vector{Int}}()
-    for i in 1:n_groups
-        idxs = Int[]
-        for j in 1:n_sections
-            if is_feasible(checker, cache, j, catalogue[j], material, demands[i], geometries[i])
-                push!(idxs, j)
+    # Filter feasible sections per group (each group is independent)
+    feasible = Vector{Vector{Int}}(undef, n_groups)
+    errors = Vector{Union{Nothing, String}}(nothing, n_groups)
+
+    if Threads.nthreads() > 1
+        Threads.@threads for i in 1:n_groups
+            idxs = Int[]
+            for j in 1:n_sections
+                if is_feasible(checker, cache, j, catalog[j], material, demands[i], geometries[i])
+                    push!(idxs, j)
+                end
             end
+            if isempty(idxs)
+                errors[i] = get_feasibility_error_msg(checker, demands[i], geometries[i])
+            end
+            feasible[i] = idxs
         end
-        
-        if isempty(idxs)
-            msg = get_feasibility_error_msg(checker, demands[i], geometries[i])
-            throw(ArgumentError("No feasible sections for group $i: $msg"))
+    else
+        for i in 1:n_groups
+            idxs = Int[]
+            for j in 1:n_sections
+                if is_feasible(checker, cache, j, catalog[j], material, demands[i], geometries[i])
+                    push!(idxs, j)
+                end
+            end
+            if isempty(idxs)
+                errors[i] = get_feasibility_error_msg(checker, demands[i], geometries[i])
+            end
+            feasible[i] = idxs
         end
-        feasible[i] = idxs
+    end
+
+    # Check for infeasible groups (sequential — only on error path)
+    for i in 1:n_groups
+        if !isnothing(errors[i])
+            throw(ArgumentError("No feasible sections for group $i: $(errors[i])"))
+        end
     end
     
     # Build MIP model
@@ -148,9 +237,15 @@ function optimize_discrete(
         # HiGHS expects Bool for output_flag
         JuMP.set_optimizer_attribute(m, "output_flag", output_flag > 0)
         JuMP.set_optimizer_attribute(m, "mip_rel_gap", mip_gap)
+        JuMP.set_optimizer_attribute(m, "time_limit", Float64(time_limit_sec))
     else
-        JuMP.set_optimizer_attribute(m, "OutputFlag", output_flag)
+        if output_flag == 0
+            JuMP.set_silent(m)
+        else
+            JuMP.set_optimizer_attribute(m, "OutputFlag", output_flag)
+        end
         JuMP.set_optimizer_attribute(m, "MIPGap", mip_gap)
+        JuMP.set_optimizer_attribute(m, "TimeLimit", Float64(time_limit_sec))
     end
     
     # Decision: x[i,j] = 1 if group i uses section j
@@ -180,12 +275,12 @@ function optimize_discrete(
     
     # Extract solution
     section_indices = Vector{Int}(undef, n_groups)
-    sections = Vector{eltype(catalogue)}(undef, n_groups)
+    sections = Vector{eltype(catalog)}(undef, n_groups)
     for i in 1:n_groups
         vals = [JuMP.value(x[i, j]) for j in feasible[i]]
         bestj = feasible[i][argmax(vals)]
         section_indices[i] = bestj
-        sections[i] = catalogue[bestj]
+        sections[i] = catalog[bestj]
     end
     
     return (; section_indices, sections, status, objective_value=JuMP.objective_value(m))

@@ -43,9 +43,11 @@ include("design/checks.jl")
 include("design/reinforcement.jl")
 include("design/results.jl")
 
-# Analysis methods (DDM and EFM produce identical MomentAnalysisResult)
+# Analysis methods (all produce identical MomentAnalysisResult)
+include("analysis/common.jl")   # shared setup (_moment_analysis_setup)
 include("analysis/ddm.jl")
 include("analysis/efm.jl")
+include("analysis/fea.jl")
 
 # Main design pipeline (orchestration only)
 include("pipeline.jl")

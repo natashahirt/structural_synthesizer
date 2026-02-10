@@ -1,20 +1,7 @@
 # Segment and Member initialization from skeleton edges
 
-"""Compute segment length from skeleton edge."""
-function get_segment_length(skel::BuildingSkeleton{T}, edge_idx::Int) where T
-    seg = skel.edges[edge_idx]
-    L = Meshes.measure(seg)
-    # If the structure uses plain floats, ensure we return meters.
-    # If it uses Quantities, return as-is (assuming consistent unit system).
-    if T <: Unitful.Quantity
-        return L
-    else
-        return ustrip(uconvert(u"m", L))
-    end
-end
-
 """
-Initialize segments from all skeleton edges.
+Initialize segments from all skeleton edges, reading lengths from the geometry cache.
 
 Default: Lb = L (unbraced, conservative). Call `update_bracing!` after to set Lb = 0
 for slab-supported beams.
@@ -24,9 +11,10 @@ function initialize_segments!(struc::BuildingStructure{T}; default_Cb=1.0) where
     empty!(struc.segments)
     
     for edge_idx in eachindex(skel.edges)
-        L = get_segment_length(skel, edge_idx)
-        # Default: full span unbraced (conservative)
-        segment = Segment(edge_idx, L; Lb=L, Cb=default_Cb)
+        L = edge_length(skel, edge_idx)
+        # If the structure uses plain floats, strip to meters
+        L_seg = T <: Unitful.Quantity ? L : ustrip(u"m", L)
+        segment = Segment(edge_idx, L_seg; Lb=L_seg, Cb=default_Cb)
         push!(struc.segments, segment)
     end
     
@@ -54,6 +42,14 @@ function initialize_members!(struc::BuildingStructure{T};
     empty!(struc.columns)
     empty!(struc.struts)
     
+    # Ensure geometry cache is available (always succeeds, even for faceless
+    # beam-only skeletons — rebuild produces well-typed empty fields).
+    if isnothing(skel.geometry)
+        rebuild_geometry_cache!(skel)
+    end
+    vc  = skel.geometry.vertex_coords
+    efc = skel.geometry.edge_face_counts
+    
     # Get edge groups from skeleton
     beam_edges = Set(get(skel.groups_edges, :beams, Int[]))
     column_edges = Set(get(skel.groups_edges, :columns, Int[]))
@@ -64,18 +60,17 @@ function initialize_members!(struc::BuildingStructure{T};
         
         if edge_idx in column_edges
             # Create Column
-            # Find which vertex this column connects to (bottom vertex for column position)
             v1, v2 = skel.edge_indices[edge_idx]
-            z1 = Meshes.coords(skel.vertices[v1]).z
-            z2 = Meshes.coords(skel.vertices[v2]).z
-            # Bottom vertex is the one with lower z
-            vertex_idx = z1 < z2 ? v1 : v2
+            z1 = vc[v1, 3]
+            z2 = vc[v2, 3]
+            # Top vertex is at the slab level (shares vertex index with face vertices)
+            vertex_idx = z1 > z2 ? v1 : v2
             
-            # Determine story from edge level
-            story = get_edge_story(skel, edge_idx)
+            # Read story from geometry cache
+            story = edge_story(skel, edge_idx)
             
-            # Classify position based on boundary edges (robust method)
-            position, boundary_edge_dirs = classify_column_position(skel, vertex_idx)
+            # Classify position using cached coords + edge-face counts
+            position, boundary_edge_dirs = classify_column_position(skel, vertex_idx, vc, efc)
             
             col = Column(seg_idx, seg.L; 
                         Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
@@ -117,7 +112,7 @@ Compute and store Voronoi vertex tributary areas in the TributaryCache.
 For each cell:
 1. Get the cell's corner vertices (column positions)
 2. Compute Voronoi clipped to the cell boundary
-3. Store in `struc.tributaries.vertex[story][vertex_idx]`
+3. Store in `struc._tributary_caches.vertex[story][vertex_idx]`
 
 Access via:
 - `column_tributary_area(struc, col)` → total area (m²)
@@ -131,20 +126,17 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     isempty(struc.columns) && return struc
     
     skel = struc.skeleton
-    
-    # Type aliases from Asap: AreaQuantity = typeof(1.0u"m^2"), LengthQuantity = typeof(1.0u"m")
+    vc = skel.geometry.vertex_coords
     
     # Build (x,y) → Column lookup (rounded to avoid FP precision issues)
     col_by_xy = Dict{Tuple{Float64, Float64}, Vector{Column{T}}}()
     for col in struc.columns
-        c = Meshes.coords(skel.vertices[col.vertex_idx])
-        xy = (round(Float64(ustrip(u"m", c.x)), digits=6), 
-              round(Float64(ustrip(u"m", c.y)), digits=6))
+        xy = (round(vc[col.vertex_idx, 1], digits=6), 
+              round(vc[col.vertex_idx, 2], digits=6))
         push!(get!(col_by_xy, xy, Column{T}[]), col)
     end
     
     # Temporary storage: (story, vertex_idx) → accumulated data
-    # Using Unitful quantities for type safety
     col_by_cell = Dict{Tuple{Int, Int}, Dict{Int, AreaQuantity}}()
     col_polygons = Dict{Tuple{Int, Int}, Dict{Int, Vector{NTuple{2, LengthQuantity}}}}()
     col_totals = Dict{Tuple{Int, Int}, AreaQuantity}()
@@ -154,18 +146,17 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
         v_indices = skel.face_vertex_indices[cell.face_idx]
         length(v_indices) < 3 && continue
         
-        # Get cell elevation for matching columns
-        first_vert = skel.vertices[v_indices[1]]
-        cell_z = Float64(ustrip(u"m", Meshes.coords(first_vert).z))
+        # Get cell elevation from cached coordinates
+        cell_z = vc[v_indices[1], 3]
         
-        # Extract vertex positions as tuples (in meters, raw Float64 for Voronoi algorithm)
-        col_positions = NTuple{2, Float64}[]
-        cell_xys = Tuple{Float64, Float64}[]
-        for vi in v_indices
-            c = Meshes.coords(skel.vertices[vi])
-            xy = (Float64(ustrip(u"m", c.x)), Float64(ustrip(u"m", c.y)))
-            push!(col_positions, xy)
-            push!(cell_xys, (round(xy[1], digits=6), round(xy[2], digits=6)))
+        # Extract vertex positions from cached coordinates
+        n_v = length(v_indices)
+        col_positions = Vector{NTuple{2, Float64}}(undef, n_v)
+        cell_xys = Vector{Tuple{Float64, Float64}}(undef, n_v)
+        @inbounds for (k, vi) in enumerate(v_indices)
+            x, y = vc[vi, 1], vc[vi, 2]
+            col_positions[k] = (x, y)
+            cell_xys[k] = (round(x, digits=6), round(y, digits=6))
         end
         
         # Compute Voronoi within cell boundary (boundary = cell vertices)
@@ -177,13 +168,10 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
             cols = get(col_by_xy, xy, nothing)
             isnothing(cols) && continue
             
-            # Find the column whose TOP is at this floor level
+            # vertex_idx is at the top (slab level) — match directly
             matched_col = nothing
             for col in cols
-                v_c = Meshes.coords(skel.vertices[col.vertex_idx])
-                col_bottom_z = Float64(ustrip(u"m", v_c.z))
-                col_top_z = col_bottom_z + Float64(ustrip(u"m", col.base.L))
-                if abs(col_top_z - cell_z) < 0.1  # Within 10cm tolerance
+                if abs(vc[col.vertex_idx, 3] - cell_z) < 0.1
                     matched_col = col
                     break
                 end
@@ -198,7 +186,6 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
                 col_totals[key] = 0.0u"m^2"
             end
             
-            # Convert raw Float64 from Voronoi to Unitful quantities
             area_unitful = trib.area * u"m^2"
             polygon_unitful = [(x * u"m", y * u"m") for (x, y) in trib.polygon]
             
@@ -218,50 +205,23 @@ function compute_column_tributaries!(struc::BuildingStructure{T}) where T
     end
     
     # Populate tributary fields directly on each Column for Sizer access
-    n_populated = 0
     for col in struc.columns
         key = (col.story, col.vertex_idx)
         if haskey(col_by_cell, key)
             col.tributary_cell_indices = Set(keys(col_by_cell[key]))
-            # Store areas as raw Float64 in m² for Sizer to use without Unitful lookups
             col.tributary_cell_areas = Dict{Int, Float64}(
                 cell_idx => ustrip(u"m^2", area) 
                 for (cell_idx, area) in col_by_cell[key]
             )
-            n_populated += 1
         end
     end
-    
-    
-    n_cached = length(col_totals)
-    @info "Computed Voronoi tributary areas" columns_with_tribs=n_cached total_columns=length(struc.columns) columns_populated=n_populated
     
     return struc
 end
 
-"""
-    get_edge_story(skel, edge_idx) -> Int
-
-Determine which story an edge belongs to based on its z-coordinate.
-"""
-function get_edge_story(skel::BuildingSkeleton, edge_idx::Int)
-    v1, v2 = skel.edge_indices[edge_idx]
-    z1 = Meshes.coords(skel.vertices[v1]).z
-    z2 = Meshes.coords(skel.vertices[v2]).z
-    z_mid = (z1 + z2) / 2
-    
-    # Find which story interval contains z_mid
-    for (level_idx, story) in skel.stories
-        if abs(story.elevation - z_mid) < 0.1u"m" || 
-           (level_idx > 0 && z_mid > skel.stories_z[level_idx] && z_mid <= story.elevation)
-            return level_idx
-        end
-    end
-    return 0
-end
 
 """
-    classify_column_position(skel, vertex_idx) -> (position::Symbol, boundary_edge_dirs::Vector{NTuple{2,Float64}})
+    classify_column_position(skel, vertex_idx[, vertex_coords, edge_face_counts])
 
 Classify column position based on whether it touches boundary edges (edges in only one face).
 
@@ -272,57 +232,64 @@ needed for DDM/EFM analysis.
 # Returns
 - `position`: :interior (no boundary edges), :edge (1 boundary edge), :corner (2+ boundary edges)
 - `boundary_edge_dirs`: Unit vectors along each boundary edge (for DDM exterior support detection)
+
+The 4-argument overload uses precomputed `vertex_coords` (N×3 Float64 matrix) and
+`edge_face_counts` (Dict{Int,Int}) for O(1) lookups instead of O(n_faces) scans.
 """
-function classify_column_position(skel::BuildingSkeleton, vertex_idx::Int)
-    v_coords = Meshes.coords(skel.vertices[vertex_idx])
-    v_z = v_coords.z
-    v_x = ustrip(u"m", v_coords.x)
-    v_y = ustrip(u"m", v_coords.y)
+function classify_column_position(skel::BuildingSkeleton, vertex_idx::Int,
+                                  vertex_coords::Matrix{Float64},
+                                  edge_face_counts::Dict{Int,Int})
+    v_x = vertex_coords[vertex_idx, 1]
+    v_y = vertex_coords[vertex_idx, 2]
+    v_z = vertex_coords[vertex_idx, 3]
     
     # Get all horizontal neighbors
     neighbors = Graphs.neighbors(skel.graph, vertex_idx)
-    horizontal_neighbors = filter(neighbors) do n_idx
-        n_z = Meshes.coords(skel.vertices[n_idx]).z
-        abs(n_z - v_z) < 0.01u"m"
-    end
-    
-    # Check each horizontal edge for boundary status
     boundary_edge_dirs = NTuple{2, Float64}[]
     
-    for n_idx in horizontal_neighbors
-        # Find the edge index for this vertex pair
+    for n_idx in neighbors
+        n_z = vertex_coords[n_idx, 3]
+        abs(n_z - v_z) > 0.01 && continue  # skip non-horizontal neighbors
+        
         edge_idx = find_edge(skel, vertex_idx, n_idx)
         isnothing(edge_idx) && continue
         
-        # Is this edge a boundary edge? (only belongs to one face)
-        faces_with_edge = count(skel.face_edge_indices) do face_edges
-            edge_idx in face_edges
-        end
+        # Boundary check via precomputed dict (O(1) instead of O(n_faces))
+        get(edge_face_counts, edge_idx, 0) == 1 || continue
         
-        if faces_with_edge == 1
-            # This is a boundary edge — record its direction
-            n_coords = Meshes.coords(skel.vertices[n_idx])
-            dx = ustrip(u"m", n_coords.x) - v_x
-            dy = ustrip(u"m", n_coords.y) - v_y
-            len = hypot(dx, dy)
-            if len > 1e-9
-                push!(boundary_edge_dirs, (dx/len, dy/len))
-            end
+        dx = vertex_coords[n_idx, 1] - v_x
+        dy = vertex_coords[n_idx, 2] - v_y
+        len = hypot(dx, dy)
+        if len > 1e-9
+            push!(boundary_edge_dirs, (dx/len, dy/len))
         end
     end
     
-    # Classify based on boundary edge count
     n_boundary = length(boundary_edge_dirs)
-    
-    position = if n_boundary == 0
-        :interior
-    elseif n_boundary >= 2
-        :corner
-    else
-        :edge
-    end
-    
+    position = n_boundary == 0 ? :interior : n_boundary >= 2 ? :corner : :edge
     return (position, boundary_edge_dirs)
+end
+
+# Legacy overload — uses geometry cache if available, else builds on-the-fly
+function classify_column_position(skel::BuildingSkeleton, vertex_idx::Int)
+    if !isnothing(skel.geometry)
+        return classify_column_position(skel, vertex_idx,
+                                        skel.geometry.vertex_coords,
+                                        skel.geometry.edge_face_counts)
+    end
+    # Fallback for uncached skeleton (shouldn't happen in normal flow)
+    vc_tmp = Matrix{Float64}(undef, length(skel.vertices), 3)
+    for i in eachindex(skel.vertices)
+        c = Meshes.coords(skel.vertices[i])
+        vc_tmp[i, 1] = ustrip(u"m", c.x)
+        vc_tmp[i, 2] = ustrip(u"m", c.y)
+        vc_tmp[i, 3] = ustrip(u"m", c.z)
+    end
+    efc_tmp = Dict{Int,Int}()
+    for fe in skel.face_edge_indices, e in fe
+        efc_tmp[e] = get(efc_tmp, e, 0) + 1
+    end
+    return classify_column_position(skel, vertex_idx, vc_tmp, efc_tmp)
 end
 
 """
@@ -496,61 +463,51 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
     skel = struc.skeleton
     beam_edge_ids = Set(get(skel.groups_edges, member_edge_group, Int[]))
 
-    # Determine member type from edge group name
-    member_type = member_edge_group == :columns ? :columns : 
+    member_type = member_edge_group == :columns ? :columns :
                   member_edge_group == :struts ? :struts : :beams
-    
-    # Get the appropriate member array
     member_array = member_type == :columns ? struc.columns :
                    member_type == :struts ? struc.struts : struc.beams
 
-    # Build member groups if needed
-    isempty(struc.member_groups) && build_member_groups!(struc; member_type=member_type)
+    # Always rebuild — groups are member-type-specific, and the shared dict
+    # may hold stale groups from a previous call with a different member type.
+    build_member_groups!(struc; member_type=member_type)
 
-    # Only include groups that actually contain at least one segment in `beam_edge_ids`.
-    all_group_ids = sort!(collect(keys(struc.member_groups)))  # deterministic ordering
+    all_group_ids = sort!(collect(keys(struc.member_groups)))
+    n_groups = length(all_group_ids)
 
-    group_ids = UInt64[]
-    # `StructuralSizer.MemberDemand(idx; ...)` intentionally returns `MemberDemand{Any}`
-    # to support mixed numeric types (and Unitful quantities in some callers).
-    demands = StructuralSizer.MemberDemand{Any}[]
-    
-    # We enforce base SI units (meters) for geometry passed to the optimizer,
-    # consistent with `get_segment_length` returning meters for Float64 structures.
-    L_totals = Float64[]
-    Lb_govs  = Float64[]
-    Cb_govs  = Float64[]
-    Kx_govs  = Float64[]
-    Ky_govs  = Float64[]
+    # Use lazy-cached element-to-loads map (avoids O(n_loads) rebuild per call)
+    element_loads = Asap.get_elemental_loads(struc.asap_model)
 
-    for gid in all_group_ids
+    # Preallocated per-group parallel storage
+    par_has  = Vector{Bool}(undef, n_groups)
+    par_Pu_c = Vector{Float64}(undef, n_groups)
+    par_Pu_t = Vector{Float64}(undef, n_groups)
+    par_Mux  = Vector{Float64}(undef, n_groups)
+    par_Muy  = Vector{Float64}(undef, n_groups)
+    par_Vus  = Vector{Float64}(undef, n_groups)
+    par_Vuw  = Vector{Float64}(undef, n_groups)
+    par_δ    = Vector{Float64}(undef, n_groups)
+    par_Ir   = Vector{Float64}(undef, n_groups)
+    par_L    = Vector{Float64}(undef, n_groups)
+    par_Lb   = Vector{Float64}(undef, n_groups)
+    par_Cb   = Vector{Float64}(undef, n_groups)
+    par_Kx   = Vector{Float64}(undef, n_groups)
+    par_Ky   = Vector{Float64}(undef, n_groups)
+
+    Threads.@threads for g in 1:n_groups
+        gid = all_group_ids[g]
         mg = struc.member_groups[gid]
 
-        # Envelope over segments in the requested edge group
-        Pu_comp = 0.0
-        Pu_tens = 0.0
-        Mux = 0.0
-        Muy = 0.0
-        Vu_strong = 0.0
-        Vu_weak = 0.0
-
-        # Geometry accumulation
-        L_total = 0.0
-        Lb_gov = 0.0
-        Cb_gov = Inf
-        Kx_gov = 0.0
-        Ky_gov = 0.0
-        
-        has_any_segment = false
-
-        # Track max deflection and reference I for deflection scaling
-        δ_max = 0.0
-        I_ref = 0.0
+        Pu_comp = 0.0; Pu_tens = 0.0
+        Mux = 0.0; Muy = 0.0
+        Vu_strong = 0.0; Vu_weak = 0.0
+        L_total = 0.0; Lb_gov = 0.0; Cb_gov = Inf
+        Kx_gov = 0.0; Ky_gov = 0.0
+        has_any = false
+        δ_max = 0.0; I_ref = 0.0
 
         for m_idx in mg.member_indices
-            m = member_array[m_idx]  # Index into appropriate member array
-            
-            # Group geometry governance (take worst case K across members in group)
+            m = member_array[m_idx]
             Kx_gov = max(Kx_gov, m.base.Kx)
             Ky_gov = max(Ky_gov, m.base.Ky)
 
@@ -559,113 +516,101 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
                 edge_idx = seg.edge_idx
                 edge_idx in beam_edge_ids || continue
 
-                has_any_segment = true
-                
-                # Assume seg.L and seg.Lb are already compatible (meters or consistent units).
-                len_val = seg.L isa Unitful.Quantity ? ustrip(uconvert(u"m", seg.L)) : seg.L
-                lb_val  = seg.Lb isa Unitful.Quantity ? ustrip(uconvert(u"m", seg.Lb)) : seg.Lb
-
+                has_any = true
+                len_val = to_meters(seg.L)
+                lb_val  = to_meters(seg.Lb)
                 L_total += len_val
                 Lb_gov = max(Lb_gov, lb_val)
                 Cb_gov = min(Cb_gov, seg.Cb)
 
                 el = struc.asap_model.elements[edge_idx]
-                f = Asap.InternalForces(el, struc.asap_model; resolution=resolution)
+                el_loads = element_loads[el.elementID]
 
-                # Convention check:
-                # ASAP P: Tension is positive. Compression is negative.
-                P_vals = f.P
-                min_P = minimum(P_vals)
-                max_P = maximum(P_vals)
-                
-                if min_P < 0
-                    Pu_comp = max(Pu_comp, abs(min_P))
-                end
-                if max_P > 0
-                    Pu_tens = max(Pu_tens, max_P)
-                end
+                # Combined forces + displacements in one pass (shared L, xinc, load iteration)
+                fd = Asap.ElementForceAndDisplacement(el, el_loads; resolution=resolution)
+                f = fd.forces
+                edisp = fd.displacements
 
-                # ASAP My: Moment about local y-axis. (Strong axis bending for W-shapes)
-                # ASAP Mz: Moment about local z-axis. (Weak axis bending)
-                # Strong Axis: My (moment), Vz (shear)
-                Mux = max(Mux, maximum(abs.(f.My)))
-                Vu_strong = max(Vu_strong, maximum(abs.(f.Vz)))
+                min_P = minimum(f.P); max_P = maximum(f.P)
+                if min_P < 0; Pu_comp = max(Pu_comp, abs(min_P)); end
+                if max_P > 0; Pu_tens = max(Pu_tens, max_P); end
 
-                # Weak Axis: Mz (moment), Vy (shear)
-                Muy = max(Muy, maximum(abs.(f.Mz)))
-                Vu_weak = max(Vu_weak, maximum(abs.(f.Vy)))
+                Mux = max(Mux, mapreduce(abs, max, f.My))
+                Vu_strong = max(Vu_strong, mapreduce(abs, max, f.Vz))
+                Muy = max(Muy, mapreduce(abs, max, f.Mz))
+                Vu_weak = max(Vu_weak, mapreduce(abs, max, f.Vy))
 
-                # Local deflection for serviceability check
-                # ulocal[3,:] is the local Z deflection (transverse to beam axis)
-                edisp = Asap.ElementDisplacements(el, struc.asap_model; resolution=resolution)
-                δ_local = maximum(abs.(edisp.ulocal[3, :]))  # Max local Z deflection
+                δ_local = mapreduce(j -> abs(edisp.ulocal[3, j]), max, 1:size(edisp.ulocal, 2))
                 δ_max = max(δ_max, δ_local)
-                
-                # Get reference moment of inertia from current section (for deflection scaling)
-                # Deflection scales as 1/I, so: δ_new = δ_current * I_current / I_new
-                I_current = ustrip(u"m^4", el.section.Ix)  # Strong axis I
-                I_ref = max(I_ref, I_current)  # Use largest I as reference (conservative)
+
+                I_current = ustrip(u"m^4", el.section.Ix)
+                I_ref = max(I_ref, I_current)
             end
         end
 
-        has_any_segment || continue
+        par_has[g]  = has_any
+        par_Pu_c[g] = Pu_comp; par_Pu_t[g] = Pu_tens
+        par_Mux[g]  = Mux;     par_Muy[g]  = Muy
+        par_Vus[g]  = Vu_strong; par_Vuw[g] = Vu_weak
+        par_δ[g]    = δ_max;   par_Ir[g]   = I_ref
+        par_L[g]    = L_total; par_Lb[g]   = Lb_gov
+        par_Cb[g]   = Cb_gov;  par_Kx[g]   = Kx_gov; par_Ky[g] = Ky_gov
+    end
 
-        push!(group_ids, gid)
-        g_idx = length(group_ids)  # group index in the filtered ordering
-        
-        d = StructuralSizer.MemberDemand(g_idx; 
-            Pu_c=Pu_comp, Pu_t=Pu_tens, 
-            Mux=Mux, Muy=Muy, 
-            Vu_strong=Vu_strong, Vu_weak=Vu_weak,
-            δ_max=δ_max, I_ref=I_ref)
-            
+    # Sequential filter & renumber indices
+    group_ids = UInt64[]
+    demands   = StructuralSizer.MemberDemand{Float64}[]
+    L_totals  = Float64[]
+    Lb_govs   = Float64[]
+    Cb_govs   = Float64[]
+    Kx_govs   = Float64[]
+    Ky_govs   = Float64[]
+
+    for g in 1:n_groups
+        par_has[g] || continue
+        push!(group_ids, all_group_ids[g])
+        g_idx = length(group_ids)
+
+        d = StructuralSizer.MemberDemand(g_idx;
+            Pu_c=par_Pu_c[g], Pu_t=par_Pu_t[g],
+            Mux=par_Mux[g], Muy=par_Muy[g],
+            Vu_strong=par_Vus[g], Vu_weak=par_Vuw[g],
+            δ_max=par_δ[g], I_ref=par_Ir[g])
+
         push!(demands, d)
-        push!(L_totals, L_total)
-        push!(Lb_govs, Lb_gov)
-        push!(Cb_govs, Cb_gov)
-        push!(Kx_govs, Kx_gov)
-        push!(Ky_govs, Ky_gov)
+        push!(L_totals, par_L[g])
+        push!(Lb_govs, par_Lb[g])
+        push!(Cb_govs, par_Cb[g])
+        push!(Kx_govs, par_Kx[g])
+        push!(Ky_govs, par_Ky[g])
     end
 
     return group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs
 end
 
 """
-    size_members_discrete!(
-        struc::BuildingStructure;
-        catalogue=StructuralSizer.all_W(),
-        material=StructuralSizer.A992_Steel,
-        member_edge_group::Symbol=:beams,
-        max_depth=Inf*u"m",
-        n_max_sections::Integer=0,
-        optimizer::Symbol=:auto,
-        resolution::Int=200,
-        reanalyze::Bool=true,
-        deflection_limit::Union{Nothing, Real}=nothing,
-    )
+    size_steel_members!(struc; catalog, material, member_edge_group, ...)
 
-Discrete, simultaneous catalog-based sizing for physical members using a MIP.
+Discrete, simultaneous catalog-based sizing for steel members using a MIP.
 Respects `Member.group_id` by solving at the group level.
 
-!!! warning "Steel-Specific Implementation"
-    This function is currently hardcoded for steel members using `AISCChecker` and
-    `StructuralSizer.to_asap_section`. To support other materials (concrete, timber), the
-    design checker and ASAP section conversion need to be parameterized by material.
-    See `StructuralSizer` for the generic checker interface.
+Uses `AISCChecker` for capacity checks and `StructuralSizer.to_asap_section`
+for ASAP model updates.
 
 # Arguments
-- `deflection_limit::Union{Nothing, Real}=nothing`: Optional deflection limit as a ratio.
-  E.g., `1/360` means max local deflection ≤ L/360 (typical floor beam limit).
-  If `nothing`, no deflection check is performed (strength-only).
+- `catalog`: Steel section catalog (default: all W shapes)
+- `material`: Steel grade (default: A992_Steel)
+- `member_edge_group`: Which edge group to size — `:beams`, `:columns`, `:struts` (default: `:beams`)
+- `deflection_limit`: L/δ ratio, e.g. `1/360`. `nothing` = strength-only (default: `nothing`)
 
 Side effects:
-- populates/overwrites `struc.member_groups[gid].section` (shared for ASAP updates)
-- populates each `member.section` and `member.volumes` for individual access
+- populates/overwrites `struc.member_groups[gid].section`
+- populates each `member.section` and `member.volumes`
 - updates ASAP element sections for all member segments in `member_edge_group`
 """
-function size_members_discrete!(
+function size_steel_members!(
     struc::BuildingStructure;
-    catalogue=StructuralSizer.all_W(),
+    catalog=StructuralSizer.all_W(),
     material=StructuralSizer.A992_Steel,
     member_edge_group::Symbol=:beams,
     max_depth=Inf * u"m",
@@ -673,26 +618,12 @@ function size_members_discrete!(
     optimizer::Symbol=:auto,
     resolution::Int=200,
     reanalyze::Bool=true,
-    gravity_factor::Quantity=9.81u"m/s^2",  # gravity acceleration
+    gravity_factor::Quantity=GRAVITY,  # standard gravity (9.80665 m/s²)
     deflection_limit::Union{Nothing, Real}=nothing,  # e.g., 1/360
     skel = struc.skeleton,
     edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[])))
     
-    # Add gravity loads to all elements in the member group
-    # GravityLoad reads from element.section at calculation time, so it will automatically
-    # update when sections change during optimization
-    existing_gravity_elements = Set()
-    for load in struc.asap_model.loads
-        if isa(load, Asap.GravityLoad)
-            push!(existing_gravity_elements, load.element)
-        end
-    end
-    
-    for edge_idx in edge_ids_in_group
-        el = struc.asap_model.elements[edge_idx]
-        el in existing_gravity_elements && continue  # Skip if gravity load already exists
-        push!(struc.asap_model.loads, Asap.GravityLoad(el, gravity_factor))
-    end
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
     
     group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
         member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
@@ -712,7 +643,7 @@ function size_members_discrete!(
     )
     
     result = StructuralSizer.optimize_discrete(
-        checker, demands, geometries, catalogue, material;
+        checker, demands, geometries, catalog, material;
         n_max_sections=n_max_sections,
         optimizer=optimizer,
     )
@@ -757,24 +688,548 @@ function size_members_discrete!(
     end
 
     defl_str = isnothing(deflection_limit) ? "none" : "L/$(Int(round(1/deflection_limit)))"
-    @info "Sized $(length(group_ids)) member groups using discrete MIP" optimizer=optimizer n_max_sections=n_max_sections deflection_limit=defl_str
+    @info "Sized $(length(group_ids)) steel member groups via MIP" optimizer=optimizer n_max_sections=n_max_sections deflection_limit=defl_str
+    return struc
+end
+
+
+# =============================================================================
+# T-Beam Flange Parameters (ACI 318-19 §6.3.2.1)
+# =============================================================================
+
+"""
+    _compute_flange_params(struc, group_ids, L_totals; bw_default=12.0u"inch")
+        -> (bf_vec, hf_vec)
+
+Compute effective T-beam flange width and slab thickness per beam group.
+
+For each beam group:
+1. Finds adjacent slabs via edge→slab mapping
+2. Extracts slab thickness (`hf`) as the minimum across adjacent slabs
+3. Determines beam position (`:interior` or `:edge`) from `edge_face_counts`
+   — boundary edges (count=1) indicate edge beams
+4. Reads the beam's `tributary_width` as the clear spacing `sw`
+5. Computes effective flange width via `effective_flange_width`
+
+Groups without adjacent slabs get `bf = nothing`, `hf = nothing`.
+
+# Returns
+`(bf_vec, hf_vec)` — vectors of `Union{Nothing, Length}` per group.
+"""
+function _compute_flange_params(
+    struc::BuildingStructure,
+    group_ids::Vector{UInt64},
+    L_totals::Vector{Float64};
+    bw_default::Unitful.Length = 12.0u"inch",
+)
+    skel = struc.skeleton
+    efc = skel.geometry.edge_face_counts
+
+    # Build edge → slab thickness mapping
+    edge_slab_hf = Dict{Int, Vector{typeof(1.0u"m")}}()
+    for slab in struc.slabs
+        hf = uconvert(u"m", StructuralSizer.total_depth(slab.result))
+        for cell_idx in slab.cell_indices
+            face_idx = struc.cells[cell_idx].face_idx
+            for e_idx in skel.face_edge_indices[face_idx]
+                push!(get!(Vector{typeof(1.0u"m")}, edge_slab_hf, e_idx), hf)
+            end
+        end
+    end
+
+    member_array = struc.beams
+    n_groups = length(group_ids)
+
+    bf_vec = Vector{Union{Nothing, typeof(1.0u"m")}}(nothing, n_groups)
+    hf_vec = Vector{Union{Nothing, typeof(1.0u"m")}}(nothing, n_groups)
+
+    for (g_idx, gid) in enumerate(group_ids)
+        mg = struc.member_groups[gid]
+
+        slab_hfs = typeof(1.0u"m")[]
+        max_face_count = 0
+        trib_w_m = 0.0  # meters
+
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+
+            # Tributary width (beam spacing proxy)
+            if !isnothing(m.tributary_width)
+                tw = m.tributary_width isa Unitful.Quantity ?
+                    ustrip(u"m", m.tributary_width) : Float64(m.tributary_width)
+                trib_w_m = max(trib_w_m, tw)
+            end
+
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                if haskey(edge_slab_hf, edge_idx)
+                    append!(slab_hfs, edge_slab_hf[edge_idx])
+                    max_face_count = max(max_face_count, get(efc, edge_idx, 0))
+                end
+            end
+        end
+
+        # No adjacent slabs → stays rectangular
+        isempty(slab_hfs) && continue
+
+        hf = minimum(slab_hfs)
+        hf_vec[g_idx] = hf
+
+        # Position: boundary edge (count=1) → :edge, interior (count≥2) → :interior
+        pos = max_face_count >= 2 ? :interior : :edge
+
+        # Span and spacing
+        ln = L_totals[g_idx] * u"m"
+        sw = trib_w_m > 0 ? trib_w_m * u"m" : ln / 4  # fallback
+
+        bf = StructuralSizer.effective_flange_width(
+            bw=bw_default, hf=hf, sw=sw, ln=ln, position=pos)
+        bf_vec[g_idx] = bf
+    end
+
+    return bf_vec, hf_vec
+end
+
+# =============================================================================
+# Beam Sizing Dispatcher
+# =============================================================================
+
+"""
+    size_beams!(struc, opts; method=:discrete, ...)
+
+Size beams, dispatching on material (steel vs concrete) and method (:discrete / :nlp).
+
+# Dispatch Table
+| Options type         | method     | Implementation                           |
+|:---------------------|:-----------|:-----------------------------------------|
+| SteelMemberOptions   | :discrete  | `size_steel_members!`                    |
+| ConcreteBeamOptions  | :discrete  | MIP via `size_beams` or `size_tbeams`    |
+| ConcreteBeamOptions  | :nlp       | NLP via `size_rc_beams_nlp` / `_tbeams`  |
+
+If no options are provided, falls back to `struc.design_parameters.beams`,
+then to `SteelBeamOptions()`.
+
+The concrete beam path extracts Mu, Vu, and Nu from the Asap analysis
+results and passes them through to the ACI 318 beam checker. When Nu > 0
+(axial compression from frame action), Vc is increased per ACI §22.5.6.1.
+
+When `ConcreteBeamOptions.include_flange = true`, the dispatcher automatically:
+- Reads slab thicknesses from `struc.slabs` (slabs must be sized first)
+- Computes effective flange widths per ACI 318-19 §6.3.2.1 using beam
+  tributary widths and edge/interior classification
+- Routes to `size_tbeams` (discrete) or `size_rc_tbeams_nlp` (NLP)
+
+# Example
+```julia
+# Steel beams with L/360 deflection check
+size_beams!(struc, SteelBeamOptions(deflection_limit = 1/360))
+
+# RC rectangular beams (discrete catalog MIP)
+size_beams!(struc, ConcreteBeamOptions(grade = NWC_5000))
+
+# RC T-beams — auto-detects flange from slab data
+size_beams!(struc, ConcreteBeamOptions(grade = NWC_5000, include_flange = true))
+```
+"""
+function size_beams!(
+    struc::BuildingStructure,
+    opts::Union{StructuralSizer.BeamOptions, Nothing} = nothing;
+    method::Symbol = :discrete,
+    resolution::Int = 200,
+    reanalyze::Bool = true,
+    gravity_factor::Quantity = GRAVITY,
+)
+    effective_opts = if !isnothing(opts)
+        opts
+    elseif !isnothing(struc.design_parameters) && !isnothing(struc.design_parameters.beams)
+        struc.design_parameters.beams
+    else
+        StructuralSizer.SteelBeamOptions()
+    end
+
+    _size_beams_impl!(struc, effective_opts, Val(method);
+                      resolution, reanalyze, gravity_factor)
+end
+
+# --- Steel beams (discrete) ---
+function _size_beams_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.SteelMemberOptions,
+    ::Val{:discrete};
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    catalog = isnothing(opts.custom_catalog) ?
+        StructuralSizer.steel_column_catalog(opts.section_type, opts.catalog) :
+        opts.custom_catalog
+
+    size_steel_members!(struc;
+        catalog       = catalog,
+        material        = opts.material,
+        member_edge_group = :beams,
+        max_depth       = opts.max_depth,
+        n_max_sections  = opts.n_max_sections,
+        optimizer       = opts.optimizer,
+        resolution      = resolution,
+        reanalyze       = reanalyze,
+        gravity_factor  = gravity_factor,
+        deflection_limit = opts.deflection_limit,
+    )
+end
+
+# --- Shared helper: apply MIP/NLP beam results to the BuildingStructure ---
+"""Apply sized sections (from MIP `result.sections`) to member groups, members, and ASAP elements."""
+function _apply_beam_results!(
+    struc::BuildingStructure,
+    result,
+    group_ids::Vector{UInt64},
+    member_array,
+    edge_ids_in_group::Set{Int},
+    mat::StructuralSizer.AbstractMaterial,
+)
+    for (g_idx, gid) in enumerate(group_ids)
+        chosen = result.sections[g_idx]
+
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+
+        asap_sec = StructuralSizer.to_asap_section(chosen, mat)
+
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            set_section!(m, chosen)
+            set_volumes!(m, MaterialVolumes(mat => StructuralSizer.section_area(chosen) * L_total))
+
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+end
+
+# --- Concrete beams (discrete MIP) ---
+function _size_beams_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.ConcreteBeamOptions,
+    ::Val{:discrete};
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    edge_ids_in_group = Set(get(skel.groups_edges, :beams, Int[]))
+
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+
+    # Extract demands from analysis (MemberDemand in SI: N, N·m, m)
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=:beams, resolution=resolution)
+
+    isempty(group_ids) && return struc
+
+    member_array = struc.beams
+
+    # Build demand vectors with Unitful SI units
+    Mu = [d.Mux * u"N*m"      for d in demands]
+    Vu = [d.Vu_strong * u"N"   for d in demands]
+    Nu = [d.Pu_c * u"N"        for d in demands]
+
+    # Build geometries (L_totals are Float64 in meters)
+    geoms = [StructuralSizer.ConcreteMemberGeometry(L) for L in L_totals]
+
+    # ── T-beam path (include_flange = true) ──
+    if opts.include_flange
+        isempty(struc.slabs) && error(
+            "include_flange=true but no slabs found. Size slabs first.")
+
+        bf_vec, hf_vec = _compute_flange_params(struc, group_ids, L_totals)
+
+        # Envelope: use min bf/hf across groups that have slabs (conservative)
+        valid = findall(!isnothing, bf_vec)
+        if isempty(valid)
+            @warn "include_flange=true but no beams have adjacent slabs — " *
+                  "falling back to rectangular beam sizing"
+        else
+            bf_env = minimum(bf_vec[i] for i in valid)
+            hf_env = minimum(hf_vec[i] for i in valid)
+
+            result = StructuralSizer.size_tbeams(
+                Mu, Vu, geoms, opts;
+                flange_width     = bf_env,
+                flange_thickness = hf_env,
+                Nu               = Nu,
+                catalog_size     = opts.catalog_size_tbeam,
+            )
+
+            _apply_beam_results!(struc, result, group_ids, member_array,
+                                 edge_ids_in_group, opts.grade)
+
+            if reanalyze
+                Asap.process!(struc.asap_model)
+                Asap.solve!(struc.asap_model)
+            end
+
+            fc_psi = round(Int, ustrip(u"psi", opts.grade.fc′))
+            bf_in  = round(ustrip(u"inch", bf_env); digits=1)
+            hf_in  = round(ustrip(u"inch", hf_env); digits=1)
+            @info "Sized $(length(group_ids)) RC T-beam groups via MIP" fc_psi bf_in hf_in
+
+            return struc
+        end
+    end
+
+    # ── Rectangular beam path (default) ──
+    result = StructuralSizer.size_beams(Mu, Vu, geoms, opts; Nu=Nu)
+
+    _apply_beam_results!(struc, result, group_ids, member_array,
+                         edge_ids_in_group, opts.grade)
+
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
+    fc_psi = round(Int, ustrip(u"psi", opts.grade.fc′))
+    @info "Sized $(length(group_ids)) RC beam groups via MIP" fc_psi=fc_psi
+
+    return struc
+end
+
+# --- Concrete beams (NLP) ---
+function _size_beams_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.ConcreteBeamOptions,
+    ::Val{:nlp};
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    edge_ids_in_group = Set(get(skel.groups_edges, :beams, Int[]))
+
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+
+    # Extract demands from analysis (MemberDemand in SI: N, N·m, m)
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=:beams, resolution=resolution)
+
+    isempty(group_ids) && return struc
+
+    member_array = struc.beams
+
+    # Build demand vectors with Unitful SI units
+    Mu = [d.Mux * u"N*m"    for d in demands]
+    Vu = [d.Vu_strong * u"N" for d in demands]
+
+    # Map ConcreteBeamOptions → NLPBeamOptions (shared material fields)
+    stirrup_int = parse(Int, replace(string(opts.transverse_bar_size), "no" => ""))
+    nlp_opts = StructuralSizer.NLPBeamOptions(
+        grade      = opts.grade,
+        rebar_grade = opts.rebar_grade,
+        cover      = opts.cover,
+        stirrup_size = stirrup_int,
+        max_depth  = opts.max_depth,
+        max_width  = isfinite(opts.max_width) ? opts.max_width : 24.0u"inch",
+        objective  = opts.objective,
+    )
+
+    # ── T-beam path (include_flange = true) ──
+    if opts.include_flange
+        isempty(struc.slabs) && error(
+            "include_flange=true but no slabs found. Size slabs first.")
+
+        bf_vec, hf_vec = _compute_flange_params(struc, group_ids, L_totals)
+
+        # NLP supports per-beam bf/hf vectors
+        # Groups without slabs → fall back to rectangular NLP
+        tbeam_idx = findall(!isnothing, bf_vec)
+        rect_idx  = findall(isnothing, bf_vec)
+
+        mat = opts.grade
+        n_feasible = 0
+
+        if !isempty(tbeam_idx)
+            Mu_t  = Mu[tbeam_idx]
+            Vu_t  = Vu[tbeam_idx]
+            bf_t  = [bf_vec[i] for i in tbeam_idx]
+            hf_t  = [hf_vec[i] for i in tbeam_idx]
+
+            t_results = StructuralSizer.size_rc_tbeams_nlp(Mu_t, Vu_t, bf_t, hf_t, nlp_opts)
+
+            for (k, g_idx) in enumerate(tbeam_idx)
+                r = t_results[k]
+                r.status in (:optimal, :feasible) || continue
+                n_feasible += 1
+
+                gid = group_ids[g_idx]
+                chosen = r.section
+                mg = struc.member_groups[gid]
+                mg.section = chosen
+                asap_sec = StructuralSizer.to_asap_section(chosen, mat)
+
+                for m_idx in mg.member_indices
+                    m = member_array[m_idx]
+                    L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+                    L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+                    set_section!(m, chosen)
+                    set_volumes!(m, MaterialVolumes(mat => StructuralSizer.section_area(chosen) * L_total))
+                    for seg_idx in segment_indices(m)
+                        edge_idx = struc.segments[seg_idx].edge_idx
+                        edge_idx in edge_ids_in_group || continue
+                        struc.asap_model.elements[edge_idx].section = asap_sec
+                    end
+                end
+            end
+        end
+
+        # Rectangular fallback for groups without slabs
+        if !isempty(rect_idx)
+            Mu_r = Mu[rect_idx]
+            Vu_r = Vu[rect_idx]
+            r_results = StructuralSizer.size_rc_beams_nlp(Mu_r, Vu_r, nlp_opts)
+
+            for (k, g_idx) in enumerate(rect_idx)
+                r = r_results[k]
+                r.status in (:optimal, :feasible) || continue
+                n_feasible += 1
+
+                gid = group_ids[g_idx]
+                chosen = r.section
+                mg = struc.member_groups[gid]
+                mg.section = chosen
+                asap_sec = StructuralSizer.to_asap_section(chosen, mat)
+
+                for m_idx in mg.member_indices
+                    m = member_array[m_idx]
+                    L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+                    L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+                    set_section!(m, chosen)
+                    set_volumes!(m, MaterialVolumes(mat => StructuralSizer.section_area(chosen) * L_total))
+                    for seg_idx in segment_indices(m)
+                        edge_idx = struc.segments[seg_idx].edge_idx
+                        edge_idx in edge_ids_in_group || continue
+                        struc.asap_model.elements[edge_idx].section = asap_sec
+                    end
+                end
+            end
+        end
+
+        if reanalyze
+            Asap.process!(struc.asap_model)
+            Asap.solve!(struc.asap_model)
+        end
+
+        fc_psi = round(Int, ustrip(u"psi", mat.fc′))
+        n_total = length(group_ids)
+        n_tbeam = length(tbeam_idx)
+        @info "Sized $n_feasible/$n_total RC beam groups via NLP ($(n_tbeam) T-beam)" fc_psi
+
+        return struc
+    end
+
+    # ── Rectangular NLP path (default) ──
+    results = StructuralSizer.size_rc_beams_nlp(Mu, Vu, nlp_opts)
+
+    mat = opts.grade
+    n_feasible = 0
+    for (g_idx, gid) in enumerate(group_ids)
+        r = results[g_idx]
+        r.status in (:optimal, :feasible) || continue
+        n_feasible += 1
+
+        chosen = r.section
+
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+
+        asap_sec = StructuralSizer.to_asap_section(chosen, mat)
+
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            set_section!(m, chosen)
+            set_volumes!(m, MaterialVolumes(mat => StructuralSizer.section_area(chosen) * L_total))
+
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
+    fc_psi = round(Int, ustrip(u"psi", mat.fc′))
+    n_total = length(group_ids)
+    @info "Sized $n_feasible/$n_total RC beam groups via NLP" fc_psi=fc_psi
+
+    return struc
+end
+
+# =============================================================================
+# Member Sizing Orchestrator
+# =============================================================================
+
+"""
+    size_members!(struc; beam_opts=nothing, column_opts=nothing, ...)
+
+Top-level orchestrator that sizes beams, columns, and struts.
+
+Dispatches automatically to `size_beams!` and `size_columns!` based on
+the options types.  Options fall back to `struc.design_parameters` if not
+provided explicitly.
+
+# Example
+```julia
+size_members!(struc;
+    beam_opts   = SteelBeamOptions(deflection_limit = 1/360),
+    column_opts = ConcreteColumnOptions(grade = NWC_5000),
+)
+```
+"""
+function size_members!(
+    struc::BuildingStructure;
+    beam_opts::Union{StructuralSizer.BeamOptions, Nothing} = nothing,
+    column_opts::Union{StructuralSizer.ColumnOptions, Nothing} = nothing,
+    beam_method::Symbol = :discrete,
+    column_method::Symbol = :discrete,
+    resolution::Int = 200,
+    reanalyze::Bool = false,   # defer re-analysis to end
+    gravity_factor::Quantity = GRAVITY,
+)
+    # Size beams
+    size_beams!(struc, beam_opts;
+        method = beam_method,
+        resolution, reanalyze = false, gravity_factor)
+
+    # Size columns
+    size_columns!(struc, column_opts;
+        resolution, reanalyze = false, gravity_factor)
+
+    # Single re-analysis after both member types are sized
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
     return struc
 end
 
 # =============================================================================
 # Multi-Material Column Sizing
 # =============================================================================
-
-"""
-    rc_section_to_asap(section, material)
-
-Convert an RC section to an ASAP Section for structural analysis.
-Delegates to `StructuralSizer.to_asap_section`.
-
-!!! note "Deprecated"
-    Use `StructuralSizer.to_asap_section(section, material)` directly.
-"""
-rc_section_to_asap(section, material) = StructuralSizer.to_asap_section(section, material)
 
 """
     size_columns!(struc::BuildingStructure)
@@ -801,10 +1256,10 @@ size_columns!(struc, ConcreteColumnOptions(max_depth = 0.6))
 """
 function size_columns!(
     struc::BuildingStructure,
-    opts::Union{StructuralSizer.SteelColumnOptions, StructuralSizer.ConcreteColumnOptions, Nothing} = nothing;
+    opts::Union{StructuralSizer.ColumnOptions, Nothing} = nothing;
     resolution::Int = 200,
     reanalyze::Bool = true,
-    gravity_factor::Quantity = 9.81u"m/s^2",
+    gravity_factor::Quantity = GRAVITY,
 )
     # Determine options: explicit > design_parameters > default
     effective_opts = if !isnothing(opts)
@@ -906,16 +1361,16 @@ end
 
 # Helper: add gravity loads
 function _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
-    existing_gravity_elements = Set()
+    existing_gravity_ids = Set{UInt}()
     for load in struc.asap_model.loads
         if isa(load, Asap.GravityLoad)
-            push!(existing_gravity_elements, load.element)
+            push!(existing_gravity_ids, objectid(load.element))
         end
     end
     
     for edge_idx in edge_ids_in_group
         el = struc.asap_model.elements[edge_idx]
-        el in existing_gravity_elements && continue
+        objectid(el) in existing_gravity_ids && continue
         push!(struc.asap_model.loads, Asap.GravityLoad(el, gravity_factor))
     end
 end
@@ -1058,71 +1513,51 @@ end
 
 """Get average span from skeleton for span-based column estimate."""
 function _estimate_avg_span(skel::BuildingSkeleton)
-    if isempty(skel.edges)
-        return 20u"ft"  # Default assumption
-    end
+    isempty(skel.edges) && return 20u"ft"
     
-    # Sample horizontal edge lengths
+    vc = skel.geometry.vertex_coords
     total_len = 0.0u"m"
-    count = 0
+    n = 0
     
-    for edge in skel.edges
-        len = Meshes.measure(edge)
-        # Only count horizontal edges (beams, not columns)
-        p1, p2 = edge.vertices
-        z1 = Meshes.coords(p1).z
-        z2 = Meshes.coords(p2).z
-        if abs(z1 - z2) < 0.1u"m"  # Horizontal
-            total_len += len
-            count += 1
-        end
+    for (e_idx, (v1, v2)) in enumerate(skel.edge_indices)
+        abs(vc[v1, 3] - vc[v2, 3]) < 0.1 || continue  # horizontal only
+        total_len += edge_length(skel, e_idx)
+        n += 1
     end
     
-    if count > 0
-        return total_len / count
-    else
-        return 20u"ft"  # Default
-    end
+    return n > 0 ? total_len / n : 20u"ft"
 end
 
 """
-    _get_column_load_intensity(struc, col, qu_default) -> PressureQuantity
+    _get_column_load_intensity(struc, col, qu_default; combo=default_combo) -> PressureQuantity
 
 Get area-weighted factored load intensity for a column from adjacent cells.
 
-Uses `total_factored_pressure(cell)` which includes SDL, live load, AND slab self-weight
-(1.2×DL + 1.6×LL per ACI 318 load combinations).
+Uses `total_factored_pressure(cell, combo)` which includes SDL, live load,
+AND slab self-weight, factored per the given load combination.
 
 Note: Cell self-weight is populated during slab sizing via `initialize_slabs!`.
 If called before slab sizing, self-weight will be zero.
 """
-function _get_column_load_intensity(struc::BuildingStructure, col, qu_default)
-    # Get cells contributing to this column (areas are Unitful)
+function _get_column_load_intensity(struc::BuildingStructure, col, qu_default;
+                                    combo::LoadCombination = default_combo)
     by_cell = column_tributary_by_cell(struc, col)
     
     if isnothing(by_cell) || isempty(by_cell)
         return qu_default
     end
     
-    # Area-weighted average of cell loads
     total_load = 0.0u"kN"
     total_area = 0.0u"m^2"
     
-    for (cell_idx, area) in by_cell  # area is already Unitful (m²)
+    for (cell_idx, area) in by_cell
         if cell_idx <= length(struc.cells)
             cell = struc.cells[cell_idx]
-            # Use total_factored_pressure which includes SDL + self_weight + LL
-            # with proper load factors (1.2D + 1.6L)
-            qu = total_factored_pressure(cell)
-            
+            qu = total_factored_pressure(cell, combo)
             total_load += qu * area
             total_area += area
         end
     end
     
-    if total_area > 0u"m^2"
-        return total_load / total_area
-    else
-        return qu_default
-    end
+    return total_area > 0u"m^2" ? total_load / total_area : qu_default
 end

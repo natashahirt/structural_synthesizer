@@ -7,3 +7,4 @@ include("slenderness.jl")  # Table B4.1b - must come first (used by flexure)
 include("flexure.jl")      # Chapter F
 include("shear.jl")        # Chapter G
 include("compression.jl")  # Chapter E
+include("torsion.jl")      # Design Guide 9 - Torsion for W-shapes

@@ -143,6 +143,8 @@ using StructuralSizer
             column_height = H,
             Ecs = Ecs,
             Ecc = Ecc,
+            ν_concrete = 0.20,
+            ρ_concrete = 2380.0u"kg/m^3",
             k_col = 4.74  # PCA Table A7 factor
         )
         StructuralSizer.solve_efm_frame!(model)
@@ -244,7 +246,7 @@ using StructuralSizer
         d = 5.75u"inch"    # Average effective depth (SP uses d_avg)
         
         # Minimum reinforcement: As,min = 0.0018 × b × h = 0.0018 × 84 × 7 = 1.06 in²
-        As_min = StructuralSizer.minimum_reinforcement(b, h)
+        As_min = StructuralSizer.minimum_reinforcement(b, h, fy)
         @test ustrip(u"inch^2", As_min) ≈ 1.06 rtol=0.02
         
         println("\n=== EFM Reinforcement Design (Table 7) ===")
@@ -338,7 +340,7 @@ using StructuralSizer
         # Column Strip: Ext Neg = 32.42, Pos = 26.96, Int Neg = 50.24
         # Middle Strip: Ext Neg = 0, Pos = 17.98, Int Neg = 16.75
         
-        As_min = StructuralSizer.minimum_reinforcement(b_cs, h)
+        As_min = StructuralSizer.minimum_reinforcement(b_cs, h, fy)
         s_max = StructuralSizer.max_bar_spacing(h)
         
         println("\n=== Complete Strip Design ===")
@@ -426,8 +428,9 @@ using StructuralSizer
         As = 17 * 0.20u"inch^2"  # 17 #4 bars
         b_frame = l2  # Frame strip width = 168 in
         d = 5.75u"inch"
+        Es_rebar = 29000u"ksi"  # SP: Es = 29,000,000 psi (Grade 60 rebar)
         
-        Icr = StructuralSizer.cracked_moment_of_inertia(As, b_frame, d, Ecs)
+        Icr = StructuralSizer.cracked_moment_of_inertia(As, b_frame, d, Ecs, Es_rebar)
         Icr_in4 = ustrip(u"inch^4", Icr)
         
         println("\n=== Cracked Moment of Inertia ===")
@@ -810,6 +813,105 @@ using StructuralSizer
         
         @test ustrip(u"kip*ft", M_neg_int_span2) ≈ 76.21 rtol=0.02
         @test ustrip(u"kip*ft", M_pos_span2) ≈ 33.23 rtol=0.02
+    end
+
+    # =========================================================================
+    # Test 20: Circular Column — Stiffness & EFM Properties
+    # =========================================================================
+    @testset "Circular Column — EFM Stiffness" begin
+        D = 16u"inch"   # Circular column diameter
+        c_eq = StructuralSizer.equivalent_square_column(D)
+
+        # Column moment of inertia
+        Ic_circ = StructuralSizer.column_moment_of_inertia(D, D; shape=:circular)
+        Ic_rect = StructuralSizer.column_moment_of_inertia(c1, c2; shape=:rectangular)
+
+        # Circular Ic = πD⁴/64 for D=16"
+        @test ustrip(u"inch^4", Ic_circ) ≈ π * 16^4 / 64 rtol=0.001
+
+        # Column stiffness Kc (uses actual circular Ic)
+        Kc_circ = StructuralSizer.column_stiffness_Kc(Ecc, Ic_circ, H, h)
+        Kc_rect = StructuralSizer.column_stiffness_Kc(Ecc, Ic_rect, H, h)
+
+        # Circular Kc < rectangular (since Ic_circ < Ic_rect for same D vs c)
+        @test ustrip(u"lbf*inch", Kc_circ) > 0
+        @test Kc_circ < Kc_rect
+
+        println("\n=== Circular Column Stiffness ===")
+        println("Ic (circ) = $(round(ustrip(u"inch^4", Ic_circ), digits=0)) in⁴")
+        println("Ic (rect) = $(round(ustrip(u"inch^4", Ic_rect), digits=0)) in⁴")
+        println("Kc (circ) = $(round(ustrip(u"lbf*inch", Kc_circ)/1e6, digits=2))×10⁶ in-lb")
+        println("Kc (rect) = $(round(ustrip(u"lbf*inch", Kc_rect)/1e6, digits=2))×10⁶ in-lb")
+    end
+
+    @testset "Circular Column — Torsional Constant C" begin
+        D = 16u"inch"
+        c_eq = StructuralSizer.equivalent_square_column(D)
+
+        # For circular columns, torsional member uses equivalent square dimension
+        C_circ = StructuralSizer.torsional_constant_C(h, c_eq)  # h × c_eq
+        C_rect = StructuralSizer.torsional_constant_C(h, c2)    # h × c2
+
+        # Equivalent square is smaller → lower C
+        @test ustrip(u"inch^4", C_circ) > 0
+        @test C_circ < C_rect
+
+        println("\n=== Torsional Constant C ===")
+        println("C (circ, c_eq=$(round(ustrip(u"inch", c_eq), digits=1))\") = $(round(ustrip(u"inch^4", C_circ), digits=0)) in⁴")
+        println("C (rect, c2=$(ustrip(u"inch", c2))\") = $(round(ustrip(u"inch^4", C_rect), digits=0)) in⁴")
+    end
+
+    @testset "Circular Column — Torsional Stiffness Kt" begin
+        D = 16u"inch"
+        c_eq = StructuralSizer.equivalent_square_column(D)
+
+        C_circ = StructuralSizer.torsional_constant_C(h, c_eq)
+        C_rect = StructuralSizer.torsional_constant_C(h, c2)
+
+        Kt_circ = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C_circ, l2, c_eq)
+        Kt_rect = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C_rect, l2, c2)
+
+        @test ustrip(u"lbf*inch", Kt_circ) > 0
+        @test Kt_circ < Kt_rect
+
+        println("\n=== Torsional Stiffness Kt ===")
+        println("Kt (circ) = $(round(ustrip(u"lbf*inch", Kt_circ)/1e6, digits=2))×10⁶ in-lb")
+        println("Kt (rect) = $(round(ustrip(u"lbf*inch", Kt_rect)/1e6, digits=2))×10⁶ in-lb")
+    end
+
+    @testset "Circular Column — Equivalent Column Stiffness Kec" begin
+        D = 16u"inch"
+        c_eq = StructuralSizer.equivalent_square_column(D)
+
+        Ic_circ = StructuralSizer.column_moment_of_inertia(D, D; shape=:circular)
+        C_circ  = StructuralSizer.torsional_constant_C(h, c_eq)
+
+        Kc_circ = StructuralSizer.column_stiffness_Kc(Ecc, Ic_circ, H, h)
+        Kt_circ = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C_circ, l2, c_eq)
+
+        ΣKc_circ = 2 * Kc_circ
+        ΣKt_circ = 2 * Kt_circ
+        Kec_circ = StructuralSizer.equivalent_column_stiffness_Kec(ΣKc_circ, ΣKt_circ)
+
+        # Compare with rectangular reference
+        Ic_rect = StructuralSizer.column_moment_of_inertia(c1, c2)
+        Kc_rect = StructuralSizer.column_stiffness_Kc(Ecc, Ic_rect, H, h)
+        C_rect  = StructuralSizer.torsional_constant_C(h, c2)
+        Kt_rect = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C_rect, l2, c2)
+        Kec_rect = StructuralSizer.equivalent_column_stiffness_Kec(2*Kc_rect, 2*Kt_rect)
+
+        @test ustrip(u"lbf*inch", Kec_circ) > 0
+        @test Kec_circ < Kec_rect  # Circular column is less stiff overall
+
+        # Difference should be moderate (< 30%)
+        Kec_ratio = ustrip(u"lbf*inch", Kec_circ) / ustrip(u"lbf*inch", Kec_rect)
+        @test Kec_ratio > 0.70
+        @test Kec_ratio < 1.0
+
+        println("\n=== Equivalent Column Stiffness Kec ===")
+        println("Kec (circ) = $(round(ustrip(u"lbf*inch", Kec_circ)/1e6, digits=2))×10⁶ in-lb")
+        println("Kec (rect) = $(round(ustrip(u"lbf*inch", Kec_rect)/1e6, digits=2))×10⁶ in-lb")
+        println("Ratio = $(round(Kec_ratio, digits=3))")
     end
 end
 

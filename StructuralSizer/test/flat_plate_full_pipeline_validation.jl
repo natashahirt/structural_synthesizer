@@ -570,8 +570,8 @@ try
     divider()
     println(@sprintf "    Slab thickness:    h = %.2f in (started at ~%.1f in)" ustrip(u"inch", result_long.thickness) h_min_long_ext)
     println(@sprintf "    Total static moment: M₀ = %.1f kip-ft" ustrip(kip*u"ft", result_long.M0))
-    println(@sprintf "    Punching ratio:    %.3f %s" result_long.punching_check.max_ratio (result_long.punching_check.passes ? "✓" : "✗"))
-    println(@sprintf "    Deflection ratio:  %.3f %s" result_long.deflection_check.ratio (result_long.deflection_check.passes ? "✓" : "✗"))
+    println(@sprintf "    Punching ratio:    %.3f %s" result_long.punching_check.max_ratio (result_long.punching_check.ok ? "✓" : "✗"))
+    println(@sprintf "    Deflection ratio:  %.3f %s" result_long.deflection_check.ratio (result_long.deflection_check.ok ? "✓" : "✗"))
     
     col_str = c_min_long == c_max_long ? @sprintf("%.0f\"", c_min_long) : @sprintf("%.0f\"–%.0f\"", c_min_long, c_max_long)
     println(@sprintf "    Columns:           %s (started at 18\")" col_str)
@@ -687,8 +687,8 @@ try
     h_final = ustrip(u"inch", result_defl.thickness)
     println(@sprintf "    Slab thickness:    h = %.2f in (ACI min = %.1f in)%s" h_final h_min_calc (h_final > h_min_calc + 0.5 ? " ← GREW" : ""))
     println(@sprintf "    Total static moment: M₀ = %.1f kip-ft" ustrip(kip*u"ft", result_defl.M0))
-    println(@sprintf "    Punching ratio:    %.3f %s" result_defl.punching_check.max_ratio (result_defl.punching_check.passes ? "✓" : "✗"))
-    println(@sprintf "    Deflection ratio:  %.3f %s" result_defl.deflection_check.ratio (result_defl.deflection_check.passes ? "✓" : "✗"))
+    println(@sprintf "    Punching ratio:    %.3f %s" result_defl.punching_check.max_ratio (result_defl.punching_check.ok ? "✓" : "✗"))
+    println(@sprintf "    Deflection ratio:  %.3f %s" result_defl.deflection_check.ratio (result_defl.deflection_check.ok ? "✓" : "✗"))
     
     col_str = c_min_defl == c_max_defl ? @sprintf("%.0f\"", c_min_defl) : @sprintf("%.0f\"–%.0f\"", c_min_defl, c_max_defl)
     println(@sprintf "    Columns:           %s" col_str)

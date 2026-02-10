@@ -14,7 +14,7 @@ all code requirements for a given demand.
 
 # Required Interface
 - `create_cache(checker, n_sections) -> cache` - create checker-specific capacity cache
-- `precompute_capacities!(checker, cache, catalogue, material, objective)` - fill cache
+- `precompute_capacities!(checker, cache, catalog, material, objective)` - fill cache
 - `is_feasible(checker, cache, j, section, material, demand, geometry) -> Bool`
 - `get_objective_coeff(checker, cache, j) -> Float64`
 
@@ -56,7 +56,7 @@ Each checker type returns its own cache type optimized for its calculations.
 function create_cache end
 
 """
-    precompute_capacities!(checker, cache, catalogue, material, objective)
+    precompute_capacities!(checker, cache, catalog, material, objective)
 
 Precompute and cache capacity values that are reused across multiple 
 feasibility checks. Called once before the optimization loop.
@@ -66,7 +66,7 @@ function precompute_capacities! end
 """
     is_feasible(checker, cache, j, section, material, demand, geometry) -> Bool
 
-Check if `section` (at index `j` in catalogue) with `material` satisfies all 
+Check if `section` (at index `j` in catalog) with `material` satisfies all 
 design code requirements for the given `demand` and `geometry`. 
 Returns `true` if all checks pass.
 

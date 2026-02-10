@@ -36,7 +36,7 @@ design variables, finding the minimum-area section that satisfies ACI 318.
 # Usage
 ```julia
 demand = RCColumnDemand(1; Pu=500.0, Mux=200.0)  # kip, kip-ft
-geometry = ConcreteMemberGeometry(4.0; k=1.0)    # 4m, k=1.0
+geometry = ConcreteMemberGeometry(4.0u"m"; k=1.0)
 opts = NLPColumnOptions(grade=NWC_5000)
 
 problem = RCColumnNLPProblem(demand, geometry, opts)
@@ -73,22 +73,17 @@ function RCColumnNLPProblem(
     geometry::ConcreteMemberGeometry,
     opts::NLPColumnOptions
 )
-    # Build material tuple for P-M calculations
-    mat = (
-        fc = fc_ksi(opts.grade),
-        fy = fy_ksi(opts.rebar_grade),
-        Es = 29000.0,
-        εcu = 0.003
-    )
+    # Build material tuple for P-M calculations (from material types)
+    mat = to_material_tuple(opts.grade, fy_ksi(opts.rebar_grade), Es_ksi(opts.rebar_grade))
     
     # Convert demands to ACI units (kip, kip-ft)
-    Pu_kip = _extract_force_kip(demand.Pu)
-    Mux_kipft = _extract_moment_kipft(demand.Mux)
-    Muy_kipft = _extract_moment_kipft(demand.Muy)
+    Pu_kip = to_kip(demand.Pu)
+    Mux_kipft = to_kipft(demand.Mux)
+    Muy_kipft = to_kipft(demand.Muy)
     
     # Convert dimension bounds to inches
-    b_min = ustrip(u"inch", uconvert(u"inch", opts.min_dim))
-    b_max = ustrip(u"inch", uconvert(u"inch", opts.max_dim))
+    b_min = ustrip(u"inch", opts.min_dim)
+    b_max = ustrip(u"inch", opts.max_dim)
     
     RCColumnNLPProblem(
         demand, geometry, opts, mat,
@@ -97,23 +92,6 @@ function RCColumnNLPProblem(
     )
 end
 
-# Helper: extract force in kip (handles both Unitful and raw Float64)
-function _extract_force_kip(P)
-    if P isa Unitful.Quantity
-        return ustrip(kip, uconvert(kip, P))
-    else
-        return Float64(P)  # Assume already in kip
-    end
-end
-
-# Helper: extract moment in kip-ft (handles both Unitful and raw Float64)
-function _extract_moment_kipft(M)
-    if M isa Unitful.Quantity
-        return ustrip(kip*u"ft", uconvert(kip*u"ft", M))
-    else
-        return Float64(M)  # Assume already in kip-ft
-    end
-end
 
 # ==============================================================================
 # AbstractNLPProblem Interface: Core
@@ -123,7 +101,7 @@ n_variables(::RCColumnNLPProblem) = 3
 
 function variable_bounds(p::RCColumnNLPProblem)
     lb = [p.b_min, p.b_min, 0.01]   # ACI min ρ = 0.01
-    ub = [p.b_max, p.b_max, 0.08]   # ACI max ρ = 0.08
+    ub = [p.b_max, p.b_max, p.opts.ρ_max]  # Practical ρ limit (default 0.06)
     return (lb, ub)
 end
 
@@ -132,7 +110,7 @@ function initial_guess(p::RCColumnNLPProblem)
     Ag_est = p.Pu_kip / (0.40 * p.mat.fc)
     c0 = sqrt(max(Ag_est, p.b_min^2))
     c0 = clamp(c0, p.b_min, p.b_max)
-    return [c0, c0, 0.02]  # Start square at 2% reinforcement
+    return [c0, c0, 0.04]  # Start square at midrange reinforcement
 end
 
 variable_names(::RCColumnNLPProblem) = ["b (in)", "h (in)", "ρg"]
@@ -148,33 +126,41 @@ function objective_fn(p::RCColumnNLPProblem, x::Vector{Float64})
     # Objective depends on what we're minimizing
     obj = p.opts.objective
     
+    # Every RC objective must couple ρ so the solver gets a gradient signal
+    # to trade off reinforcement ratio against section size.  Without ρ in
+    # the objective, ∂obj/∂ρ = 0 and Ipopt treats ρ as slack.
+    
     if obj isa MinVolume
-        # Just concrete area
-        value = Ag
+        # Gross area with constructability penalty for high reinforcement.
+        # Factor (1 + 2ρ) gives ∂obj/∂ρ = 2Ag > 0 so the solver prefers
+        # moderate ρ (1–3%) unless higher ρ is needed to meet P-M demands.
+        # At ρ=0.01 penalty is 2%; at ρ=0.06 it's 12%.  Without this,
+        # area minimization always pegs ρ at the upper bound.
+        value = Ag * (1 + 2.0 * ρ)
     elseif obj isa MinWeight
-        # Total weight: concrete + steel
-        # γ_concrete ≈ 150 pcf, γ_steel ≈ 490 pcf
-        # Weight ∝ Ag × [(1-ρ) × 150 + ρ × 490] = Ag × [150 + ρ × 340]
-        γ_concrete = 150.0  # pcf
-        γ_steel = 490.0     # pcf
+        # Total weight per unit length: concrete + steel (density-weighted).
+        # Steel is ~3.3× denser, so there is a genuine tradeoff: smaller Ag
+        # saves weight but higher ρ adds weight.  The solver finds the optimum.
+        γ_concrete = ustrip(pcf, p.opts.grade.ρ)
+        γ_steel = ustrip(pcf, p.opts.rebar_grade.ρ)
         value = Ag * ((1 - ρ) * γ_concrete + ρ * γ_steel)
     elseif obj isa MinCost
-        # Total cost: concrete + rebar
-        # Typical costs: concrete ~$4/ft³ (in place), rebar ~$1/lb ≈ $490/ft³
-        # Cost ∝ Ag × [(1-ρ) × cost_c + ρ × cost_s]
-        cost_concrete = 4.0    # $/ft³ of concrete volume
-        cost_steel = 490.0     # $/ft³ of steel volume (≈ $1/lb)
-        value = Ag * ((1 - ρ) * cost_concrete + ρ * cost_steel)
+        isnan(p.opts.grade.cost) && error("MinCost requires material.cost to be set (concrete grade has cost=NaN)")
+        isnan(p.opts.rebar_grade.cost) && error("MinCost requires material.cost to be set (rebar grade has cost=NaN)")
+        ρ_c_kgft3 = ustrip(u"kg/ft^3", p.opts.grade.ρ)
+        ρ_s_kgft3 = ustrip(u"kg/ft^3", p.opts.rebar_grade.ρ)
+        cost_c_vol = p.opts.grade.cost * ρ_c_kgft3
+        cost_s_vol = p.opts.rebar_grade.cost * ρ_s_kgft3
+        value = Ag * ((1 - ρ) * cost_c_vol + ρ * cost_s_vol)
     elseif obj isa MinCarbon
-        # Embodied carbon: concrete + steel
-        # ECC concrete ≈ 400 kgCO2/m³ ≈ 11 kgCO2/ft³
-        # ECC steel ≈ 1.8 kgCO2/kg ≈ 1800 kgCO2/ton ≈ 45 kgCO2/ft³
-        ecc_concrete = 11.0   # kgCO2/ft³
-        ecc_steel = 45.0      # kgCO2/ft³
+        ρ_c_kgft3 = ustrip(u"kg/ft^3", p.opts.grade.ρ)
+        ρ_s_kgft3 = ustrip(u"kg/ft^3", p.opts.rebar_grade.ρ)
+        ecc_concrete = p.opts.grade.ecc * ρ_c_kgft3
+        ecc_steel = p.opts.rebar_grade.ecc * ρ_s_kgft3
         value = Ag * ((1 - ρ) * ecc_concrete + ρ * ecc_steel)
     else
-        # Default: minimize concrete area
-        value = Ag
+        # Default: gross area with ρ penalty (same as MinVolume)
+        value = Ag * (1 + 2.0 * ρ)
     end
     
     # Optional: penalize non-square sections
@@ -212,46 +198,47 @@ end
 
 function constraint_fns(p::RCColumnNLPProblem, x::Vector{Float64})
     b, h, ρ = x
-    
-    # Build trial section
-    section = _build_nlp_trial_section(b, h, ρ, p.opts)
-    if isnothing(section)
-        # Infeasible configuration → large constraint violation
-        return fill(100.0, n_constraints(p))
-    end
-    
-    # Generate P-M diagram (use fewer points for speed in optimization)
-    diagram = generate_PM_diagram(section, p.mat; n_intermediate=8)
-    
-    # Apply slenderness magnification if enabled
+
+    # Effective cover to bar centroid (inches)
+    db = ustrip(u"inch", rebar(p.opts.bar_size).diameter)
+    cover = 1.5 + (p.opts.tie_type == :spiral ? 0.375 : 0.5) + db / 2.0
+
+    # Slenderness magnification (smooth analytical version)
     Mux_design = p.Mux_kipft
     if p.opts.include_slenderness
-        # Use magnify_moment_nonsway with M1=M2 (conservative)
-        result = magnify_moment_nonsway(
-            section, p.mat, p.geometry,
-            p.Pu_kip, p.Mux_kipft, p.Mux_kipft;
-            βdns = p.opts.βdns
-        )
-        if isinf(result.δns)
-            # Buckling failure → large constraint violation
-            return fill(100.0, n_constraints(p))
+        Ig = b * h^3 / 12.0   # in⁴
+        Ec_ksi = 57.0 * sqrt(p.mat.fc * 1000.0)
+        EI = 0.4 * Ec_ksi * Ig / (1.0 + p.opts.βdns)   # kip·in²
+
+        Lu_in = ustrip(u"inch", p.geometry.Lu)
+        k = Float64(p.geometry.k)
+        Pc = π^2 * EI / (k * Lu_in)^2   # Euler buckling (kip)
+
+        # Cm factor from end moments
+        M1x = to_kipft(p.demand.M1x)
+        M2x = to_kipft(p.demand.M2x)
+        Cm = abs(M2x) > 1e-6 ? max(0.6 - 0.4 * M1x / M2x, 0.4) : 1.0
+
+        denom = max(1.0 - p.Pu_kip / (0.75 * Pc), 0.001)
+        δns = max(Cm / denom, 1.0)
+
+        if δns > 50.0
+            return fill(100.0, n_constraints(p))   # Buckling failure
         end
-        Mux_design = result.Mc
+        Mux_design = δns * p.Mux_kipft
     end
-    
-    # P-M capacity check
-    check = check_PM_capacity(diagram, p.Pu_kip, Mux_design)
-    util_x = check.utilization
-    
-    # Return constraints
+
+    # Smooth analytical P-M utilization (replaces piecewise-linear P-M diagram)
+    util_x = _smooth_rc_rect_pm_util(b, h, ρ, p.Pu_kip, Mux_design, p.mat;
+                                      cover, n_layers=10, tie_type=p.opts.tie_type)
+
     if p.Muy_kipft > 1e-6
-        # Biaxial: Bresler load contour (Mux/φMnx)^α + (Muy/φMny)^α ≤ 1
-        φMnx = max(check.φMn_at_Pu, 1e-6)
-        φMny = φMnx  # Assume square or symmetric section for y-axis
-        
-        # For non-square sections, should use y-axis diagram
-        # but for simplicity use same capacity (conservative for b < h)
-        util_biax = (Mux_design/φMnx)^1.5 + (p.Muy_kipft/φMny)^1.5
+        # Biaxial: Bresler load contour
+        cap = _smooth_rc_rect_pm_capacity(b, h, ρ, p.Pu_kip, p.mat;
+                                           cover, n_layers=10, tie_type=p.opts.tie_type)
+        φMnx = max(cap.φMn_kipft, 1e-6)
+        φMny = φMnx   # Symmetric assumption (conservative for b < h)
+        util_biax = (abs(Mux_design) / φMnx)^1.5 + (abs(p.Muy_kipft) / φMny)^1.5
         return [util_x, util_biax]
     else
         return [util_x]
@@ -342,17 +329,22 @@ struct RCColumnNLPResult
 end
 
 """
-    build_nlp_result(problem, opt_result) -> RCColumnNLPResult
+    build_rc_column_nlp_result(problem, opt_result) -> RCColumnNLPResult
 
 Convert optimization result to `RCColumnNLPResult` with practical section.
 """
-function build_nlp_result(p::RCColumnNLPProblem, opt_result)
+function build_rc_column_nlp_result(p::RCColumnNLPProblem, opt_result)
     b_opt, h_opt, ρ_opt = opt_result.minimizer
     
-    # Round to practical dimensions
-    incr = ustrip(u"inch", p.opts.dim_increment)
-    b_final = ceil(b_opt / incr) * incr
-    h_final = ceil(h_opt / incr) * incr
+    if p.opts.snap
+        # Round to practical dimensions
+        incr = ustrip(u"inch", p.opts.dim_increment)
+        b_final = ceil(b_opt / incr) * incr
+        h_final = ceil(h_opt / incr) * incr
+    else
+        b_final = b_opt
+        h_final = h_opt
+    end
     
     # Build final section with rounded dimensions
     section = _build_nlp_trial_section(b_final, h_final, ρ_opt, p.opts)
@@ -459,23 +451,22 @@ function HSSColumnNLPProblem(
     opts::NLPHSSOptions
 )
     # Extract material properties in ksi
-    E_ksi = ustrip(ksi, opts.material.E)
-    Fy_ksi = ustrip(ksi, opts.material.Fy)
+    E_ksi = to_ksi(opts.material.E)
+    Fy_ksi = to_ksi(opts.material.Fy)
     
     # Convert demands to kip, kip-ft
-    Pu_kip = _to_kip_force(demand.Pu_c)
-    Mux_kipft = _to_kipft_moment(demand.Mux)
-    Muy_kipft = _to_kipft_moment(demand.Muy)
+    Pu_kip = to_kip(demand.Pu_c)
+    Mux_kipft = to_kipft(demand.Mux)
+    Muy_kipft = to_kipft(demand.Muy)
     
-    # Effective length: KL = max(Kx*L, Ky*L) for weak axis (conservative)
-    L_in = ustrip(u"inch", geometry.L * u"m")
+    L_in = to_inches(geometry.L)
     KL_in = max(geometry.Kx, geometry.Ky) * L_in
     
     # Convert dimension bounds to inches
-    B_min = ustrip(u"inch", opts.min_outer)
-    B_max = ustrip(u"inch", opts.max_outer)
-    t_min = ustrip(u"inch", opts.min_thickness)
-    t_max = ustrip(u"inch", opts.max_thickness)
+    B_min = to_inches(opts.min_outer)
+    B_max = to_inches(opts.max_outer)
+    t_min = to_inches(opts.min_thickness)
+    t_max = to_inches(opts.max_thickness)
     
     HSSColumnNLPProblem(
         demand, geometry, opts,
@@ -484,24 +475,6 @@ function HSSColumnNLPProblem(
         KL_in,
         B_min, B_max, t_min, t_max
     )
-end
-
-# Helper: convert force to kip
-function _to_kip_force(P)
-    if P isa Unitful.Quantity
-        return ustrip(kip, uconvert(kip, P))
-    else
-        return Float64(P) / 4448.22  # Assume N → kip
-    end
-end
-
-# Helper: convert moment to kip-ft
-function _to_kipft_moment(M)
-    if M isa Unitful.Quantity
-        return ustrip(kip*u"ft", uconvert(kip*u"ft", M))
-    else
-        return Float64(M) / 1355.82  # Assume N·m → kip·ft
-    end
 end
 
 # ==============================================================================
@@ -565,28 +538,16 @@ end
 # ==============================================================================
 
 function n_constraints(p::HSSColumnNLPProblem)
-    # Compression utilization + b/t ratio constraint
-    nc = 2
-    # Add flexure if moment demand exists
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        nc += 1
-    end
-    return nc
+    # H1-1 P-M interaction + b/t ratio constraint
+    return 2
 end
 
 function constraint_names(p::HSSColumnNLPProblem)
-    names = ["compression utilization", "min b/t ratio"]
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        push!(names, "flexure utilization")
-    end
-    return names
+    return ["H1-1 P-M interaction", "min b/t ratio"]
 end
 
 function constraint_bounds(p::HSSColumnNLPProblem)
-    nc = n_constraints(p)
-    lb = fill(-Inf, nc)
-    ub = ones(nc)   # All utilizations ≤ 1.0
-    return (lb, ub)
+    return ([-Inf, -Inf], [1.0, 1.0])
 end
 
 function constraint_fns(p::HSSColumnNLPProblem, x::Vector{Float64})
@@ -612,38 +573,79 @@ function constraint_fns(p::HSSColumnNLPProblem, x::Vector{Float64})
     # Effective area for slender elements (smooth)
     Ae = _hss_effective_area_smooth(B, H, t, p.E_ksi, p.Fy_ksi, Fcr; k=k)
     
-    # Compression capacity
+    # Compression capacity (AISC E1)
     φPn = 0.9 * Fcr * Ae  # kip
     
-    # Compression utilization
-    util_compression = p.Pu_kip / _smooth_max(φPn, 0.001; k=k)
+    # Flexural capacity (AISC F7 for HSS — with noncompact reduction)
+    Zx, Zy = _hss_plastic_modulus_smooth(B, H, t)
+    Sx, Sy = _hss_section_modulus_smooth(B, H, t)
+    
+    Mp_x = p.Fy_ksi * Zx     # kip-in
+    My_x = p.Fy_ksi * Sx     # kip-in
+    Mp_y = p.Fy_ksi * Zy     # kip-in
+    My_y = p.Fy_ksi * Sy     # kip-in
+    
+    # Flange slenderness (flat width / thickness)
+    b_f = _smooth_max(B - 3*t, 0.1; k=k)
+    λ_f = b_f / t
+    λp_f = 1.12 * sqrt(p.E_ksi / p.Fy_ksi)   # Table B4.1b
+    λr_f = 1.40 * sqrt(p.E_ksi / p.Fy_ksi)
+    
+    # Web slenderness (flat depth / thickness)
+    h_w = _smooth_max(H - 3*t, 0.1; k=k)
+    λ_w = h_w / t
+    λp_w = 2.42 * sqrt(p.E_ksi / p.Fy_ksi)
+    λr_w = 5.70 * sqrt(p.E_ksi / p.Fy_ksi)
+    
+    # Smooth noncompact reduction (F7-2 for flange, F7-3 for web)
+    frac_f = _smooth_max(λ_f - λp_f, 0.0; k=k) / _smooth_max(λr_f - λp_f, 0.01; k=k)
+    frac_w = _smooth_max(λ_w - λp_w, 0.0; k=k) / _smooth_max(λr_w - λp_w, 0.01; k=k)
+    
+    # Strong axis: take worst of flange/web reduction
+    Mn_f_x = Mp_x - (Mp_x - My_x) * _smooth_min(frac_f, 1.5; k=k)
+    Mn_w_x = Mp_x - (Mp_x - My_x) * _smooth_min(frac_w, 1.5; k=k)
+    Mn_x = _smooth_min(Mn_f_x, Mn_w_x; k=k)
+    Mn_x = _smooth_min(Mn_x, Mp_x; k=k)
+    Mn_x = _smooth_max(Mn_x, 0.01; k=k)
+    
+    # Weak axis: same approach (conservative — flange/web roles swap but limits similar)
+    Mn_f_y = Mp_y - (Mp_y - My_y) * _smooth_min(frac_f, 1.5; k=k)
+    Mn_w_y = Mp_y - (Mp_y - My_y) * _smooth_min(frac_w, 1.5; k=k)
+    Mn_y = _smooth_min(Mn_f_y, Mn_w_y; k=k)
+    Mn_y = _smooth_min(Mn_y, Mp_y; k=k)
+    Mn_y = _smooth_max(Mn_y, 0.01; k=k)
+    
+    # Apply conservatism factor (0.95) for smooth blending errors
+    φMnx = 0.95 * 0.9 * Mn_x / 12.0  # kip-ft
+    φMny = 0.95 * 0.9 * Mn_y / 12.0  # kip-ft
+    
+    # AISC H1-1 P-M interaction (smooth)
+    # Pr/Pc
+    Pr_Pc = p.Pu_kip / _smooth_max(φPn, 0.001; k=k)
+    # Mr/Mc for each axis
+    Mrx_Mcx = p.Mux_kipft / _smooth_max(φMnx, 0.001; k=k)
+    Mry_Mcy = p.Muy_kipft / _smooth_max(φMny, 0.001; k=k)
+    
+    # Smooth H1-1a/b transition:
+    #   If Pr/Pc ≥ 0.2:  interaction = Pr/Pc + 8/9*(Mrx/Mcx + Mry/Mcy)   [H1-1a]
+    #   If Pr/Pc <  0.2:  interaction = Pr/(2*Pc) + Mrx/Mcx + Mry/Mcy     [H1-1b]
+    # Use smooth step to blend:
+    α = _smooth_step(Pr_Pc, 0.2; k=k)
+    interaction_a = Pr_Pc + (8.0/9.0) * (Mrx_Mcx + Mry_Mcy)
+    interaction_b = Pr_Pc / 2.0 + (Mrx_Mcx + Mry_Mcy)
+    util_h1 = α * interaction_a + (1 - α) * interaction_b
+    
+    # Apply conservatism factor (1.03) to account for accumulated smooth
+    # approximation errors in compression, flexure, and H1-1 blending.
+    # This effectively requires H1-1 ≤ 0.97, ensuring exact check ≤ 1.0.
+    util_h1 *= 1.03
     
     # b/t ratio constraint (ensure fabricable)
     b = H - 3*t  # Clear height
     b_t = b / t
-    # Constraint: b_t ≥ min_b_t → min_b_t - b_t ≤ 0 → (min_b_t - b_t)/min_b_t ≤ 0
-    # Transform to ≤ 1 form: (min_b_t / b_t) ≤ 1
     util_bt = p.opts.min_b_t / _smooth_max(b_t, 1.0; k=k)
     
-    constraints = [util_compression, util_bt]
-    
-    # Flexure utilization (if moment exists)
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        Sx, Sy = _hss_section_modulus_smooth(B, H, t)
-        Zx, Zy = _hss_plastic_modulus_smooth(B, H, t)
-        
-        # Flexural capacity (conservative: use Mp = Fy × Z)
-        φMnx = 0.9 * p.Fy_ksi * Zx / 12.0  # kip-ft
-        φMny = 0.9 * p.Fy_ksi * Zy / 12.0  # kip-ft
-        
-        # Combined moment utilization (linear interaction)
-        Mu_total = p.Mux_kipft / _smooth_max(φMnx, 0.001; k=k) + 
-                   p.Muy_kipft / _smooth_max(φMny, 0.001; k=k)
-        
-        push!(constraints, Mu_total)
-    end
-    
-    return constraints
+    return [util_h1, util_bt]
 end
 
 # ==============================================================================
@@ -807,18 +809,24 @@ Convert optimization result to `HSSColumnNLPResult` with practical section.
 function build_hss_nlp_result(p::HSSColumnNLPProblem, opt_result)
     B_opt, H_opt, t_opt = opt_result.minimizer
     
-    # Round to practical dimensions
-    outer_incr = ustrip(u"inch", p.opts.outer_increment)
-    t_incr = ustrip(u"inch", p.opts.thickness_increment)
-    
-    B_final = ceil(B_opt / outer_incr) * outer_incr
-    H_final = ceil(H_opt / outer_incr) * outer_incr
-    t_final = ceil(t_opt / t_incr) * t_incr
-    
-    # Ensure thickness doesn't exceed wall (practical limit)
-    max_t = min(B_final, H_final) / 4
-    t_final = min(t_final, max_t)
-    t_final = max(t_final, p.t_min)
+    if p.opts.snap
+        # Round to practical dimensions
+        outer_incr = ustrip(u"inch", p.opts.outer_increment)
+        t_incr = ustrip(u"inch", p.opts.thickness_increment)
+        
+        B_final = ceil(B_opt / outer_incr) * outer_incr
+        H_final = ceil(H_opt / outer_incr) * outer_incr
+        t_final = ceil(t_opt / t_incr) * t_incr
+        
+        # Ensure thickness doesn't exceed wall (practical limit)
+        max_t = min(B_final, H_final) / 4
+        t_final = min(t_final, max_t)
+        t_final = max(t_final, p.t_min)
+    else
+        B_final = B_opt
+        H_final = H_opt
+        t_final = t_opt
+    end
     
     # Build final section
     section = HSSRectSection(H_final * u"inch", B_final * u"inch", t_final * u"inch")
@@ -927,28 +935,28 @@ function WColumnNLPProblem(
     opts::NLPWOptions
 )
     # Extract material properties in ksi
-    E_ksi = ustrip(ksi, opts.material.E)
-    Fy_ksi = ustrip(ksi, opts.material.Fy)
+    E_ksi = to_ksi(opts.material.E)
+    Fy_ksi = to_ksi(opts.material.Fy)
     
     # Convert demands to kip, kip-ft
-    Pu_kip = _to_kip_force(demand.Pu_c)
-    Mux_kipft = _to_kipft_moment(demand.Mux)
-    Muy_kipft = _to_kipft_moment(demand.Muy)
+    Pu_kip = to_kip(demand.Pu_c)
+    Mux_kipft = to_kipft(demand.Mux)
+    Muy_kipft = to_kipft(demand.Muy)
     
     # Effective lengths: KL = K*L for each axis
-    L_in = ustrip(u"inch", geometry.L * u"m")
+    L_in = to_inches(geometry.L)
     KLx_in = geometry.Kx * L_in
     KLy_in = geometry.Ky * L_in
     
     # Convert dimension bounds to inches
-    d_min = ustrip(u"inch", opts.min_depth)
-    d_max = ustrip(u"inch", opts.max_depth)
-    bf_min = ustrip(u"inch", opts.min_flange_width)
-    bf_max = ustrip(u"inch", opts.max_flange_width)
-    tf_min = ustrip(u"inch", opts.min_flange_thickness)
-    tf_max = ustrip(u"inch", opts.max_flange_thickness)
-    tw_min = ustrip(u"inch", opts.min_web_thickness)
-    tw_max = ustrip(u"inch", opts.max_web_thickness)
+    d_min = to_inches(opts.min_depth)
+    d_max = to_inches(opts.max_depth)
+    bf_min = to_inches(opts.min_flange_width)
+    bf_max = to_inches(opts.max_flange_width)
+    tf_min = to_inches(opts.min_flange_thickness)
+    tf_max = to_inches(opts.max_flange_thickness)
+    tw_min = to_inches(opts.min_web_thickness)
+    tw_max = to_inches(opts.max_web_thickness)
     
     WColumnNLPProblem(
         demand, geometry, opts,
@@ -1017,11 +1025,7 @@ end
 # ==============================================================================
 
 function n_constraints(p::WColumnNLPProblem)
-    nc = 4  # compression util, bf/d ratio, tf/tw ratio, web h/tw
-    # Add flexure if moment demand exists
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        nc += 1
-    end
+    nc = 4  # H1-1 interaction, bf/d ratio, tf/tw ratio, web h/tw
     # Add flange compactness if required
     if p.opts.require_compact
         nc += 1
@@ -1030,10 +1034,7 @@ function n_constraints(p::WColumnNLPProblem)
 end
 
 function constraint_names(p::WColumnNLPProblem)
-    names = ["compression utilization", "bf/d ratio", "tf/tw ratio", "web slenderness"]
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        push!(names, "flexure utilization")
-    end
+    names = ["H1-1 P-M interaction", "bf/d ratio", "tf/tw ratio", "web slenderness"]
     if p.opts.require_compact
         push!(names, "flange compactness")
     end
@@ -1076,24 +1077,76 @@ function constraint_fns(p::WColumnNLPProblem, x::Vector{Float64})
     λw = h / tw
     
     # Slenderness limits for compression (Table B4.1a)
-    # Flanges (Case 1): λr = 0.56√(E/Fy)
     λr_f = 0.56 * sqrt(p.E_ksi / p.Fy_ksi)
-    # Web (Case 5): λr = 1.49√(E/Fy)
     λr_w = 1.49 * sqrt(p.E_ksi / p.Fy_ksi)
     
     # Effective area (reduce for slender elements)
     Ae = _w_effective_area_smooth(d, bf, tf, tw, p.E_ksi, p.Fy_ksi, Fcr, λf, λw, λr_f, λr_w; k=k)
     
-    # Compression capacity
+    # Compression capacity (AISC E1)
     φPn = 0.9 * Fcr * Ae  # kip
     
-    # Constraint 1: Compression utilization
-    util_compression = p.Pu_kip / _smooth_max(φPn, 0.001; k=k)
+    # Flexural capacity (AISC F2 — with smooth LTB for beam-columns)
+    Zx, Zy = _w_plastic_modulus_smooth(d, bf, tf, tw)
+    Sx = Ix / (d / 2)               # Elastic section modulus (in³)
+    ho = d - tf                      # Distance between flange centroids
+    
+    # Torsion constant  J ≈ (2 bf tf³ + h tw³) / 3
+    J = (2*bf*tf^3 + _smooth_max(h, 0.1; k=k)*tw^3) / 3
+    
+    # rts (effective radius of gyration for LTB)
+    rts_sq = Iy * _smooth_max(ho, 0.1; k=k) / (2 * _smooth_max(Sx, 0.01; k=k))
+    rts = sqrt(_smooth_max(rts_sq, 0.01; k=k))
+    
+    # Mp (kip-in)
+    Mp_x = p.Fy_ksi * Zx
+    
+    # Limiting unbraced lengths (AISC F2-5, F2-6)
+    Lp = 1.76 * ry * sqrt(p.E_ksi / p.Fy_ksi)
+    
+    jc_term = J / (_smooth_max(Sx, 0.01; k=k) * _smooth_max(ho, 0.1; k=k))
+    Lr_inner = jc_term + sqrt(jc_term^2 + 6.76 * (0.7 * p.Fy_ksi / p.E_ksi)^2)
+    Lr = 1.95 * rts * (p.E_ksi / (0.7 * p.Fy_ksi)) * sqrt(Lr_inner)
+    
+    # Unbraced length for LTB: use column height from geometry (conservative)
+    Lb_in = to_inches(p.geometry.Lb)
+    
+    # Elastic LTB critical stress (AISC F2-4)  — Cb = 1.0 for columns
+    Lb_rts = Lb_in / _smooth_max(rts, 0.01; k=k)
+    Fcr_ltb = π^2 * p.E_ksi / _smooth_max(Lb_rts^2, 0.01; k=k) *
+              sqrt(1 + 0.078 * jc_term * Lb_rts^2)
+    
+    # Three-zone smooth blending (no Cb benefit for columns)
+    Lb_frac = _smooth_max(Lb_in - Lp, 0.0; k=k) / _smooth_max(Lr - Lp, 0.01; k=k)
+    Lb_frac_clamped = _smooth_min(Lb_frac, 1.0; k=k)
+    Mn_inelastic_x = Mp_x - (Mp_x - 0.7*p.Fy_ksi*Sx) * Lb_frac_clamped
+    Mn_elastic_x = Fcr_ltb * Sx
+    
+    Mn_x = _smooth_min(_smooth_min(Mn_inelastic_x, Mn_elastic_x; k=k), Mp_x; k=k)
+    
+    # Apply conservatism factor (0.95) for smooth blending at LTB transitions
+    φMnx = 0.95 * 0.9 * Mn_x / 12.0   # kip-ft
+    
+    # Weak axis: no LTB, use Mp (conservative)
+    φMny = 0.9 * p.Fy_ksi * Zy / 12.0  # kip-ft
+    
+    # AISC H1-1 P-M interaction (smooth)
+    Pr_Pc = p.Pu_kip / _smooth_max(φPn, 0.001; k=k)
+    Mrx_Mcx = p.Mux_kipft / _smooth_max(φMnx, 0.001; k=k)
+    Mry_Mcy = p.Muy_kipft / _smooth_max(φMny, 0.001; k=k)
+    
+    # Smooth H1-1a/b transition
+    α = _smooth_step(Pr_Pc, 0.2; k=k)
+    interaction_a = Pr_Pc + (8.0/9.0) * (Mrx_Mcx + Mry_Mcy)
+    interaction_b = Pr_Pc / 2.0 + (Mrx_Mcx + Mry_Mcy)
+    util_h1 = α * interaction_a + (1 - α) * interaction_b
+    
+    # Apply conservatism factor (1.03) to account for accumulated smooth
+    # approximation errors in compression, flexure, and H1-1 blending.
+    util_h1 *= 1.03
     
     # Constraint 2: bf/d proportioning
     bf_d = bf / d
-    # Require bf_d_min ≤ bf/d ≤ bf_d_max
-    # Transform to: max((bf_d_min/bf_d), (bf_d/bf_d_max)) ≤ 1
     util_bf_d = _smooth_max(p.opts.bf_d_min / _smooth_max(bf_d, 0.1; k=k),
                             bf_d / p.opts.bf_d_max; k=k)
     
@@ -1102,28 +1155,12 @@ function constraint_fns(p::WColumnNLPProblem, x::Vector{Float64})
     util_tf_tw = _smooth_max(p.opts.tf_tw_min / _smooth_max(tf_tw, 0.5; k=k),
                              tf_tw / p.opts.tf_tw_max; k=k)
     
-    # Constraint 4: Web slenderness (prevent extremely slender webs)
-    # Use λw / λr_w as utilization (want ≤ some limit, say 1.5 for slender OK)
+    # Constraint 4: Web slenderness
     util_web = λw / (1.5 * λr_w)
     
-    constraints = [util_compression, util_bf_d, util_tf_tw, util_web]
+    constraints = [util_h1, util_bf_d, util_tf_tw, util_web]
     
-    # Constraint 5: Flexure utilization (if moment exists)
-    if p.Mux_kipft > 1e-6 || p.Muy_kipft > 1e-6
-        Zx, Zy = _w_plastic_modulus_smooth(d, bf, tf, tw)
-        
-        # Flexural capacity (plastic for compact, reduced for noncompact)
-        φMnx = 0.9 * p.Fy_ksi * Zx / 12.0  # kip-ft
-        φMny = 0.9 * p.Fy_ksi * Zy / 12.0  # kip-ft
-        
-        # Combined moment utilization
-        util_flexure = p.Mux_kipft / _smooth_max(φMnx, 0.001; k=k) + 
-                       p.Muy_kipft / _smooth_max(φMny, 0.001; k=k)
-        
-        push!(constraints, util_flexure)
-    end
-    
-    # Constraint 6: Flange compactness (if required)
+    # Constraint 5: Flange compactness (if required)
     if p.opts.require_compact
         λpf = 0.38 * sqrt(p.E_ksi / p.Fy_ksi)
         util_flange_compact = λf / λpf
@@ -1274,17 +1311,18 @@ end
 Result from W section column NLP optimization.
 
 # Fields
+- `section`: Constructed `ISymmSection` from optimized dimensions
 - `d_opt`, `bf_opt`, `tf_opt`, `tw_opt`: Continuous optimal values (inches)
 - `d_final`, `bf_final`, `tf_final`, `tw_final`: Final dimensions (inches)
 - `area`: Final cross-sectional area (sq in)
 - `weight_per_ft`: Weight per linear foot (lb/ft)
 - `Ix`, `Iy`: Moments of inertia (in⁴)
 - `rx`, `ry`: Radii of gyration (in)
-- `catalog_match`: Name of nearest catalog W section (if snap_to_catalog)
 - `status`: Solver termination status
 - `iterations`: Number of solver iterations
 """
 struct WColumnNLPResult
+    section::ISymmSection
     d_opt::Float64
     bf_opt::Float64
     tf_opt::Float64
@@ -1299,7 +1337,6 @@ struct WColumnNLPResult
     Iy::Float64
     rx::Float64
     ry::Float64
-    catalog_match::Union{String, Nothing}
     status::Symbol
     iterations::Int
 end
@@ -1312,12 +1349,27 @@ Convert optimization result to `WColumnNLPResult`.
 function build_w_nlp_result(p::WColumnNLPProblem, opt_result)
     d_opt, bf_opt, tf_opt, tw_opt = opt_result.minimizer
     
-    # Round to practical precision (1/16" increments)
-    incr = 0.0625
-    d_final = ceil(d_opt / incr) * incr
-    bf_final = ceil(bf_opt / incr) * incr
-    tf_final = ceil(tf_opt / incr) * incr
-    tw_final = ceil(tw_opt / incr) * incr
+    if p.opts.snap
+        # Round to practical precision (1/16" increments)
+        incr = 0.0625
+        d_final = ceil(d_opt / incr) * incr
+        bf_final = ceil(bf_opt / incr) * incr
+        tf_final = ceil(tf_opt / incr) * incr
+        tw_final = ceil(tw_opt / incr) * incr
+    else
+        d_final = d_opt
+        bf_final = bf_opt
+        tf_final = tf_opt
+        tw_final = tw_opt
+    end
+    
+    # Build ISymmSection from final dimensions (convert inches → Unitful)
+    section = ISymmSection(
+        d_final * u"inch", bf_final * u"inch",
+        tw_final * u"inch", tf_final * u"inch";
+        name = "NLP-W d=$(round(d_final, digits=2)) bf=$(round(bf_final, digits=2))",
+        material = p.opts.material,
+    )
     
     # Compute properties of final section
     A = _w_area_smooth(d_final, bf_final, tf_final, tw_final)
@@ -1329,53 +1381,13 @@ function build_w_nlp_result(p::WColumnNLPProblem, opt_result)
     ρ_steel = 490.0  # lb/ft³
     weight_per_ft = A * ρ_steel / 144.0  # lb/ft
     
-    # Find nearest catalog section if requested
-    catalog_match = nothing
-    if p.opts.snap_to_catalog
-        catalog_match = _find_nearest_w_section(d_final, bf_final, A)
-    end
-    
     return WColumnNLPResult(
+        section,
         d_opt, bf_opt, tf_opt, tw_opt,
         d_final, bf_final, tf_final, tw_final,
         A, weight_per_ft,
         Ix, Iy, rx, ry,
-        catalog_match,
         opt_result.status,
         opt_result.iterations
     )
-end
-
-"""
-    _find_nearest_w_section(d, bf, A) -> String
-
-Find the nearest catalog W section by depth and area.
-Returns the section name (e.g., "W14X90").
-"""
-function _find_nearest_w_section(d::Real, bf::Real, A::Real)
-    # Get all W sections
-    catalog = all_W()
-    
-    # Score each section: minimize |d_diff| + 0.5*|bf_diff| + 0.3*|A_diff_pct|
-    best_score = Inf
-    best_name = "W14X90"  # Default fallback
-    
-    for w in catalog
-        d_sec = ustrip(u"inch", w.d)
-        bf_sec = ustrip(u"inch", w.bf)
-        A_sec = ustrip(u"inch^2", w.A)
-        
-        d_diff = abs(d - d_sec) / d
-        bf_diff = abs(bf - bf_sec) / bf
-        A_diff = abs(A - A_sec) / A
-        
-        score = d_diff + 0.5*bf_diff + 0.3*A_diff
-        
-        if score < best_score
-            best_score = score
-            best_name = w.name
-        end
-    end
-    
-    return best_name
 end

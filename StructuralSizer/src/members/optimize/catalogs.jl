@@ -105,3 +105,39 @@ end
 function rc_column_catalog(catalog::Symbol)
     rc_column_catalog(:rect, catalog)
 end
+
+# ==============================================================================
+# RC Beam Catalog Dispatcher
+# ==============================================================================
+
+"""
+    rc_beam_catalog(catalog) -> Vector{RCBeamSection}
+
+Build an RC beam catalog.
+
+# Arguments
+- `catalog`: `:standard`, `:small`, `:large`, `:all`
+
+# Examples
+```julia
+rc_beam_catalog(:standard)   # Default catalog (~400-600 sections)
+rc_beam_catalog(:small)      # Light-load (smaller sections)
+rc_beam_catalog(:large)      # Heavy-load (larger sections)
+rc_beam_catalog(:all)        # Comprehensive (widest range)
+```
+"""
+function rc_beam_catalog(catalog::Symbol)
+    if catalog === :standard
+        return standard_rc_beams()
+    elseif catalog === :small
+        return small_rc_beams()
+    elseif catalog === :large
+        return large_rc_beams()
+    elseif catalog === :all
+        return all_rc_beams()
+    else
+        throw(ArgumentError(
+            "Unknown catalog=$catalog for RC beams. " *
+            "Use :standard, :small, :large, or :all"))
+    end
+end

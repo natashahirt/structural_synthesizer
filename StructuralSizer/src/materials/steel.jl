@@ -11,7 +11,7 @@ const A992_Steel = StructuralSteel(
     345.0u"MPa",        # Fy (50 ksi ≈ 345 MPa)
     450.0u"MPa",        # Fu (65 ksi ≈ 450 MPa)
     7850.0u"kg/m^3",    # ρ  (490 lb/ft³ ≈ 7850 kg/m³)
-    0.26,               # ν
+    0.29,               # ν
     1.61                # ecc [kgCO₂e/kg]
 )
 
@@ -37,24 +37,17 @@ const Rebar_80 = RebarSteel(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7
 const Stud_51 = RebarSteel(200.0u"GPa", 77.2u"GPa", 351.6u"MPa", 448.2u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=51ksi, Fu=65ksi
 
 # ==============================================================================
-# Display Names
+# Registry
 # ==============================================================================
 
-"""Get short display name for a steel material."""
-function material_name(mat::StructuralSteel)
-    mat === A992_Steel && return "A992"
-    mat === S355_Steel && return "S355"
-    # Fallback: show Fy
-    Fy_ksi = round(ustrip(ksi, mat.Fy), digits=0)
-    return "Steel (Fy=$(Int(Fy_ksi)) ksi)"
-end
+register_material!(A992_Steel, "A992")
+register_material!(S355_Steel, "S355")
+register_material!(Rebar_40, "Gr40")
+register_material!(Rebar_60, "Gr60")
+register_material!(Rebar_75, "Gr75")
+register_material!(Rebar_80, "Gr80")
+register_material!(Stud_51, "Stud51")
 
-function material_name(mat::RebarSteel)
-    mat === Rebar_40 && return "Gr40"
-    mat === Rebar_60 && return "Gr60"
-    mat === Rebar_75 && return "Gr75"
-    mat === Rebar_80 && return "Gr80"
-    mat === Stud_51 && return "Stud51"
-    Fy_ksi = round(ustrip(ksi, mat.Fy), digits=0)
-    return "Rebar (Fy=$(Int(Fy_ksi)) ksi)"
-end
+# Fallback display names for unregistered materials
+_fallback_material_name(mat::StructuralSteel) = "Steel (Fy=$(round(Int, ustrip(ksi, mat.Fy))) ksi)"
+_fallback_material_name(mat::RebarSteel) = "Rebar (Fy=$(round(Int, ustrip(ksi, mat.Fy))) ksi)"

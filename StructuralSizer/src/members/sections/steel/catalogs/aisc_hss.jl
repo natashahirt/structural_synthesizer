@@ -1,15 +1,9 @@
 # AISC HSS (Rectangular/Square) + Round HSS Catalog Loader (v15 CSV)
 
-using Asap: asfloat, maybe_asfloat
+using Asap: asfloat, maybe_asfloat, IN_TO_M, IN2_TO_M2, IN3_TO_M3, IN4_TO_M4
 
 const HSS_RECT_CATALOG = Dict{String, HSSRectSection}()
 const HSS_ROUND_CATALOG = Dict{String, HSSRoundSection}()
-
-# Conversion factors (Float64) to avoid Rational overflow with Unitful at high powers
-const _IN_TO_M   = 0.0254
-const _IN2_TO_M2 = _IN_TO_M^2
-const _IN3_TO_M3 = _IN_TO_M^3
-const _IN4_TO_M4 = _IN_TO_M^4
 
 function load_hss_rect_catalog!()
     csv_path = joinpath(@__DIR__, "data/aisc-shapes-v15.csv")
@@ -38,20 +32,20 @@ function load_hss_rect_catalog!()
          Zx === nothing || Zy === nothing || J === nothing || rx === nothing || ry === nothing) && continue
 
         # Convert to SI and store
-        H = (Ht * _IN_TO_M) * u"m"
-        Bm = (B * _IN_TO_M) * u"m"
-        tm = (t * _IN_TO_M) * u"m"
+        H = (Ht * IN_TO_M) * u"m"
+        Bm = (B * IN_TO_M) * u"m"
+        tm = (t * IN_TO_M) * u"m"
 
-        Am  = (A * _IN2_TO_M2) * u"m^2"
-        Ixm = (Ix * _IN4_TO_M4) * u"m^4"
-        Iym = (Iy * _IN4_TO_M4) * u"m^4"
-        Sxm = (Sx * _IN3_TO_M3) * u"m^3"
-        Sym = (Sy * _IN3_TO_M3) * u"m^3"
-        Zxm = (Zx * _IN3_TO_M3) * u"m^3"
-        Zym = (Zy * _IN3_TO_M3) * u"m^3"
-        Jm  = (J * _IN4_TO_M4) * u"m^4"
-        rxm = (rx * _IN_TO_M) * u"m"
-        rym = (ry * _IN_TO_M) * u"m"
+        Am  = (A * IN2_TO_M2) * u"m^2"
+        Ixm = (Ix * IN4_TO_M4) * u"m^4"
+        Iym = (Iy * IN4_TO_M4) * u"m^4"
+        Sxm = (Sx * IN3_TO_M3) * u"m^3"
+        Sym = (Sy * IN3_TO_M3) * u"m^3"
+        Zxm = (Zx * IN3_TO_M3) * u"m^3"
+        Zym = (Zy * IN3_TO_M3) * u"m^3"
+        Jm  = (J * IN4_TO_M4) * u"m^4"
+        rxm = (rx * IN_TO_M) * u"m"
+        rym = (ry * IN_TO_M) * u"m"
 
         # Use catalog constructor with database values
         HSS_RECT_CATALOG[name] = HSSRectSection(
@@ -86,16 +80,16 @@ function load_hss_round_catalog!()
          Zx === nothing || J === nothing || rx === nothing) && continue
 
         # Convert to SI
-        ODm = (OD * _IN_TO_M) * u"m"
-        IDm = (ID * _IN_TO_M) * u"m"
-        tm  = (t * _IN_TO_M) * u"m"
+        ODm = (OD * IN_TO_M) * u"m"
+        IDm = (ID * IN_TO_M) * u"m"
+        tm  = (t * IN_TO_M) * u"m"
 
-        Am  = (A * _IN2_TO_M2) * u"m^2"
-        Im  = (Ix * _IN4_TO_M4) * u"m^4"  # I = Ix = Iy for round
-        Sm  = (Sx * _IN3_TO_M3) * u"m^3"  # S = Sx = Sy
-        Zm  = (Zx * _IN3_TO_M3) * u"m^3"  # Z = Zx = Zy
-        Jm  = (J * _IN4_TO_M4) * u"m^4"
-        rm  = (rx * _IN_TO_M) * u"m"      # r = rx = ry
+        Am  = (A * IN2_TO_M2) * u"m^2"
+        Im  = (Ix * IN4_TO_M4) * u"m^4"  # I = Ix = Iy for round
+        Sm  = (Sx * IN3_TO_M3) * u"m^3"  # S = Sx = Sy
+        Zm  = (Zx * IN3_TO_M3) * u"m^3"  # Z = Zx = Zy
+        Jm  = (J * IN4_TO_M4) * u"m^4"
+        rm  = (rx * IN_TO_M) * u"m"      # r = rx = ry
 
         # Use catalog constructor
         HSS_ROUND_CATALOG[name] = HSSRoundSection(

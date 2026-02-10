@@ -1,3 +1,5 @@
-# Foundation design codes
+﻿# Foundation design codes
 
-include("spread_footing_is456.jl")
+include("is/_is.jl")
+include("aci/_aci.jl")
+include("mat_heuristic.jl")

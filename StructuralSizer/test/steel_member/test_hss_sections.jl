@@ -3,7 +3,7 @@ using StructuralSizer
 using Unitful
 using Test
 
-@testset "HSS / PIPE catalogue + AISC capacities" begin
+@testset "HSS / PIPE catalog + AISC capacities" begin
 
     @testset "Catalogue loaders" begin
         # Just verify we can load a known rectangular HSS and a known pipe.
@@ -62,20 +62,20 @@ using Test
         @test StructuralSizer.get_ϕPn_tension(pipe, mat) > 0u"N"
     end
 
-    @testset "AISCChecker works on HSS/PIPE catalogues (no ISymm hardcode)" begin
+    @testset "AISCChecker works on HSS/PIPE catalogs (no ISymm hardcode)" begin
         chk = AISCChecker()
         mat = A992_Steel
 
         hss = HSS("HSS20X20X3/4")
         pipe = PIPE("Pipe8STD")
-        catalogue = [hss, pipe]
+        catalog = [hss, pipe]
 
         dem = MemberDemand(1; Pu_c=100e3u"N", Pu_t=0.0u"N", Mux=10e3u"N*m", Muy=0.0u"N*m",
                            Vu_strong=0.0u"N", Vu_weak=0.0u"N", δ_max=0.0u"m", I_ref=1.0u"m^4")
         geo = SteelMemberGeometry(3.0; Lb=3.0, Kx=1.0, Ky=1.0, Cb=1.0)
 
-        cache = create_cache(chk, length(catalogue))
-        precompute_capacities!(chk, cache, catalogue, mat, MinWeight())
+        cache = create_cache(chk, length(catalog))
+        precompute_capacities!(chk, cache, catalog, mat, MinWeight())
 
         @test is_feasible(chk, cache, 1, hss, mat, dem, geo) isa Bool
         @test is_feasible(chk, cache, 2, pipe, mat, dem, geo) isa Bool
@@ -88,7 +88,7 @@ using Test
         # Rectangular HSS flexure (F7)
         # -------------------------
         @testset "Rect HSS flexure branches" begin
-            # Compact example from catalogue
+            # Compact example from catalog
             sC = HSS("HSS20X20X3/4")
             slC = get_slenderness(sC, mat)
             @test slC.class_f == :compact

@@ -499,9 +499,9 @@ function scale_column_section(
         error("Cannot scale section with no bars")
     end
     
-    # Find bar size from area (reverse lookup)
+    # Find bar size from area (reverse lookup via shared catalog)
     As_bar = section.bars[1].As
-    bar_size = _infer_bar_size_from_area(As_bar)
+    bar_size = infer_bar_size(As_bar)
     
     # Create new section with same bar configuration
     return RCColumnSection(
@@ -512,34 +512,4 @@ function scale_column_section(
         cover = section.cover,
         tie_type = section.tie_type
     )
-end
-
-"""Infer rebar size number from bar area by matching to ASTM A615 catalog."""
-function _infer_bar_size_from_area(As::Area)
-    As_in2 = ustrip(u"inch^2", As)
-    
-    # Standard bar areas (ASTM A615)
-    bar_areas = Dict(
-        3 => 0.11, 4 => 0.20, 5 => 0.31, 6 => 0.44,
-        7 => 0.60, 8 => 0.79, 9 => 1.00, 10 => 1.27,
-        11 => 1.56, 14 => 2.25, 18 => 4.00
-    )
-    
-    best_size = 8  # Default
-    best_diff = Inf
-    
-    for (size, area) in bar_areas
-        diff = abs(As_in2 - area)
-        if diff < best_diff
-            best_diff = diff
-            best_size = size
-        end
-    end
-    
-    # Warn if match is poor
-    if best_diff / bar_areas[best_size] > 0.05
-        @warn "Bar area $As_in2 in² doesn't closely match standard sizes, using #$best_size"
-    end
-    
-    return best_size
 end

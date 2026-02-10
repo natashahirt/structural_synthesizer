@@ -113,7 +113,7 @@ const TEST_PARAMS = (
         sw = ustrip(result.self_weight)      # kN/m^2
         
         ρ = ustrip(u"kg/m^3", NWC_4000.ρ)
-        g = 9.80665 # standard gravity
+        g = ustrip(u"m/s^2", GRAVITY)
         
         # Expected SW = Volume * Density * Gravity
         # Note: volume_per_area is Volume / PlanArea.

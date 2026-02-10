@@ -38,68 +38,79 @@ Geotechnical soil parameters for foundation design.
 - `Es`: Soil elastic modulus (pressure) for settlement
 - `qs`: Unit skin friction for piles (pressure), optional
 - `qp`: Unit end bearing for piles (pressure), optional
+- `ks`: Modulus of subgrade reaction (force/length³), optional — for Winkler analysis
 """
 struct Soil{T_P, T_D}
     qa::T_P         # Allowable bearing capacity
-    γ::T_D          # Unit weight
+    γ::T_D          # Unit weight (force/volume, e.g. kN/m³)
     ϕ::Float64      # Friction angle (degrees)
     c::T_P          # Cohesion
     Es::T_P         # Soil modulus
     qs::Union{T_P, Nothing}  # Skin friction (piles)
     qp::Union{T_P, Nothing}  # End bearing (piles)
+    ks::Union{T_D, Nothing}  # Modulus of subgrade reaction (force/length³, same dim as γ)
 end
 
-function Soil(qa, γ, ϕ, c, Es; qs=nothing, qp=nothing)
-    Soil{typeof(qa), typeof(γ)}(qa, γ, Float64(ϕ), c, Es, qs, qp)
+function Soil(qa, γ, ϕ, c, Es; qs=nothing, qp=nothing, ks=nothing)
+    Soil{typeof(qa), typeof(γ)}(qa, γ, Float64(ϕ), c, Es, qs, qp, ks)
 end
 
 # Common soil presets
-const LOOSE_SAND = Soil(
+# ks values from Bowles (1996) Table 9-1 and ACI 336.2R
+# Note: ks (modulus of subgrade reaction) has dimension force/length³ = same as γ.
+#       Express in kN/m³ to match γ's Unitful type (T_D).
+const loose_sand = Soil(
     75.0u"kPa",         # qa
     16.0u"kN/m^3",      # γ
     28.0,               # ϕ
     0.0u"kPa",          # c
-    10.0u"MPa"          # Es
+    10.0u"MPa";         # Es
+    ks = 5000.0u"kN/m^3"  # Bowles Table 9-1: loose sand
 )
 
-const MEDIUM_SAND = Soil(
+const medium_sand = Soil(
     150.0u"kPa",        # qa
     18.0u"kN/m^3",      # γ
     32.0,               # ϕ
     0.0u"kPa",          # c
-    25.0u"MPa"          # Es
+    25.0u"MPa";         # Es
+    ks = 25000.0u"kN/m^3"  # Bowles Table 9-1: medium sand
 )
 
-const DENSE_SAND = Soil(
+const dense_sand = Soil(
     300.0u"kPa",        # qa
     20.0u"kN/m^3",      # γ
     38.0,               # ϕ
     0.0u"kPa",          # c
-    50.0u"MPa"          # Es
+    50.0u"MPa";         # Es
+    ks = 100000.0u"kN/m^3"  # Bowles Table 9-1: dense sand
 )
 
-const SOFT_CLAY = Soil(
+const soft_clay = Soil(
     50.0u"kPa",         # qa
     16.0u"kN/m^3",      # γ
     0.0,                # ϕ
     25.0u"kPa",         # c (undrained shear strength)
-    5.0u"MPa"           # Es
+    5.0u"MPa";          # Es
+    ks = 12000.0u"kN/m^3"  # Bowles Table 9-1: soft clay
 )
 
-const STIFF_CLAY = Soil(
+const stiff_clay = Soil(
     150.0u"kPa",        # qa
     19.0u"kN/m^3",      # γ
     0.0,                # ϕ
     75.0u"kPa",         # c
-    20.0u"MPa"          # Es
+    20.0u"MPa";         # Es
+    ks = 50000.0u"kN/m^3"  # Bowles Table 9-1: stiff clay
 )
 
-const HARD_CLAY = Soil(
+const hard_clay = Soil(
     300.0u"kPa",        # qa
     21.0u"kN/m^3",      # γ
     0.0,                # ϕ
     150.0u"kPa",        # c
-    50.0u"MPa"          # Es
+    50.0u"MPa";         # Es
+    ks = 150000.0u"kN/m^3"  # Bowles Table 9-1: hard clay
 )
 
 # =============================================================================
@@ -126,15 +137,15 @@ Design result for a spread (isolated) footing.
 - `utilization`: Bearing pressure ratio (demand/capacity)
 """
 struct SpreadFootingResult{L, V, F} <: AbstractFoundationResult
-    B::L                # Width
-    L_ftg::L            # Length (L_ftg to avoid conflict with L type param)
-    D::L                # Depth/thickness
-    d::L                # Effective depth
-    As::typeof(1.0u"mm^2/m")  # Rebar area per unit width
+    B::L                # Width (m)
+    L_ftg::L            # Length (m; L_ftg to avoid conflict with L type param)
+    D::L                # Depth/thickness (m)
+    d::L                # Effective depth (m)
+    As::L               # Rebar area per unit width (m²/m = m)
     rebar_count::Int    # Number of bars each direction
-    rebar_dia::L        # Rebar diameter
-    concrete_volume::V  # Total concrete
-    steel_volume::V     # Total rebar
+    rebar_dia::L        # Rebar diameter (m)
+    concrete_volume::V  # Total concrete (m³)
+    steel_volume::V     # Total rebar (m³)
     utilization::Float64
 end
 
@@ -144,12 +155,76 @@ end
 Design result for a combined footing supporting multiple columns.
 """
 struct CombinedFootingResult{L, V, F} <: AbstractFoundationResult
-    B::L                # Width
-    L_ftg::L            # Length
-    D::L                # Depth
-    d::L                # Effective depth
-    As_bot::typeof(1.0u"mm^2/m")  # Bottom rebar (tension)
-    As_top::typeof(1.0u"mm^2/m")  # Top rebar (for hogging moment)
+    B::L                # Width (m)
+    L_ftg::L            # Length (m)
+    D::L                # Depth (m)
+    d::L                # Effective depth (m)
+    As_bot::L           # Bottom rebar area per width (m²/m = m)
+    As_top::L           # Top rebar area per width (m²/m = m)
+    concrete_volume::V  # (m³)
+    steel_volume::V     # (m³)
+    utilization::Float64
+end
+
+"""
+    StripFootingResult{L, V, F}
+
+Design result for a strip (combined) footing supporting N ≥ 2 columns.
+
+# Fields
+- `B`: Footing width
+- `L_ftg`: Total length
+- `D`: Footing depth/thickness
+- `d`: Effective depth
+- `As_long_bot`: Bottom longitudinal steel area
+- `As_long_top`: Top longitudinal steel area (negative moment)
+- `As_trans`: Transverse steel area per unit length under column bands
+- `n_columns`: Number of columns supported
+- `concrete_volume`: Total concrete volume
+- `steel_volume`: Total rebar volume
+- `utilization`: Governing utilization ratio
+"""
+struct StripFootingResult{L, A, V, F} <: AbstractFoundationResult
+    B::L
+    L_ftg::L
+    D::L
+    d::L
+    As_long_bot::A   # Area (in² or m²)
+    As_long_top::A   # Area (in² or m²)
+    As_trans::A       # Area (in² or m²)
+    n_columns::Int
+    concrete_volume::V
+    steel_volume::V
+    utilization::Float64
+end
+
+"""
+    MatFootingResult{L, V, F}
+
+Design result for a mat foundation.
+
+# Fields
+- `B`: Mat width
+- `L_ftg`: Mat length
+- `D`: Mat thickness
+- `d`: Effective depth
+- `As_x_bot`, `As_x_top`: X-direction reinforcement (bottom/top)
+- `As_y_bot`, `As_y_top`: Y-direction reinforcement (bottom/top)
+- `n_columns`: Number of columns supported
+- `concrete_volume`: Total concrete volume
+- `steel_volume`: Total rebar volume
+- `utilization`: Governing utilization ratio
+"""
+struct MatFootingResult{L, A, V, F} <: AbstractFoundationResult
+    B::L
+    L_ftg::L
+    D::L
+    d::L
+    As_x_bot::A
+    As_x_top::A
+    As_y_bot::A
+    As_y_top::A
+    n_columns::Int
     concrete_volume::V
     steel_volume::V
     utilization::Float64
@@ -186,7 +261,17 @@ steel_volume(r::AbstractFoundationResult) = r.steel_volume
 """Overall footprint area."""
 footprint_area(r::SpreadFootingResult) = r.B * r.L_ftg
 footprint_area(r::CombinedFootingResult) = r.B * r.L_ftg
+footprint_area(r::StripFootingResult) = r.B * r.L_ftg
+footprint_area(r::MatFootingResult) = r.B * r.L_ftg
 footprint_area(r::PileCapResult) = r.cap_B * r.cap_L
+
+"""Footing length (plan dimension)."""
+footing_length(r::AbstractFoundationResult) = r.L_ftg
+footing_length(r::PileCapResult) = r.cap_L
+
+"""Footing width (plan dimension)."""
+footing_width(r::AbstractFoundationResult) = r.B
+footing_width(r::PileCapResult) = r.cap_B
 
 """Utilization ratio (demand/capacity)."""
 utilization(r::AbstractFoundationResult) = r.utilization
@@ -228,7 +313,7 @@ end
 # Symbol ↔ Type Mapping
 # =============================================================================
 
-const FOUNDATION_TYPE_MAP = Dict{Symbol, AbstractFoundation}(
+const foundation_type_map = Dict{Symbol, AbstractFoundation}(
     :spread => SpreadFooting(),
     :combined => CombinedFooting(),
     :strip => StripFooting(),
@@ -238,19 +323,19 @@ const FOUNDATION_TYPE_MAP = Dict{Symbol, AbstractFoundation}(
     :micropile => Micropile(),
 )
 
-const FOUNDATION_SYMBOL_MAP = Dict{Type, Symbol}(
-    typeof(v) => k for (k, v) in pairs(FOUNDATION_TYPE_MAP)
+const foundation_symbol_map = Dict{Type, Symbol}(
+    typeof(v) => k for (k, v) in pairs(foundation_type_map)
 )
 
 """Convert symbol to foundation type for dispatch."""
 function foundation_type(s::Symbol)
-    haskey(FOUNDATION_TYPE_MAP, s) || throw(KeyError("Unknown foundation type: $s"))
-    return FOUNDATION_TYPE_MAP[s]
+    haskey(foundation_type_map, s) || throw(KeyError("Unknown foundation type: $s"))
+    return foundation_type_map[s]
 end
 
 """Convert foundation type to symbol for storage."""
 function foundation_symbol(t::AbstractFoundation)
     T = typeof(t)
-    haskey(FOUNDATION_SYMBOL_MAP, T) || throw(KeyError("Unknown foundation type: $T"))
-    return FOUNDATION_SYMBOL_MAP[T]
+    haskey(foundation_symbol_map, T) || throw(KeyError("Unknown foundation type: $T"))
+    return foundation_symbol_map[T]
 end
