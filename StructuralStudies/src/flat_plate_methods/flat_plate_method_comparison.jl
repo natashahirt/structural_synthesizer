@@ -69,8 +69,10 @@ const ALL_EFM = [
 """Scale story height with span (12 ft baseline, grows for long spans)."""
 _adaptive_story_ht(span_ft::Float64) = max(12.0, round(span_ft / 3.0))
 
-"""Max column constraint scaled to span — limits slab-loop column growth."""
-_adaptive_max_col(span_ft::Float64) = clamp(round(span_ft * 1.1), 36.0, 60.0)
+"""Max column constraint scaled to span — limits slab-loop column growth.
+`ratio` is the span-to-column multiplier (default 1.1 → 36″–60″ range)."""
+_adaptive_max_col(span_ft::Float64; ratio::Float64 = 1.1) =
+    clamp(round(span_ft * ratio), 36.0, 60.0)
 
 # ==============================================================================
 # DesignParameters construction
@@ -96,13 +98,15 @@ function _make_params(;
     shear_studs::Symbol = :if_needed,
     min_h               = nothing,
     max_iterations::Int = 150,
+    deflection_limit::Symbol = :L_360,
 )
     fp = SR.FlatPlateOptions(
-        method          = method,
-        material        = SR.RC_4000_60,
-        shear_studs     = shear_studs,
-        max_column_size = max_col_in * u"inch",
-        min_h           = min_h,
+        method           = method,
+        material         = SR.RC_4000_60,
+        shear_studs      = shear_studs,
+        max_column_size  = max_col_in * u"inch",
+        min_h            = min_h,
+        deflection_limit = deflection_limit,
     )
     floor = floor_type === :flat_slab ? SR.FlatSlabOptions(base = fp) : fp
 
@@ -127,6 +131,60 @@ function _make_params(;
             group_tolerance = 0.15,
         ),
     )
+end
+
+"""
+    _with_method_and_ll(base_params, method, live_psf) -> DesignParameters
+
+Derive run-specific `DesignParameters` from `base_params`, swapping only the
+analysis method and live load.  All other settings (deflection limit, material,
+shear studs, min_h, etc.) are inherited from `base_params` automatically.
+"""
+function _with_method_and_ll(base_params::DesignParameters,
+                             method::SR.FlatPlateAnalysisMethod,
+                             live_psf::Float64)
+    # Swap method on the floor options
+    bp_floor = base_params.floor
+    fp_base = bp_floor isa SR.FlatSlabOptions ? bp_floor.base : bp_floor
+    new_fp = SR.FlatPlateOptions(
+        method           = method,
+        material         = fp_base.material,
+        cover            = fp_base.cover,
+        bar_size         = fp_base.bar_size,
+        has_edge_beam    = fp_base.has_edge_beam,
+        edge_beam_βt     = fp_base.edge_beam_βt,
+        grouping         = fp_base.grouping,
+        φ_flexure        = fp_base.φ_flexure,
+        φ_shear          = fp_base.φ_shear,
+        λ                = fp_base.λ,
+        deflection_limit = fp_base.deflection_limit,
+        shear_studs      = fp_base.shear_studs,
+        max_column_size  = fp_base.max_column_size,
+        stud_material    = fp_base.stud_material,
+        stud_diameter    = fp_base.stud_diameter,
+        min_h            = fp_base.min_h,
+        objective        = fp_base.objective,
+        col_I_factor     = fp_base.col_I_factor,
+    )
+    new_floor = bp_floor isa SR.FlatSlabOptions ?
+        SR.FlatSlabOptions(; h_drop = bp_floor.h_drop,
+                             a_drop_ratio = bp_floor.a_drop_ratio,
+                             base = new_fp) : new_fp
+
+    # Swap live load
+    bl = base_params.loads
+    new_loads = GravityLoads(
+        floor_LL  = live_psf * psf,
+        roof_LL   = live_psf * psf,
+        floor_SDL = bl.floor_SDL,
+        roof_SDL  = bl.roof_SDL,
+    )
+
+    # Copy base_params, override floor + loads
+    p = deepcopy(base_params)
+    p.floor = new_floor
+    p.loads = new_loads
+    return p
 end
 
 # ==============================================================================
@@ -609,23 +667,8 @@ function _run_method(struc, base_params::DesignParameters, method_cfg;
             failing_check = reason)
     end
 
-    # Build params with this specific method
-    method_params = _make_params(;
-        method      = method_cfg.method,
-        floor_type  = floor_type,
-        sdl_psf     = ustrip(psf, base_params.loads.floor_SDL),
-        live_psf    = live_psf,
-        max_col_in  = ustrip(u"inch", base_params.floor isa SR.FlatSlabOptions ?
-                      base_params.floor.base.max_column_size :
-                      base_params.floor.max_column_size),
-        shear_studs = base_params.floor isa SR.FlatSlabOptions ?
-                      base_params.floor.base.shear_studs :
-                      base_params.floor.shear_studs,
-        min_h       = base_params.floor isa SR.FlatSlabOptions ?
-                      base_params.floor.base.min_h :
-                      base_params.floor.min_h,
-        max_iterations = base_params.max_iterations,
-    )
+    # Derive run params from base — swap method + live load, keep everything else
+    method_params = _with_method_and_ll(base_params, method_cfg.method, live_psf)
 
     is_rot = method_cfg.method isa SR.RuleOfThumb
 
@@ -639,10 +682,9 @@ function _run_method(struc, base_params::DesignParameters, method_cfg;
                 stage.fn(struc)
                 stage.needs_sync && sync_asap!(struc; params = method_params)
 
-                # RuleOfThumb: after slab sizing (stage 1), check for failures.
-                # If any check failed the geometry is invalid — skip columns &
-                # foundations entirely.
-                if is_rot && i == 1
+                # After slab sizing (stage 1), check for non-convergence.
+                # If the slab failed, skip columns & foundations entirely.
+                if i == 1
                     dd_early = struc.slabs[1].design_details
                     if !isnothing(dd_early) && hasproperty(dd_early, :converged) && !dd_early.converged
                         break
@@ -814,6 +856,9 @@ function dual_heatmap_sweep(;
     save::Bool                  = true,
     min_h                       = nothing,
     min_h_variants::Vector{<:Tuple{String, Any}} = Tuple{String,Any}[],
+    max_col_in::Union{Nothing, Float64} = nothing,
+    col_ratio::Float64                  = 1.1,
+    deflection_limit::Symbol            = :L_360,
 )
     if isempty(min_h_variants)
         label = isnothing(min_h) ? "ACI" : "override"
@@ -845,7 +890,7 @@ function dual_heatmap_sweep(;
 
     for lx in spans_x, ly in spans_y
         ht      = _adaptive_story_ht(max(lx, ly))
-        max_col = _adaptive_max_col(max(lx, ly))
+        max_col = isnothing(max_col_in) ? _adaptive_max_col(max(lx, ly); ratio = col_ratio) : max_col_in
 
         local skel
         try
@@ -872,7 +917,8 @@ function dual_heatmap_sweep(;
                 local struc, base_params
                 try
                     base_params = _make_params(; floor_type = ft, sdl_psf = sdl,
-                                                  max_col_in = max_col, min_h = mh_val)
+                                                  max_col_in = max_col, min_h = mh_val,
+                                                  deflection_limit = deflection_limit)
                     struc = BuildingStructure(skel)
                     prepare!(struc, base_params)
                 catch e
@@ -991,77 +1037,6 @@ function load_results(dir = FP_RESULTS_DIR)
     latest = sort(csvs; by = mtime, rev = true)[1]
     println("Loading: $latest")
     return CSV.read(latest, DataFrame)
-end
-
-# ==============================================================================
-# Heatmap sweep (Lx × Ly × LL × method, single floor type)
-# ==============================================================================
-
-function heatmap_sweep(;
-    spans_x::Vector{Float64}    = [16.0, 20.0, 24.0, 28.0, 32.0, 36.0, 40.0, 44.0, 48.0, 52.0],
-    spans_y::Vector{Float64}    = [16.0, 20.0, 24.0, 28.0, 32.0, 36.0, 40.0, 44.0, 48.0, 52.0],
-    live_loads::Vector{Float64} = [50.0, 150.0, 250.0],
-    n_bays::Int                 = 3,
-    sdl::Float64                = 20.0,
-    save::Bool                  = true,
-    floor_type::Symbol          = :flat_plate,
-    min_h                       = nothing,
-)
-    ft_label  = floor_type === :flat_slab ? "Flat Slab" : "Flat Plate"
-    n_methods = length(ALL_METHODS)
-    n_geom    = length(spans_x) * length(spans_y)
-    n_runs    = length(live_loads) * n_methods
-    n_total   = n_geom * n_runs
-
-    print_header("$(ft_label) Depth Heatmap — Full Pipeline")
-    println("  Lx spans:   $(spans_x) ft")
-    println("  Ly spans:   $(spans_y) ft")
-    println("  Live loads: $(live_loads) psf")
-    println("  Methods:    $n_methods")
-    println("  Pipeline:   slab → columns → spread foundations")
-    println("  Total runs: $n_total")
-    println()
-
-    rows   = NamedTuple[]
-    n_fail = 0
-    p      = Progress(n_total; desc="Heatmap ($(ft_label)): ")
-
-    for lx in spans_x, ly in spans_y
-        ht      = _adaptive_story_ht(max(lx, ly))
-        max_col = _adaptive_max_col(max(lx, ly))
-
-        local struc, base_params
-        try
-            base_params = _make_params(; floor_type, sdl_psf = sdl,
-                                         max_col_in = max_col, min_h = min_h)
-            skel   = _build_skeleton(lx, ly, ht, n_bays)
-            struc  = BuildingStructure(skel)
-            prepare!(struc, base_params)
-        catch e
-            @warn "Prepare failed — skipping" lx ly exception=e
-            n_fail += n_runs
-            for _ in 1:n_runs; next!(p); end
-            continue
-        end
-
-        for ll in live_loads, mcfg in ALL_METHODS
-            row = _run_method(struc, base_params, mcfg;
-                              lx_ft = lx, ly_ft = ly, live_psf = ll,
-                              floor_type = floor_type)
-            isnothing(row) ? (n_fail += 1) : push!(rows, row)
-            next!(p)
-        end
-    end
-
-    df = DataFrame(rows)
-    outfile = nothing
-    if save && !isempty(df)
-        tag = floor_type === :flat_slab ? "flat_slab_heatmap" : "flat_plate_heatmap"
-        outfile = output_filename(tag, FP_RESULTS_DIR)
-        CSV.write(outfile, df)
-    end
-    print_footer(nrow(df), n_fail, outfile)
-    return df
 end
 
 # ==============================================================================

@@ -60,8 +60,8 @@ mutable struct BuildingStructure{T, A, P} <: AbstractBuildingStructure
     cell_dead_loads::Dict{Int, Vector{Asap.TributaryLoad}}   # Pattern loading: dead-only
     cell_live_loads::Dict{Int, Vector{Asap.TributaryLoad}}   # Pattern loading: live-only
     
-    # ─── Design Snapshot (for parametric studies) ───
-    _snapshot::Union{Nothing, DesignSnapshot{T, P}}
+    # ─── Design Snapshots (for parametric studies) ───
+    _snapshots::Dict{Symbol, DesignSnapshot{T, P}}
 end
 
 function BuildingStructure(skel::BuildingSkeleton{T}) where T
@@ -83,7 +83,7 @@ function BuildingStructure(skel::BuildingSkeleton{T}) where T
         Dict{Int, Vector{Asap.TributaryLoad}}(),
         Dict{Int, Vector{Asap.TributaryLoad}}(),
         Dict{Int, Vector{Asap.TributaryLoad}}(),
-        nothing,  # _snapshot
+        Dict{Symbol, DesignSnapshot{T, P}}(),
     )
 end
 
@@ -104,7 +104,7 @@ function BuildingStructure{T, A, P}(skel::BuildingSkeleton{T}) where {T, A, P}
         Dict{Int, Vector{Asap.TributaryLoad}}(),
         Dict{Int, Vector{Asap.TributaryLoad}}(),
         Dict{Int, Vector{Asap.TributaryLoad}}(),
-        nothing,  # _snapshot
+        Dict{Symbol, DesignSnapshot{T, P}}(),
     )
 end
 

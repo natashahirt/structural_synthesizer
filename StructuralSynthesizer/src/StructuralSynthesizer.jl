@@ -88,7 +88,8 @@ export has_analysis_model, build_analysis_model!
 # --- Design workflow ---
 export design_building, compare_designs, build_pipeline, PipelineStage, sync_asap!
 export prepare!, capture_design
-export snapshot!, restore!, has_snapshot, DesignSnapshot
+export snapshot!, restore!, has_snapshot, delete_snapshot!, snapshot_keys
+export DesignSnapshot, SlabSnapshot
 
 # --- Design parameter helpers ---
 export with, resolve_concrete, resolve_rebar, resolve_rc_material, resolve_floor_options

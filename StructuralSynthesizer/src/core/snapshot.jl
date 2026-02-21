@@ -3,70 +3,110 @@
 # =============================================================================
 
 """
-    snapshot!(struc::BuildingStructure)
+    snapshot!(struc::BuildingStructure, key::Symbol = :prepare)
 
-Capture the current mutable state of `struc` for later restoration.
+Capture the current mutable state of `struc` under `key`.
 
-Call this **after** `initialize!` + `estimate_column_sizes!` + `to_asap!` but
-**before** any sizing mutations. The snapshot is stored on `struc._snapshot`.
+The default key `:prepare` is used by `prepare!` to save the pristine
+post-initialization state.  Use other keys to save intermediate states
+(e.g. `:post_slab` after slab sizing).
 
-See also: [`restore!`](@ref), [`DesignSnapshot`](@ref)
+# Examples
+```julia
+prepare!(struc, params)          # automatically calls snapshot!(struc, :prepare)
+size_slabs!(struc; ...)
+snapshot!(struc, :post_slab)     # save post-slab state
+reconcile_columns!(struc, ...)
+snapshot!(struc, :post_columns)  # save post-column state
+
+restore!(struc, :post_slab)     # back to post-slab state (re-run columns)
+restore!(struc)                 # back to pristine prepare state
+```
+
+See also: [`restore!`](@ref), [`DesignSnapshot`](@ref), [`has_snapshot`](@ref)
 """
-function snapshot!(struc::BuildingStructure{T, A, P}) where {T, A, P}
-    struc._snapshot = DesignSnapshot{T, P}(
+function snapshot!(struc::BuildingStructure{T, A, P}, key::Symbol = :prepare) where {T, A, P}
+    slab_snaps = SlabSnapshot[
+        SlabSnapshot(slab.result, slab.design_details, slab.volumes, slab.drop_panel)
+        for slab in struc.slabs
+    ]
+    struc._snapshots[key] = DesignSnapshot{T, P}(
         Union{T, Nothing}[col.c1 for col in struc.columns],
         Union{T, Nothing}[col.c2 for col in struc.columns],
         Union{AbstractSection, Nothing}[col.base.section for col in struc.columns],
         Union{AbstractSection, Nothing}[beam.base.section for beam in struc.beams],
         P[cell.self_weight for cell in struc.cells],
         P[cell.live_load for cell in struc.cells],
+        slab_snaps,
     )
     return struc
 end
 
 """
-    restore!(struc::BuildingStructure)
+    restore!(struc::BuildingStructure, key::Symbol = :prepare)
 
-Revert mutable fields to the state captured by the last `snapshot!` call.
+Revert mutable fields to the state captured by `snapshot!(struc, key)`.
 
-This restores column dimensions/sections, beam sections, and cell loads
-so the structure is ready for another design run without re-initialization.
+Restores column dimensions/sections, beam sections, cell loads, and slab
+results/design details so the structure is ready for another design run
+without re-initialization.
 
 See also: [`snapshot!`](@ref), [`sync_asap!`](@ref)
 """
-function restore!(struc::BuildingStructure)
-    snap = struc._snapshot
-    isnothing(snap) && error("No snapshot — call snapshot!(struc) after initialization")
-    
+function restore!(struc::BuildingStructure, key::Symbol = :prepare)
+    snap = get(struc._snapshots, key, nothing)
+    isnothing(snap) && error("No snapshot for key :$key — call snapshot!(struc, :$key) first")
+
     # Columns
     for (i, col) in enumerate(struc.columns)
         col.c1 = snap.column_c1[i]
         col.c2 = snap.column_c2[i]
         col.base.section = snap.column_sections[i]
     end
-    
+
     # Beams
     for (i, beam) in enumerate(struc.beams)
         beam.base.section = snap.beam_sections[i]
     end
-    
+
     # Cells
     for (i, cell) in enumerate(struc.cells)
         cell.self_weight = snap.cell_self_weights[i]
         cell.live_load = snap.cell_live_loads[i]
     end
-    
-    # Clear slab design details (stale after restore)
-    for slab in struc.slabs
-        hasproperty(slab, :design_details) && (slab.design_details = nothing)
+
+    # Slabs
+    for (i, slab) in enumerate(struc.slabs)
+        ss = snap.slab_snapshots[i]
+        slab.result = ss.result
+        slab.volumes = ss.volumes
+        slab.drop_panel = ss.drop_panel
+        hasproperty(slab, :design_details) && (slab.design_details = ss.design_details)
     end
-    
+
     return struc
 end
 
 """
-    has_snapshot(struc::BuildingStructure) -> Bool
+    has_snapshot(struc::BuildingStructure, key::Symbol = :prepare) -> Bool
 
-Check whether a design snapshot exists.
+Check whether a design snapshot exists for `key`.
 """
-has_snapshot(struc::BuildingStructure) = !isnothing(struc._snapshot)
+has_snapshot(struc::BuildingStructure, key::Symbol = :prepare) = haskey(struc._snapshots, key)
+
+"""
+    delete_snapshot!(struc::BuildingStructure, key::Symbol)
+
+Remove a named snapshot to free memory.
+"""
+function delete_snapshot!(struc::BuildingStructure, key::Symbol)
+    delete!(struc._snapshots, key)
+    return struc
+end
+
+"""
+    snapshot_keys(struc::BuildingStructure) -> Vector{Symbol}
+
+Return all snapshot keys currently stored.
+"""
+snapshot_keys(struc::BuildingStructure) = collect(keys(struc._snapshots))

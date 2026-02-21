@@ -6,34 +6,54 @@
 #   - Column c1, c2, section
 #   - Beam section
 #   - Cell self_weight, live_load
+#   - Slab result, design_details, volumes, drop_panel
 #
 # DesignSnapshot captures this mutable state so it can be restored between
 # parametric runs, avoiding expensive deep copies or full re-initializations.
 #
-# Usage:
-#   snapshot!(struc)           # save pristine state
-#   <run sizing pipeline>
-#   restore!(struc)            # revert to pristine state
+# Named snapshots allow saving state at multiple pipeline stages:
+#   snapshot!(struc)                  # default :prepare key
+#   snapshot!(struc, :post_slab)      # after slab sizing
+#   restore!(struc)                   # restore :prepare
+#   restore!(struc, :post_slab)       # restore post-slab state
 # =============================================================================
+
+"""
+    SlabSnapshot
+
+Captured slab mutable state: result, design details, volumes, drop panel.
+"""
+struct SlabSnapshot
+    result::AbstractFloorResult
+    design_details::Union{Nothing, NamedTuple}
+    volumes::MaterialVolumes
+    drop_panel::Union{Nothing, DropPanelGeometry}
+end
 
 """
     DesignSnapshot{T, P}
 
-Lightweight capture of mutable `BuildingStructure` fields that change during design.
+Lightweight capture of mutable `BuildingStructure` fields that change during
+design.
 
-Stored on `struc._snapshot` via `snapshot!(struc)`.
-Restored via `restore!(struc)`.
+Named snapshots are stored in `struc._snapshots::Dict{Symbol, DesignSnapshot}`
+via `snapshot!(struc, key)`.  Restored via `restore!(struc, key)`.
 
 # Captured fields
 - Column dimensions (`c1`, `c2`) and sections
 - Beam sections
 - Cell self-weights and live loads
+- Slab results, design details, volumes, and drop panels
 """
 struct DesignSnapshot{T, P}
+    # ── Members ──
     column_c1::Vector{Union{T, Nothing}}
     column_c2::Vector{Union{T, Nothing}}
     column_sections::Vector{Union{AbstractSection, Nothing}}
     beam_sections::Vector{Union{AbstractSection, Nothing}}
+    # ── Cells ──
     cell_self_weights::Vector{P}
     cell_live_loads::Vector{P}
+    # ── Slabs ──
+    slab_snapshots::Vector{SlabSnapshot}
 end

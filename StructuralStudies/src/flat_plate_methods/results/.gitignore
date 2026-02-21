@@ -1,0 +1,7 @@
+# Keep only the latest snapshot of each result type.
+# Timestamped CSVs accumulate on every sweep run — ignore them in git
+# and track only the *_latest.csv aliases.
+*_20??????_??????.csv
+
+# Always track the "latest" aliases
+!*_latest.csv
