@@ -212,66 +212,64 @@ struct DDM <: FlatPlateAnalysisMethod
 end
 
 """
-    EFM(solver::Symbol = :asap)
+    EFM(; solver=:asap, column_stiffness=:Kec, cracked_columns=false, pattern_loading=true)
 
-Equivalent Frame Method - stiffness-based frame analysis.
+Equivalent Frame Method — stiffness-based frame analysis with composable options.
 
-# Solvers
-- `:asap` - Use ASAP structural analysis package (default)
-- `:moment_distribution` - Hardy Cross moment distribution [future]
+# Solver
+- `:asap` — ASAP structural analysis (direct stiffness, default)
+- `:hardy_cross` — Hardy Cross moment distribution
 
-# Options
-- `pattern_loading::Bool`: Enable ACI 318-11 §13.7.6 pattern loading (default: `true`).
-  Set to `false` for direct comparison with DDM which uses fixed coefficients.
+# Column Stiffness (`column_stiffness`)
+- `:Kec` — Equivalent column stiffness with torsional reduction (standard ACI §13.7).
+  `Kec = Kc×Kt/(Kc+Kt)`, where Kt is the torsional member stiffness.
+- `:Kc`  — Raw column flexural stiffness (no torsional reduction). Provides a
+  comparison point between standard EFM and FEA.
+
+# Cracked Columns (`cracked_columns`)
+- `false` (default) — Gross Ig for column stubs (PCA/ACI §13.7 convention).
+  Matches Hardy Cross cross-validation.
+- `true`  — 0.70 Ig for column stubs (ACI 318-11 §10.10.4.1).
+  Provides a direct comparison with FEA column modeling.
+  Only affects the `:asap` solver; Hardy Cross always uses gross Ig.
+
+# Pattern Loading (`pattern_loading`)
+- `true` (default) — Enable ACI 318-11 §13.7.6 checkerboard pattern loading.
+- `false` — Full load on all spans (for direct comparison with DDM).
+
+# Combinations
+| Constructor                                               | Torsion | Cracking | Notes                    |
+|-----------------------------------------------------------|---------|----------|--------------------------|
+| `EFM()`                                                   | Kec     | Gross Ig | Standard EFM             |
+| `EFM(column_stiffness=:Kc)`                               | Kc      | Gross Ig | Isolates torsion effect  |
+| `EFM(column_stiffness=:Kc, cracked_columns=true)`         | Kc      | 0.70 Ig  | Matches FEA convention   |
+| `EFM(solver=:hardy_cross)`                                | Kec     | Gross Ig | StructurePoint match     |
+| `EFM(solver=:hardy_cross, column_stiffness=:Kc)`          | Kc      | Gross Ig | HC without torsion       |
+| `EFM(cracked_columns=true)`                               | Kec     | 0.70 Ig  | Cracked + torsion        |
 
 # Reference
-- ACI 318-11 §13.7
+- ACI 318-11 §13.7, PCA Notes on ACI 318-11 Appendix 20A
 """
 struct EFM <: FlatPlateAnalysisMethod
     solver::Symbol
+    column_stiffness::Symbol
+    cracked_columns::Bool
     pattern_loading::Bool
-    
-    function EFM(solver::Symbol = :asap; pattern_loading::Bool = true)
-        solver in (:asap, :moment_distribution) || error("EFM solver must be :asap or :moment_distribution")
-        new(solver, pattern_loading)
-    end
-end
 
-"""
-    EFM_Kc(solver=:asap; pattern_loading=true)
-
-Equivalent Frame Method with raw column stiffness (no torsional reduction).
-
-This variant uses the column flexural stiffness `Kc` directly instead of the
-ACI-reduced equivalent column stiffness `Kec = Kc×Kt/(Kc+Kt)`. This provides
-a comparison point between standard EFM (with torsional flexibility) and FEA
-(which models full 3D stiffness).
-
-# Solvers
-- `:asap` - Use ASAP structural analysis package (default)
-- `:moment_distribution` - Hardy Cross moment distribution
-
-# Options
-- `pattern_loading::Bool`: Enable ACI 318-11 §13.7.6 pattern loading (default: `true`).
-
-# Comparison
-| Method   | Column Stiffness              | Moment Distribution |
-|----------|-------------------------------|---------------------|
-| DDM      | N/A (fixed coefficients)      | Fixed 0.65/0.35     |
-| EFM      | Kec = Kc×Kt/(Kc+Kt)          | Stiffness-based     |
-| EFM_Kc   | Kc (no torsional reduction)   | Stiffness-based     |
-| FEA      | Full 3D stiffness             | Finite element      |
-
-# Reference
-- ACI 318-11 §13.7 (modified)
-"""
-struct EFM_Kc <: FlatPlateAnalysisMethod
-    solver::Symbol
-    pattern_loading::Bool
-    
-    function EFM_Kc(solver::Symbol = :asap; pattern_loading::Bool = true)
-        solver in (:asap, :moment_distribution) || error("EFM_Kc solver must be :asap or :moment_distribution")
-        new(solver, pattern_loading)
+    function EFM(;
+        solver::Symbol = :asap,
+        column_stiffness::Symbol = :Kec,
+        cracked_columns::Bool = false,
+        pattern_loading::Bool = true,
+    )
+        solver in (:asap, :hardy_cross) ||
+            error("EFM solver must be :asap or :hardy_cross, got :$solver")
+        column_stiffness in (:Kec, :Kc) ||
+            error("EFM column_stiffness must be :Kec or :Kc, got :$column_stiffness")
+        if cracked_columns && solver == :hardy_cross
+            @warn "cracked_columns=true has no effect with :hardy_cross solver (PCA uses gross Ig)"
+        end
+        new(solver, column_stiffness, cracked_columns, pattern_loading)
     end
 end
 

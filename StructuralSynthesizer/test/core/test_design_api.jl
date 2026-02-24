@@ -41,7 +41,7 @@ println("Testing new design API...")
         @test opts_mddm.method isa DDM
         @test opts_mddm.method.variant == :simplified
 
-        opts_efm = FlatPlateOptions(method = EFM(:asap))
+        opts_efm = FlatPlateOptions(method = EFM(solver=:asap))
         @test opts_efm.method isa EFM
 
         opts_fea = FlatPlateOptions(method = FEA())
@@ -53,7 +53,7 @@ println("Testing new design API...")
         @test opts_efm.analysis_method == :efm
         @test opts_fea.analysis_method == :fea
 
-        opts_hc = FlatPlateOptions(method = EFM(:moment_distribution))
+        opts_hc = FlatPlateOptions(method = EFM(solver=:hardy_cross))
         @test opts_hc.analysis_method == :efm_hc
     end
 
@@ -75,7 +75,7 @@ println("Testing new design API...")
     @testset "DesignParameters.floor" begin
         # Floor field accepts typed options
         params = DesignParameters(
-            floor = FlatPlateOptions(method = EFM(:asap)),
+            floor = FlatPlateOptions(method = EFM(solver=:asap)),
         )
         @test !isnothing(params.floor)
         @test params.floor isa FlatPlateOptions

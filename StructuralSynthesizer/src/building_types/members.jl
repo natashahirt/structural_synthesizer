@@ -110,6 +110,9 @@ populate the `story_properties` field with:
     tributary_cell_indices::Set{Int} = Set{Int}()
     # Cell tributary areas in m² (populated by compute_vertex_tributaries!)
     tributary_cell_areas::Dict{Int, Float64} = Dict{Int, Float64}()
+    # Column at the same (x,y) position on the story above (populated by link_column_stack!).
+    # `nothing` at the roof level or when no column exists above.
+    column_above::Union{Nothing, Column{T}} = nothing
 end
 
 """

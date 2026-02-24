@@ -8,10 +8,11 @@
 #   1. Triangulated shell elements (Asap.Shell auto-mesher)
 #   2. ShellPatch at each column — mesh conforms to column perimeters,
 #      elements inside the patch receive 100× slab stiffness
-#   3. Column stub Elements from a fixed base (z = −Lc/2, representing the
-#      column inflection point) to the slab center node (z = 0).  Section
-#      properties are doubled (2A, 2I) to model the combined stiffness of
-#      upper + lower column halves.
+#   3. Column frame elements — up to two per column location:
+#      - Below column: fixed base at z = −Lc_below → slab (z = 0)
+#      - Above column: slab (z = 0) → fixed top at z = +Lc_above (if column above exists)
+#      At the roof level only the below column is created.  Each uses
+#      its actual length and section properties (I_factor × Ig per ACI 318-11 §10.10.4.1).
 #   4. Factored area load on the shell elements
 #
 # This replaces the old spring-based approach:
@@ -48,8 +49,12 @@ mutable struct FEAElementData
     ey::NTuple{2,Float64}         # local ŷ projected to 2D
 end
 
-# Column stub data for FEA cache: element + connection nodes.
-const ColStubData = NamedTuple{(:element, :base_node, :slab_node)}
+# Single column stub data: element + connection nodes.
+const ColStubHalf = NamedTuple{(:element, :base_node, :slab_node)}
+
+# Per-column stub data: below (always) + above (nothing at roof).
+const ColStubData = NamedTuple{(:below, :above),
+                               Tuple{ColStubHalf, Union{Nothing, ColStubHalf}}}
 
 """
     FEAModelCache
@@ -69,7 +74,7 @@ mutable struct FEAModelCache
 
     # Asap model + column stubs (persistent across iterations)
     model::Union{Nothing, Asap.Model}
-    col_stubs::Dict{Int, ColStubData}   # i => (element, base_node, slab_node)
+    col_stubs::Dict{Int, ColStubData}   # i => (below=..., above=...)
     shells::Union{Nothing, Vector{<:Asap.ShellElement}}  # shell elements from mesher
 
     # Per-element precomputed data (rebuilt after each solve)
@@ -171,45 +176,10 @@ function _ensure_ccw_vis!(vis::Vector{Int}, skel)
     return vis
 end
 
-# =============================================================================
-# Column Stub Section
-# =============================================================================
-
-"""
-    _column_stub_section(col, Ec, ν_concrete; I_factor=0.70) -> Section
-
-Build an Asap.Section for a column stub.  Properties are doubled to
-represent the combined stiffness of upper + lower column halves
-(each modeled as fixed-fixed, height Lc/2).
-
-`I_factor` reduces the gross moment of inertia for cracking per
-ACI 318-11 §10.10.4.1 (default 0.70 for columns).  Area is kept
-at gross (cracking reduces flexural stiffness, not axial area).
-
-For circular columns (col.shape == :circular), uses circular section
-properties: A = πD²/4, I = πD⁴/64, J = πD⁴/32.
-"""
-function _column_stub_section(col, Ec::Pressure, ν_concrete::Float64;
-                               I_factor::Float64 = 0.70)
-    cshape = col_shape(col)
-    c1 = col.c1
-    c2 = col.c2
-
-    if cshape == :circular
-        D = c1   # c1 = c2 = diameter for circular
-        A  = 2 * π * D^2 / 4
-        Ix = 2 * I_factor * π * D^4 / 64
-        Iy = Ix
-    else
-        A  = 2 * c1 * c2
-        Ix = 2 * I_factor * c1 * c2^3 / 12
-        Iy = 2 * I_factor * c2 * c1^3 / 12
-    end
-
-    J = Ix + Iy
-    G = Ec / (2 * (1 + ν_concrete))
-    return Asap.Section(A, Ec, G, Ix, Iy, J)
-end
+# Column section helper — delegates to the centralised `column_asap_section`
+# in `to_asap_section.jl` (single source of truth for Ig, J, I_factor).
+_col_asap_sec(col, Ec, ν; I_factor=0.70) =
+    column_asap_section(col.c1, col.c2, col_shape(col), Ec, ν; I_factor=I_factor)
 
 
 # =============================================================================
@@ -232,10 +202,18 @@ end
 
 """
     _build_fea_slab_model(struc, slab, columns, h, Ecs, ν_concrete, qu, Lc;
-                          target_edge=nothing, verbose=false)
+                          Ecc=Ecs, target_edge=nothing, verbose=false)
 
-Build a standalone Asap mixed model (shell + frame) with column stubs
+Build a standalone Asap mixed model (shell + frame) with column elements
 and ShellPatch mesh conformity at each column.
+
+Each column location gets up to two frame elements using the column's actual
+length (`col.base.L`).  `Lc` is retained in the signature for API
+compatibility but is not used internally.
+
+`Ecc` is the column concrete modulus (defaults to `Ecs` for same-strength
+buildings).  Column stubs use `Ecc`, not `Ecs`, since column concrete
+strength may differ from the slab.
 
 `target_edge = nothing` (default) → adaptive mesh scaled to the smallest cell's
 short span (from `SpanInfo.primary`): `clamp(min_span/20, 0.15, 0.75) m`, giving
@@ -245,6 +223,7 @@ Returns `(model, col_stubs, shells)`.
 """
 function _build_fea_slab_model(
     struc, slab, columns, h, Ecs, ν_concrete, qu, Lc;
+    Ecc::Pressure = Ecs,   # column concrete modulus (may differ from slab)
     target_edge::Union{Nothing, Length} = nothing,
     verbose::Bool = false,
     drop_panel::Union{Nothing, DropPanelGeometry} = nothing,
@@ -272,16 +251,23 @@ function _build_fea_slab_model(
         node_map[vi] = Asap.Node([xy[1] * u"m", xy[2] * u"m", 0.0u"m"], :free)
     end
 
-    # ─── 3. Column stubs + ShellPatches ───
-    stub_height = Lc / 2
+    # ─── 3. Column elements + ShellPatches ───
+    # Each column location gets up to two frame elements: one below the slab
+    # (always) and one above (if col.column_above exists).  Each element uses
+    # the column's actual length and section properties from
+    # `column_asap_section` (centralised in to_asap_section.jl), with fixed
+    # far ends.  This correctly models:
+    #   - Intermediate floors: combined stiffness of upper + lower columns
+    #   - Roof slabs: only the column below (no artificial 2× stiffening)
+    #   - Unequal columns: different sizes/heights above vs. below
     col_stubs = Dict{Int, Any}()
     frame_elements = Asap.FrameElement[]
-    base_nodes = Asap.Node[]
+    fixed_nodes = Asap.Node[]
     patches = Asap.ShellPatch[]
 
     # Shell section for patch (same E as slab — mesh conformity only)
     # Stiffness multipliers (10×, 100×) cause severe ill-conditioning
-    # on irregular/extreme-AR geometries.  The column stubs already
+    # on irregular/extreme-AR geometries.  The column elements already
     # provide the correct support stiffness via frame element mechanics.
     patch_section = Asap.ShellSection(
         uconvert(u"m", h),
@@ -301,22 +287,40 @@ function _build_fea_slab_model(
         slab_node = node_map[vi]
         xy = _vertex_xy_m(skel, vi)
 
-        # Base node below slab (fixed = inflection point at mid-story)
-        base = Asap.Node([xy[1] * u"m", xy[2] * u"m", -stub_height], :fixed)
-        push!(base_nodes, base)
+        # ── Below column (always present) ──
+        Lc_below = col.base.L
+        base_below = Asap.Node([xy[1] * u"m", xy[2] * u"m", -Lc_below], :fixed)
+        push!(fixed_nodes, base_below)
 
-        # Column stub (doubled section → combined upper + lower stiffness)
-        sec = _column_stub_section(col, Ecs, ν_concrete; I_factor=col_I_factor)
-        elem = Asap.Element(base, slab_node, sec, :col_stub)
-        push!(frame_elements, elem)
+        sec_below = _col_asap_sec(col, Ecc, ν_concrete; I_factor=col_I_factor)
+        elem_below = Asap.Element(base_below, slab_node, sec_below, :col_below)
+        push!(frame_elements, elem_below)
 
-        col_stubs[i] = (element=elem, base_node=base, slab_node=slab_node)
+        # ── Above column (only if a column exists above this one) ──
+        col_above = col.column_above
+        elem_above = nothing
+        base_above = nothing
+        if !isnothing(col_above)
+            Lc_above = col_above.base.L
+            base_above = Asap.Node([xy[1] * u"m", xy[2] * u"m", Lc_above], :fixed)
+            push!(fixed_nodes, base_above)
+
+            sec_above = _col_asap_sec(col_above, Ecc, ν_concrete; I_factor=col_I_factor)
+            elem_above = Asap.Element(slab_node, base_above, sec_above, :col_above)
+            push!(frame_elements, elem_above)
+        end
+
+        col_stubs[i] = (
+            below  = (element=elem_below,  base_node=base_below,  slab_node=slab_node),
+            above  = isnothing(elem_above) ? nothing :
+                     (element=elem_above, base_node=base_above, slab_node=slab_node),
+        )
 
         # ShellPatch for mesh conformity + stiffened region.
         # Circular columns use an equivalent-area square patch (side = D√(π/4))
         # rather than an octagon.  The Ruppert mesh refinement in Asap crashes
         # on the short polygon segments an octagon would introduce, and the
-        # actual circular column physics are captured by the stub section
+        # actual circular column physics are captured by the section
         # properties (πD²/4, πD⁴/64) and the face offset (D/2), not the
         # patch shape.
         cshape = col_shape(col)
@@ -337,7 +341,8 @@ function _build_fea_slab_model(
             shape_str = cshape == :circular ? "circular" : "rectangular"
             c1_mm = round(ustrip(u"m", col.c1)*1000, digits=0)
             c2_mm = round(ustrip(u"m", col.c2)*1000, digits=0)
-            @debug "  Col $i stub ($shape_str): Lc/2=$(round(ustrip(u"m", stub_height), digits=3))m, " *
+            above_str = isnothing(col_above) ? "roof (no above)" : "above+below"
+            @debug "  Col $i ($shape_str, $above_str): Lc=$(round(ustrip(u"m", Lc_below), digits=3))m, " *
                    "c1=$(c1_mm)mm, c2=$(c2_mm)mm"
         end
     end
@@ -434,7 +439,7 @@ function _build_fea_slab_model(
     loads = Asap.AbstractLoad[Asap.AreaLoad(shells, uconvert(u"Pa", qu))]
 
     # ─── 6. Build, process, solve ───
-    all_nodes = vcat(collect(values(node_map)), base_nodes)
+    all_nodes = vcat(collect(values(node_map)), fixed_nodes)
     model = Asap.Model(all_nodes, frame_elements, shells, loads)
     Asap.process!(model)
     Asap.solve!(model)
@@ -455,13 +460,14 @@ end
 # =============================================================================
 
 """
-    _update_and_resolve!(cache, h, Ecs, ν_concrete, qu, columns, Lc)
+    _update_and_resolve!(cache, h, Ecs, ν_concrete, qu, columns, Lc; Ecc, ...)
 
 Update an existing FEA model's shell properties, column stub sections,
 and load, then re-process and re-solve without re-triangulating.
 """
 function _update_and_resolve!(
     cache::FEAModelCache, h, Ecs, ν_concrete, qu, columns, Lc;
+    Ecc::Pressure = Ecs,   # column concrete modulus (may differ from slab)
     verbose::Bool = false,
     col_I_factor::Float64 = 0.70,
 )
@@ -483,10 +489,17 @@ function _update_and_resolve!(
         end
     end
 
-    # 3. Update column stub sections (column sizes may have changed)
+    # 3. Update column sections (column sizes may have changed)
+    #    Uses Ecc (column concrete modulus), not Ecs (slab concrete modulus).
     for (i, col) in enumerate(columns)
         haskey(cache.col_stubs, i) || continue
-        cache.col_stubs[i].element.section = _column_stub_section(col, Ecs, ν_concrete; I_factor=col_I_factor)
+        stubs = cache.col_stubs[i]
+        # Below column (always present)
+        stubs.below.element.section = _col_asap_sec(col, Ecc, ν_concrete; I_factor=col_I_factor)
+        # Above column (if column above exists)
+        if !isnothing(stubs.above) && !isnothing(col.column_above)
+            stubs.above.element.section = _col_asap_sec(col.column_above, Ecc, ν_concrete; I_factor=col_I_factor)
+        end
     end
 
     # 4. Values-only update: geometry/topology unchanged, only h/E/ν/qu changed
@@ -571,14 +584,17 @@ end
 
 """
     _build_or_update_fea!(cache, struc, slab, columns, h, Ecs, ν, qu, Lc;
-                          target_edge, verbose)
+                          Ecc, target_edge, verbose)
 
 If `cache` is uninitialized, build a fresh model.  Otherwise update
 section/load/stubs on the existing mesh and re-solve.
 Either way, precomputes per-element data afterward.
+
+`Ecc` is the column concrete modulus (defaults to `Ecs` for same-strength).
 """
 function _build_or_update_fea!(
     cache::FEAModelCache, struc, slab, columns, h, Ecs, ν_concrete, qu, Lc;
+    Ecc::Pressure = Ecs,   # column concrete modulus (may differ from slab)
     target_edge::Union{Nothing, Length} = nothing,
     verbose::Bool = false,
     drop_panel::Union{Nothing, DropPanelGeometry} = nothing,
@@ -587,7 +603,7 @@ function _build_or_update_fea!(
     if !cache.initialized
         fea = _build_fea_slab_model(
             struc, slab, columns, h, Ecs, ν_concrete, qu, Lc;
-            target_edge=target_edge, verbose=verbose, drop_panel=drop_panel,
+            Ecc=Ecc, target_edge=target_edge, verbose=verbose, drop_panel=drop_panel,
             col_I_factor=col_I_factor,
         )
         cache.model      = fea.model
@@ -596,7 +612,7 @@ function _build_or_update_fea!(
         cache.initialized = true
     else
         _update_and_resolve!(cache, h, Ecs, ν_concrete, qu, columns, Lc;
-                             verbose=verbose, col_I_factor=col_I_factor)
+                             Ecc=Ecc, verbose=verbose, col_I_factor=col_I_factor)
     end
 
     _precompute_element_data!(cache, cache.model, struc, slab)
@@ -608,27 +624,40 @@ end
 # =============================================================================
 
 """
-    _extract_stub_forces(stub) -> (Fz, Mx, My)
+    _extract_stub_forces_at_slab(stub; slab_end=:nodeEnd) -> (Fz, Mx, My)
 
-Extract column forces from a column stub element.  Returns Unitful (N, N·m).
+Extract column forces from a column stub element at the slab connection.
+Returns Unitful (N, N·m).
 
-Forces are read from the element's LCS at nodeEnd (slab connection,
-indices 7-12) and transformed to GCS using the element's local
-coordinate system axes.
+`slab_end` specifies which end of the element connects to the slab:
+- `:nodeEnd` (default) — below stub: base(fixed) → slab, slab is nodeEnd (indices 7-12)
+- `:nodeStart` — above stub: slab → top(fixed), slab is nodeStart (indices 1-6)
+
+Forces are read in the element's LCS and transformed to GCS.
 """
-function _extract_stub_forces(stub)
+function _extract_stub_forces_at_slab(stub; slab_end::Symbol = :nodeEnd)
     elem = stub.element
     X = elem.LCS[1]   # element X axis in GCS
     y = elem.LCS[2]   # element y axis in GCS
     z = elem.LCS[3]   # element z axis in GCS
 
-    # LCS forces at nodeEnd (slab connection)
-    P    = elem.forces[7]    # axial
-    Vy   = elem.forces[8]    # shear along y
-    Vz   = elem.forces[9]    # shear along z
-    T    = elem.forces[10]   # torsion about X
-    My_l = elem.forces[11]   # bending about y
-    Mz_l = elem.forces[12]   # bending about z
+    if slab_end === :nodeEnd
+        # LCS forces at nodeEnd (slab connection) — below stub
+        P    = elem.forces[7]
+        Vy   = elem.forces[8]
+        Vz   = elem.forces[9]
+        T    = elem.forces[10]
+        My_l = elem.forces[11]
+        Mz_l = elem.forces[12]
+    else
+        # LCS forces at nodeStart (slab connection) — above stub
+        P    = elem.forces[1]
+        Vy   = elem.forces[2]
+        Vz   = elem.forces[3]
+        T    = elem.forces[4]
+        My_l = elem.forces[5]
+        Mz_l = elem.forces[6]
+    end
 
     # Transform to GCS
     Fz   = (P * X[3] + Vy * y[3] + Vz * z[3]) * u"N"
@@ -641,7 +670,8 @@ end
 """
     _extract_fea_column_forces(col_stubs, span_axis, n_cols)
 
-Extract Vu, Mu, Mub from solved column stubs.  Returns Unitful vectors.
+Extract Vu, Mu, Mub from solved column stubs.  Sums contributions from
+both below and above stubs at each column location.  Returns Unitful vectors.
 """
 function _extract_fea_column_forces(col_stubs, span_axis::NTuple{2, Float64}, n_cols::Int)
     ax_len = hypot(span_axis...)
@@ -656,12 +686,27 @@ function _extract_fea_column_forces(col_stubs, span_axis::NTuple{2, Float64}, n_
     My  = Vector{MomentT}(undef, n_cols)
 
     for i in 1:n_cols
-        f = _extract_stub_forces(col_stubs[i])
-        Vu[i]  = uconvert(kip, abs(f.Fz))
-        Mu[i]  = uconvert(kip * u"ft", hypot(f.Mx, f.My))
-        Mub[i] = uconvert(kip * u"ft", abs(ax[1] * f.My - ax[2] * f.Mx))
-        Mx[i]  = uconvert(kip * u"ft", f.Mx)
-        My[i]  = uconvert(kip * u"ft", f.My)
+        stubs = col_stubs[i]
+
+        # Below stub — slab is nodeEnd
+        fb = _extract_stub_forces_at_slab(stubs.below; slab_end=:nodeEnd)
+        Fz_total = fb.Fz
+        Mx_total = fb.Mx
+        My_total = fb.My
+
+        # Above stub — slab is nodeStart (if present)
+        if !isnothing(stubs.above)
+            fa = _extract_stub_forces_at_slab(stubs.above; slab_end=:nodeStart)
+            Fz_total += fa.Fz
+            Mx_total += fa.Mx
+            My_total += fa.My
+        end
+
+        Vu[i]  = uconvert(kip, abs(Fz_total))
+        Mu[i]  = uconvert(kip * u"ft", hypot(Mx_total, My_total))
+        Mub[i] = uconvert(kip * u"ft", abs(ax[1] * My_total - ax[2] * Mx_total))
+        Mx[i]  = uconvert(kip * u"ft", Mx_total)
+        My[i]  = uconvert(kip * u"ft", My_total)
     end
 
     return (Vu=Vu, Mu=Mu, Mub=Mub, Mx=Mx, My=My)
@@ -911,6 +956,10 @@ end
 
 Run moment analysis using 2D shell FEA with column stub frame elements.
 
+Column stubs use `Ecc` (column concrete modulus), computed from the columns'
+own `fc′` when available, falling back to the slab `fc`.  This correctly
+handles mixed-strength buildings where column concrete differs from the slab.
+
 If `cache::FEAModelCache` is provided, the mesh is reused between
 iterations (only section + load + stubs are updated).  Per-element
 data (moments, centroids, LCS) is precomputed once per solve.
@@ -939,6 +988,11 @@ function run_moment_analysis(
     n_cols = length(supporting_columns)
     Lc = _get_column_height(supporting_columns)
 
+    # Column concrete modulus (may differ from slab fc)
+    fc_col = _get_column_fc(supporting_columns, fc)
+    wc_pcf = ustrip(pcf, γ_concrete)
+    Ecc = Ec(fc_col, wc_pcf)   # ACI 318-11 §19.2.2.1.a: 33 × wc^1.5 × √f'c
+
     if verbose
         @debug "═══════════════════════════════════════════════════════════════════"
         @debug "MOMENT ANALYSIS — FEA (Column Stubs + ShellPatch)"
@@ -954,7 +1008,7 @@ function run_moment_analysis(
     end
     _build_or_update_fea!(
         cache, struc, slab, supporting_columns, h, Ecs, ν_concrete, qu, Lc;
-        target_edge=method.target_edge, verbose=verbose, drop_panel=drop_panel,
+        Ecc=Ecc, target_edge=method.target_edge, verbose=verbose, drop_panel=drop_panel,
         col_I_factor=col_I_factor,
     )
     model = cache.model
@@ -1033,7 +1087,7 @@ function run_moment_analysis(
         joint_pos = [col.position for col in supporting_columns]
         cshape   = col_shape(first(supporting_columns))
         jKec     = _compute_joint_Kec(efm_spans, joint_pos, Lc, Ecs, Ecc_pat;
-                                      column_shape=cshape)
+                                      column_shape=cshape, columns=supporting_columns)
         n_efm_spans = length(efm_spans)
 
         # Full-load EFM baseline

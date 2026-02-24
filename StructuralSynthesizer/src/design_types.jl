@@ -276,7 +276,7 @@ params = DesignParameters(materials = MaterialOptions(concrete = NWC_5000))
 # Floor System
 Pass a typed `AbstractFloorOptions` via `floor`:
 ```julia
-params = DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
+params = DesignParameters(floor = FlatPlateOptions(method = EFM(solver=:asap)))
 ```
 
 # Example
@@ -331,7 +331,7 @@ Base.@kwdef mutable struct DesignParameters
     
     # ─── Floor Specification ───
     # The type IS the floor system:
-    #   DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
+    #   DesignParameters(floor = FlatPlateOptions(method = EFM(solver=:asap)))
     #   DesignParameters(floor = VaultOptions(lambda = 8.0))
     floor::Union{StructuralSizer.AbstractFloorOptions, Nothing} = nothing
     
@@ -447,7 +447,7 @@ Create a modified copy of `DesignParameters`.
 # Example
 ```julia
 base = DesignParameters(materials = MaterialOptions(concrete = NWC_5000))
-v1 = with(base; floor = FlatPlateOptions(method = EFM(:asap)))
+v1 = with(base; floor = FlatPlateOptions(method = EFM(solver=:asap)))
 v2 = with(base; floor = FlatSlabOptions(), loads = GravityLoads(floor_LL = 80.0psf))
 ```
 """

@@ -38,10 +38,12 @@ col_boundary_edge_dirs(col) = hasproperty(col, :boundary_edge_dirs) ? col.bounda
 method_name(method::DDM) = method.variant == :simplified ? "MDDM (Simplified)" : "DDM (ACI 8.10)"
 
 """Display name for EFM analysis method."""
-method_name(method::EFM) = "EFM (ACI 8.11, $(method.solver == :asap ? "ASAP FEM" : "Hardy Cross"))"
-
-"""Display name for EFM_Kc analysis method (raw column stiffness, no torsional reduction)."""
-method_name(method::EFM_Kc) = "EFM_Kc (Kc only, $(method.solver == :asap ? "ASAP FEM" : "Hardy Cross"))"
+function method_name(method::EFM)
+    solver_str = method.solver == :asap ? "ASAP FEM" : "Hardy Cross"
+    stiff_str  = method.column_stiffness == :Kc ? ", Kc" : ""
+    crack_str  = method.cracked_columns ? ", cracked" : ""
+    return "EFM (ACI 8.11, $(solver_str)$(stiff_str)$(crack_str))"
+end
 
 """Display name for FEA analysis method."""
 method_name(method::FEA) = "FEA (Shell + Springs, edge=$(method.target_edge))"
@@ -161,32 +163,14 @@ function column_moment_distribution_factors(struc, columns, column_opts)
     n = length(columns)
     factors = ones(Float64, n)
 
-    # Vertex coordinates for (x,y) matching across stories
-    vc = struc.skeleton.geometry.vertex_coords
-
-    # Build (x, y, story) → column lookup (rounded to avoid FP issues)
-    col_lookup = Dict{Tuple{Float64, Float64, Int}, Int}()
-    for (i, col) in enumerate(struc.columns)
-        xy_key = (round(vc[col.vertex_idx, 1]; digits=6),
-                  round(vc[col.vertex_idx, 2]; digits=6),
-                  col.story)
-        col_lookup[xy_key] = i
-    end
-
     # Default column Ec from column_opts (used when col.concrete is nothing)
     fc_default = column_opts.grade.fc′
     wc_default = ustrip(pcf, column_opts.grade.ρ)
     Ec_default = ustrip(ksi, Ec(fc_default, wc_default))  # ksi
 
     for (i, col_below) in enumerate(columns)
-        # Find column above at same (x,y), next story
-        xy_above = (round(vc[col_below.vertex_idx, 1]; digits=6),
-                    round(vc[col_below.vertex_idx, 2]; digits=6),
-                    col_below.story + 1)
-        above_idx = get(col_lookup, xy_above, nothing)
-        isnothing(above_idx) && continue  # no column above → factor stays 1.0
-
-        col_above = struc.columns[above_idx]
+        col_above = col_below.column_above
+        isnothing(col_above) && continue  # no column above → factor stays 1.0
 
         # Guard: skip if either column lacks cross-section dimensions
         (isnothing(col_below.c1) || isnothing(col_below.c2)) && continue
@@ -401,24 +385,6 @@ function enforce_method_applicability(method::EFM, struc, slab, columns; verbose
     end
 end
 
-"""
-    enforce_method_applicability(method::EFM_Kc, struc, slab, columns; verbose=false)
-
-Enforce that EFM_Kc is valid. Uses same applicability checks as EFM.
-"""
-function enforce_method_applicability(method::EFM_Kc, struc, slab, columns; verbose::Bool=false, kwargs...)
-    if verbose
-        @debug "───────────────────────────────────────────────────────────────────"
-        @debug "CHECKING EFM_Kc APPLICABILITY (same as EFM, ACI 318-11 §13.7)"
-        @debug "───────────────────────────────────────────────────────────────────"
-    end
-    
-    result = check_efm_applicability(struc, slab, columns; throw_on_failure=true)
-    
-    if verbose && result.ok
-        @debug "EFM_Kc applicability check: ✓ PASSED"
-    end
-end
 
 """
     enforce_method_applicability(method::FEA, struc, slab, columns; verbose=false)

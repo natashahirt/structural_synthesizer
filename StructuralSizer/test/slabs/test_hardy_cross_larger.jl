@@ -164,11 +164,16 @@ using StructuralSizer
             COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
+        # Mock column objects (identical columns above & below at each joint)
+        col_above_mock = (c1=c1, c2=c2, base=(L=H,), column_above=nothing)
+        mock_columns = [(c1=c1, c2=c2, base=(L=H,), column_above=col_above_mock) for _ in 1:n_joints]
+        
         # ASAP column-stub solution
-        model, span_elements = StructuralSizer.build_efm_asap_model(
+        model, span_elements, _ = StructuralSizer.build_efm_asap_model(
             spans, joint_positions, qu;
-            column_height=H, Ecs=Ecs, Ecc=Ecc,
-            ν_concrete=0.20, ρ_concrete=2380.0u"kg/m^3"
+            Ecs=Ecs, Ecc=Ecc,
+            ν_concrete=0.20, ρ_concrete=2380.0u"kg/m^3",
+            columns=mock_columns,
         )
         StructuralSizer.solve_efm_frame!(model)
         asap_moments = StructuralSizer.extract_span_moments(model, span_elements, spans; qu=qu)

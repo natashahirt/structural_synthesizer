@@ -29,62 +29,61 @@ Mutable cache that holds a built EFM Asap model so it can be reused across
 design iterations.  Only the element section properties and load magnitudes
 are updated; the topology (nodes, DOFs, connectivity) stays fixed.
 
+Column stubs follow the same pattern as `FEAModelCache`: each joint stores
+a `(below=..., above=...)` named tuple with the element and its fixed-end
+node.  Roof joints have `above = nothing`.
+
 Create with `EFMModelCache()` before the design loop and pass as the
 `efm_cache` keyword to `run_moment_analysis`.
 """
 mutable struct EFMModelCache
     initialized::Bool
-    model::Union{Nothing, Model}                 # Asap.Model (concrete)
+    model::Union{Nothing, Model}                 # Asap.Model
     span_elements::Vector{Element{FixedFixed}}   # slab-beam elements
-    col_elements::Vector{Element{FixedFixed}}    # column stub elements
-    joint_Kec::Vector                            # Kec per joint (Unitful Moment)
+    col_stubs::Dict{Int, NamedTuple}             # j => (below=..., above=...)
     n_spans::Int
     # Span property cache (skip rebuild when column sizes + h unchanged)
     _last_span_key::Union{Nothing, UInt64}
     _last_spans::Union{Nothing, Vector}
 
-    EFMModelCache() = new(false, nothing, Element{FixedFixed}[], Element{FixedFixed}[], [], 0,
+    EFMModelCache() = new(false, nothing, Element{FixedFixed}[], Dict{Int,NamedTuple}(), 0,
                           nothing, nothing)
 end
 
 """Populate an EFMModelCache from a freshly built model."""
-function _populate_efm_cache!(cache::EFMModelCache, model, span_elements, spans, jKec)
-    n_sp = length(spans)
-    n_slab_elems = length(span_elements)  # 3 per span for sub-element model
+function _populate_efm_cache!(cache::EFMModelCache, model, span_elements, col_stubs, spans)
     cache.initialized    = true
     cache.model          = model
     cache.span_elements  = collect(Element{FixedFixed}, span_elements)
-    cache.col_elements   = collect(Element{FixedFixed}, model.elements[(n_slab_elems+1):end])
-    cache.joint_Kec      = collect(jKec)
-    cache.n_spans        = n_sp
+    cache.col_stubs      = col_stubs
+    cache.n_spans        = length(spans)
 end
 
 """
-    _update_efm_sections_and_loads!(cache, spans, joint_positions, qu, Ecs, Ecc, H,
-                                    ν_concrete, ρ_concrete; column_shape)
+    _update_efm_sections_and_loads!(cache, spans, qu, Ecs, Ecc, ν_concrete, ρ_concrete, columns;
+                                    col_I_factor)
 
-Update section properties and loads on a cached EFM model to reflect new column
-sizes and/or slab thickness.  Avoids reallocating nodes, elements, and loads.
+Update section properties and loads on a cached EFM ASAP model.
 
-Handles the 3-sub-element-per-span layout: rigid_L, clear, rigid_R.
+Slab-beam sections are rebuilt from the current `h` and `l2`.  Column stub
+sections are updated via `column_asap_section` — the same single source of
+truth used by the FEA path.  No Kec → Ic_eff back-solve; the ASAP solver
+computes column stiffness from actual geometry.
 """
 function _update_efm_sections_and_loads!(
     cache::EFMModelCache,
     spans::Vector{<:EFMSpanProperties},
-    joint_positions::Vector{Symbol},
     qu::Pressure,
     Ecs::Pressure,
     Ecc::Pressure,
-    H::Length,
     ν_concrete::Float64,
-    ρ_concrete;
-    column_shape::Symbol = :rectangular,
+    ρ_concrete,
+    columns;
+    col_I_factor::Float64 = 0.70,
 )
     model = cache.model
     span_elements = cache.span_elements
-    col_elements  = cache.col_elements
     n_spans  = cache.n_spans
-    n_joints = n_spans + 1
 
     h  = spans[1].h
     l2 = spans[1].l2
@@ -98,7 +97,6 @@ function _update_efm_sections_and_loads!(
     G_slab_Pa = uconvert(u"Pa", G_slab)
 
     # ── Slab sections (3 per span) ──
-    # Clear-span section: gross I
     clear_sec = Section(
         uconvert(u"m^2", A_slab), Ecs_Pa, G_slab_Pa,
         uconvert(u"m^4", Is_gross),
@@ -139,52 +137,29 @@ function _update_efm_sections_and_loads!(
             span_elements[idx_base + 2].section = clear_sec
             span_elements[idx_base + 3].section = rigid_sec_right
         else
-            # Legacy single-element fallback
             span_elements[i].section = clear_sec
         end
     end
 
-    # ── Column stub sections ──
-    G_col   = Ecc / (2 * (1 + ν_concrete))
-    col_factors = pca_column_factors(H, h)
-    k_col = col_factors.k
-    new_Kec = Vector{Moment}(undef, n_joints)
-
+    # ── Column stub sections (same as FEA: column_asap_section) ──
+    n_joints = n_spans + 1
     for j in 1:n_joints
-        if j == 1
-            c1 = spans[1].c1_left;  c2 = spans[1].c2_left
-        elseif j == n_joints
-            c1 = spans[end].c1_right; c2 = spans[end].c2_right
-        else
-            c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
-            c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
+        haskey(cache.col_stubs, j) || continue
+        stubs = cache.col_stubs[j]
+        col = columns[j]
+
+        # Below stub (always present)
+        stubs.below.element.section = column_asap_section(
+            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=col_I_factor)
+
+        # Above stub (if column above exists)
+        col_above = col.column_above
+        if !isnothing(stubs.above) && !isnothing(col_above)
+            stubs.above.element.section = column_asap_section(
+                col_above.c1, col_above.c2, col_shape(col_above), Ecc, ν_concrete;
+                I_factor=col_I_factor)
         end
-
-        c2_tor = column_shape == :circular ? equivalent_square_column(c2) : c2
-        Ic     = column_moment_of_inertia(c1, c2; shape=column_shape)
-        Kc     = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
-        C_t    = torsional_constant_C(h, c2_tor)
-        Kt1    = torsional_member_stiffness_Kt(Ecs, C_t, l2, c2_tor)
-
-        n_tor  = joint_positions[j] == :interior ? 2 : 1
-        Kec    = equivalent_column_stiffness_Kec(2 * Kc, n_tor * Kt1)
-        new_Kec[j] = Kec
-
-        Ic_eff = ustrip(u"lbf*inch", Kec) * ustrip(u"inch", H) /
-                 (8 * ustrip(u"psi", Ecc)) * u"inch^4"
-
-        col_sec = Section(
-            uconvert(u"m^2", c1 * c2),
-            uconvert(u"Pa", Ecc),
-            uconvert(u"Pa", G_col),
-            uconvert(u"m^4", Ic_eff),
-            uconvert(u"m^4", Ic_eff),
-            uconvert(u"m^4", _torsional_constant_rect(c1, c2)),
-            ρ_concrete
-        )
-        col_elements[j].section = col_sec
     end
-    cache.joint_Kec = new_Kec
 
     # ── Loads ──
     w_N_m = uconvert(u"N/m", qu * l2)
@@ -202,27 +177,13 @@ end
 # =============================================================================
 
 """
-    run_moment_analysis(method::EFM, struc, slab, columns, h, fc, Ecs, γ_concrete; ν_concrete, verbose)
+    run_moment_analysis(method::EFM, struc, slab, columns, h, fc, Ecs, γ_concrete; kwargs...)
 
 Run moment analysis using Equivalent Frame Method (EFM).
 
 EFM models the slab strip as a continuous beam supported on equivalent columns.
-The equivalent column stiffness K_ec accounts for:
-- Column flexural stiffness (K_c)
-- Torsional flexibility of the slab-column connection (K_t)
-
-Combined in series: 1/K_ec = 1/ΣK_c + 1/ΣK_t
-
-# Arguments
-- `method::EFM`: EFM method with solver selection
-- `struc`: BuildingStructure with cells, columns, and loads
-- `slab`: Slab being designed
-- `columns`: Vector of supporting columns
-- `h::Length`: Slab thickness
-- `fc::Pressure`: Concrete compressive strength
-- `Ecs::Pressure`: Slab concrete modulus of elasticity
-- `γ_concrete`: Concrete unit weight
-- `ν_concrete`: Concrete Poisson's ratio (from user's material)
+Behavior is controlled by `method.solver`, `method.column_stiffness`, and
+`method.cracked_columns` — see [`EFM`](@ref) for the full option matrix.
 
 # Returns
 `MomentAnalysisResult` with all moments and geometry data.
@@ -246,9 +207,14 @@ function run_moment_analysis(
     cache = nothing,  # API parity (unused by EFM)
     drop_panel::Union{Nothing, DropPanelGeometry} = nothing,
     βt::Float64 = 0.0,  # API parity (unused by EFM — torsion captured in Kt)
-    col_I_factor::Float64 = 0.70,  # API parity (unused by EFM — Kec uses gross Ic per PCA)
-    use_kc_only::Bool = false,  # EFM_Kc: skip torsional reduction
+    col_I_factor::Float64 = 0.70,  # ignored — determined by method.cracked_columns
 )
+    # Derive col_I_factor from method fields:
+    #   - ASAP stubs: gross Ig (1.0) unless cracked_columns=true (0.70)
+    #   - Hardy Cross: always gross Ig (PCA convention, stiffness in Kec)
+    col_I_factor = (method.solver == :asap && method.cracked_columns) ? 0.70 : 1.0
+    use_kc_only = method.column_stiffness == :Kc
+
     # Shared setup: l1, l2, ln, span_axis, c1_avg, qD, qL, qu, M0
     setup = _moment_analysis_setup(struc, slab, supporting_columns, h, γ_concrete)
     (; l1, l2, ln, c1_avg, qD, qL, qu, M0) = setup
@@ -261,6 +227,7 @@ function run_moment_analysis(
         @debug "═══════════════════════════════════════════════════════════════════"
         @debug "MOMENT ANALYSIS - EFM (Equivalent Frame Method)"
         @debug "═══════════════════════════════════════════════════════════════════"
+        @debug "Solver" solver=method.solver column_stiffness=method.column_stiffness cracked=method.cracked_columns
         @debug "Geometry" l1=l1 l2=l2 ln=ln c_avg=c1_avg h=h
         @debug "Loads" qD=qD qL=qL qu=qu
         @debug "Reference M₀" M0=uconvert(kip*u"ft", M0)
@@ -299,10 +266,11 @@ function run_moment_analysis(
     n_spans = length(spans)
     use_pattern = method.pattern_loading && requires_pattern_loading(qD, qL) && n_spans >= 2
     
-    # Precompute joint Kec once — invariant across pattern cases
-    _cached_jKec = method.solver == :moment_distribution ?
+    # Precompute joint Kec for Hardy Cross (invariant across pattern cases)
+    _cached_jKec = method.solver == :hardy_cross ?
         _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; 
-                           column_shape=col_shape_val, use_kc_only=use_kc_only) :
+                           column_shape=col_shape_val, use_kc_only=use_kc_only,
+                           columns=supporting_columns) :
         nothing
     
     # ─── Helper: run solver once for a given (scalar or per-span) load ───
@@ -310,13 +278,11 @@ function run_moment_analysis(
         if method.solver == :asap
             if !isnothing(efm_cache) && efm_cache.initialized
                 _update_efm_sections_and_loads!(
-                    efm_cache, spans, joint_positions, qu, Ecs, Ecc, H,
-                    ν_concrete, γ_concrete;
-                    column_shape = col_shape_val,
+                    efm_cache, spans, qu, Ecs, Ecc,
+                    ν_concrete, γ_concrete, supporting_columns;
+                    col_I_factor = col_I_factor,
                 )
                 # Override per-span loads for pattern loading
-                # With 3 sub-elements per span, loads are on all 3*n_spans elements.
-                # Each group of 3 loads corresponds to one span.
                 _is_pattern = qu_arg isa Vector
                 if _is_pattern
                     n_loads = length(efm_cache.model.loads)
@@ -331,17 +297,16 @@ function run_moment_analysis(
                 solve_efm_frame!(efm_cache.model; full_process=false, loads_only=_is_pattern)
                 return extract_span_moments(
                     efm_cache.model, efm_cache.span_elements, spans; qu=qu
-                ), efm_cache.joint_Kec
+                )
             else
-                model, span_elements, jKec = build_efm_asap_model(
+                model, span_elements, col_stubs = build_efm_asap_model(
                     spans, joint_positions, qu;
-                    column_height = H,
                     Ecs = Ecs, Ecc = Ecc,
                     ν_concrete = ν_concrete,
                     ρ_concrete = γ_concrete,
-                    column_shape = col_shape_val,
+                    columns = supporting_columns,
                     verbose = verbose,
-                    use_kc_only = use_kc_only,
+                    col_I_factor = col_I_factor,
                 )
                 # Override per-span loads for pattern loading
                 if qu_arg isa Vector
@@ -357,20 +322,19 @@ function run_moment_analysis(
                 solve_efm_frame!(model)
                 sm = extract_span_moments(model, span_elements, spans; qu=qu)
 
-                !isnothing(efm_cache) && _populate_efm_cache!(efm_cache, model, span_elements, spans, jKec)
-                return sm, jKec
+                !isnothing(efm_cache) && _populate_efm_cache!(efm_cache, model, span_elements, col_stubs, spans)
+                return sm
             end
 
-        elseif method.solver == :moment_distribution
-            sm = solve_moment_distribution(spans, _cached_jKec, joint_positions, qu_arg; verbose=false)
-            return sm, _cached_jKec
+        elseif method.solver == :hardy_cross
+            return solve_moment_distribution(spans, _cached_jKec, joint_positions, qu_arg; verbose=false)
         else
             error("Unknown EFM solver: $(method.solver)")
         end
     end
     
     # ─── Run full-load case (always needed as baseline) ───
-    span_moments, joint_Kec = _solve_once(qu)
+    span_moments = _solve_once(qu)
     
     if verbose
         solver_name = method.solver == :asap ? "EFM FRAME" : "MOMENT DISTRIBUTION"
@@ -397,7 +361,7 @@ function run_moment_analysis(
             all(==(:dead_plus_live), pattern) && continue
             
             qu_per_span = factored_pattern_loads(pattern, qD, qL)
-            sm_pat, _ = _solve_once(qu_per_span)
+            sm_pat = _solve_once(qu_per_span)
             
             # Envelope: take maximum absolute moment at each location
             pat_neg_ext = sm_pat[1].M_neg_left
@@ -445,40 +409,6 @@ function run_moment_analysis(
     )
 end
 
-# =============================================================================
-# EFM_Kc Dispatch — Raw Column Stiffness (No Torsional Reduction)
-# =============================================================================
-
-"""
-    run_moment_analysis(method::EFM_Kc, ...) -> MomentAnalysisResult
-
-Run EFM with raw column stiffness `Kc` instead of equivalent `Kec`.
-
-This variant skips the torsional reduction `Kec = Kc×Kt/(Kc+Kt)` and uses
-the column flexural stiffness directly. This provides a comparison point
-between standard EFM (with torsional flexibility) and FEA.
-
-Delegates to the standard EFM solver with `use_kc_only=true`.
-"""
-function run_moment_analysis(
-    method::EFM_Kc,
-    struc,
-    slab,
-    supporting_columns,
-    h::Length,
-    fc::Pressure,
-    Ecs::Pressure,
-    γ_concrete;
-    kwargs...
-)
-    # Convert EFM_Kc to EFM with use_kc_only=true
-    efm_method = EFM(method.solver; pattern_loading=method.pattern_loading)
-    return run_moment_analysis(
-        efm_method, struc, slab, supporting_columns, h, fc, Ecs, γ_concrete;
-        use_kc_only = true,
-        kwargs...
-    )
-end
 
 # =============================================================================
 # Secondary (Perpendicular) Direction — EFM
@@ -504,9 +434,10 @@ function run_secondary_moment_analysis(
     ν_concrete::Float64 = 0.20,
     verbose::Bool = false,
     drop_panel = nothing,
-    use_kc_only::Bool = false,
     kwargs...
 )
+    use_kc_only = method.column_stiffness == :Kc
+
     setup = _secondary_moment_analysis_setup(struc, slab, supporting_columns, h, γ_concrete)
     (; l1, l2, ln, span_axis, c1_avg, qD, qL, qu, M0) = setup
     n_cols = length(supporting_columns)
@@ -526,7 +457,8 @@ function run_secondary_moment_analysis(
 
     # Solve via moment distribution (lightweight, always available)
     jKec = _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; 
-                              column_shape=col_shape_val, use_kc_only=use_kc_only)
+                              column_shape=col_shape_val, use_kc_only=use_kc_only,
+                              columns=supporting_columns)
     span_moments = solve_moment_distribution(spans, jKec, joint_positions, qu; verbose=false)
 
     M_neg_ext = span_moments[1].M_neg_left
@@ -572,32 +504,12 @@ function run_secondary_moment_analysis(
     )
 end
 
-"""
-    run_secondary_moment_analysis(method::EFM_Kc, ...) -> MomentAnalysisResult
-
-Run EFM_Kc (raw column stiffness) in the perpendicular direction.
-Delegates to EFM with `use_kc_only=true`.
-"""
-function run_secondary_moment_analysis(
-    method::EFM_Kc,
-    struc, slab, supporting_columns, h::Length,
-    fc::Pressure, Ecs::Pressure, γ_concrete;
-    kwargs...
-)
-    efm_method = EFM(method.solver; pattern_loading=method.pattern_loading)
-    return run_secondary_moment_analysis(
-        efm_method, struc, slab, supporting_columns, h, fc, Ecs, γ_concrete;
-        use_kc_only = true,
-        kwargs...
-    )
-end
-
 # =============================================================================
 # EFM Joint Stiffness Computation
 # =============================================================================
 
 """
-    _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; ...)
+    _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; columns=nothing, ...)
 
 Compute equivalent column stiffness Kec at each joint.
 
@@ -607,13 +519,22 @@ Kec combines column and torsional stiffness in series:
 Column stiffness factor `k_col` is looked up from PCA Table A7 based on
 actual `H/Hc` ratio (replacing the old hardcoded PCA_K_COL = 4.74).
 
+When `columns` is provided, `ΣKc` is computed as `Kc_below + Kc_above`
+where `Kc_above` uses the column above's dimensions and height (if it exists).
+At the roof level (no column above), `ΣKc = Kc_below` only.
+
+When `columns` is `nothing` (legacy), assumes identical columns above and
+below (`ΣKc = 2 × Kc`).
+
 # Returns
 Vector of Kec values (in Moment units) for each joint.
 
 # Options
+- `columns`: Optional sorted column vector (same order as joints).
+  When provided, uses `col.column_above` for accurate above/below stiffness.
 - `use_kc_only::Bool`: If `true`, skip torsional reduction and use raw column
-  stiffness `Kc` instead of equivalent `Kec`. Used by `EFM_Kc` method for
-  comparison with FEA. Default: `false`.
+  stiffness `Kc` instead of equivalent `Kec` (set by `EFM(column_stiffness=:Kc)`).
+  Default: `false`.
 """
 function _compute_joint_Kec(
     spans::Vector{<:EFMSpanProperties},
@@ -622,7 +543,8 @@ function _compute_joint_Kec(
     Ecs::Pressure,
     Ecc::Pressure;
     column_shape::Symbol = :rectangular,
-    use_kc_only::Bool = false
+    use_kc_only::Bool = false,
+    columns = nothing,
 )
     n_spans = length(spans)
     n_joints = n_spans + 1
@@ -637,7 +559,7 @@ function _compute_joint_Kec(
     joint_Kec = Vector{Moment}(undef, n_joints)
     
     for j in 1:n_joints
-        # Get column dimensions at this joint
+        # Get column dimensions at this joint (below column)
         if j == 1
             c1 = spans[1].c1_left
             c2 = spans[1].c2_left
@@ -652,13 +574,30 @@ function _compute_joint_Kec(
         # For circular columns, use equivalent square for torsional calc
         c2_torsion = column_shape == :circular ? equivalent_square_column(c2) : c2
         
-        # Column stiffness using geometry-dependent k_col from PCA Table A7
+        # Column stiffness below (always present)
         Ic = column_moment_of_inertia(c1, c2; shape=column_shape)
-        Kc = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
-        ΣKc = 2 * Kc  # Above and below
+        Kc_below = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
+
+        # Column stiffness above: use actual column_above when available
+        col_above = !isnothing(columns) ? columns[j].column_above : nothing
+        if !isnothing(col_above)
+            c1_a = col_above.c1
+            c2_a = col_above.c2
+            H_a  = col_above.base.L
+            col_factors_a = pca_column_factors(H_a, h)
+            Ic_a = column_moment_of_inertia(c1_a, c2_a; shape=column_shape)
+            Kc_above = column_stiffness_Kc(Ecc, Ic_a, H_a, h; k_factor=col_factors_a.k)
+        elseif isnothing(columns)
+            # Legacy fallback: assume identical column above
+            Kc_above = Kc_below
+        else
+            # Roof: no column above
+            Kc_above = zero(Kc_below)
+        end
+        ΣKc = Kc_below + Kc_above
         
         if use_kc_only
-            # EFM_Kc: use raw column stiffness (no torsional reduction)
+            # column_stiffness=:Kc — raw column stiffness (no torsional reduction)
             joint_Kec[j] = ΣKc
         else
             # Standard EFM: combine with torsional flexibility
@@ -690,7 +629,7 @@ end
     build_efm_asap_model(spans, joint_positions, qu; kwargs...)
 
 Build an ASAP frame model for EFM analysis using **3 sub-elements per span**
-(rigid zone – clear span – rigid zone) and column stubs with Kec-derived Ic.
+(rigid zone – clear span – rigid zone) and explicit column stubs.
 
 # Slab-Beam Model (ACI 318-11 §13.7.3.3)
 
@@ -709,89 +648,52 @@ moment distribution from the actual non-prismatic geometry.
 
 # Column Model
 
-Column stiffness factor `k_col` is interpolated from PCA Table A7 based on
-actual `ta/tb` and `H/Hc` ratios (replacing the old hardcoded PCA_K_COL).
-Column stubs use Ic_eff derived from Kec:
-    Ic_eff = Kec × H / (8 × Ecc)
+Each joint gets up to two column frame elements (same pattern as FEA):
+- **Below column** (always present): fixed base at z = −Lc → slab node (z = 0)
+- **Above column** (if `col.column_above` exists): slab node → fixed top at z = +Lc_above
+
+Section properties come from `column_asap_section` (single source of truth),
+with I_factor = 0.70 per ACI 318-11 §10.10.4.1.  The ASAP solver computes
+column stiffness from actual geometry — no Kec → Ic_eff back-solve.
+
+Roof joints get only the below stub; intermediate joints get both.
+Unequal columns above/below are handled naturally.
+
+# Arguments
+- `columns`: Vector of column objects (one per joint), each with fields
+  `c1`, `c2`, `base.L` (column length), and `column_above` (column above
+  or `nothing` for roof).  NamedTuples work fine for tests.
 
 # Returns
 - `model`: ASAP Model ready to solve
-- `span_elements`: Vector of slab-beam elements (3 per span: [rigid_L, clear, rigid_R, ...])
-- `joint_Kec`: Vector of equivalent column stiffnesses at each joint
+- `span_elements`: Vector of slab-beam elements (3 per span)
+- `col_stubs`: Dict{Int, NamedTuple} — joint index → (below=..., above=...)
 
 # Reference
 - ACI 318-11 §13.7.3.3 — Slab-beam moment of inertia at column regions
-- PCA Notes on ACI 318-11 Tables A1, A7
+- ACI 318-11 §10.10.4.1 — Column cracking reduction factor
 """
 function build_efm_asap_model(
     spans::Vector{<:EFMSpanProperties},
     joint_positions::Vector{Symbol},
     qu::Pressure;
-    column_height::Length,
     Ecs::Pressure,
     Ecc::Pressure,
     ν_concrete::Float64,
     ρ_concrete,
-    column_shape::Symbol = :rectangular,
+    columns,
     verbose::Bool = false,
-    use_kc_only::Bool = false
+    col_I_factor::Float64 = 0.70,
 )
     n_spans = length(spans)
     n_joints = n_spans + 1
 
     l2 = spans[1].l2
     h  = spans[1].h
-    H  = column_height
 
     Ecs_Pa = uconvert(u"Pa", Ecs)
-    Ecc_Pa = uconvert(u"Pa", Ecc)
-
     G_slab = Ecs / (2 * (1 + ν_concrete))
-    G_col  = Ecc / (2 * (1 + ν_concrete))
     ρ = ρ_concrete
-
-    # ── Column stiffness factor from PCA Table A7 (geometry-dependent) ──
-    col_factors = pca_column_factors(H, h)
-    k_col = col_factors.k
-
-    # ── Compute Kec and Ic_eff at each joint ──
-    joint_Kec    = Vector{Moment}(undef, n_joints)
-    joint_Ic_eff = Vector{typeof(1.0u"inch^4")}(undef, n_joints)
-
-    for j in 1:n_joints
-        if j == 1
-            c1 = spans[1].c1_left;  c2 = spans[1].c2_left
-        elseif j == n_joints
-            c1 = spans[end].c1_right; c2 = spans[end].c2_right
-        else
-            c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
-            c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
-        end
-
-        c2_torsion = column_shape == :circular ? equivalent_square_column(c2) : c2
-
-        Ic = column_moment_of_inertia(c1, c2; shape=column_shape)
-        Kc = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
-
-        C_t = torsional_constant_C(h, c2_torsion)
-        Kt_single = torsional_member_stiffness_Kt(Ecs, C_t, l2, c2_torsion)
-
-        n_torsion = joint_positions[j] == :interior ? 2 : 1
-        ΣKc = 2 * Kc
-        ΣKt = n_torsion * Kt_single
-
-        Kec = use_kc_only ? ΣKc : equivalent_column_stiffness_Kec(ΣKc, ΣKt)
-        joint_Kec[j] = Kec
-
-        # Ic_eff from Kec: K_stub = 8 × E × Ic_eff / H
-        Ic_eff = ustrip(u"lbf*inch", Kec) * ustrip(u"inch", H) /
-                 (8 * ustrip(u"psi", Ecc)) * u"inch^4"
-        joint_Ic_eff[j] = Ic_eff
-
-        if verbose
-            @debug "Joint $j ($(joint_positions[j]))" k_col Kc=uconvert(u"lbf*inch", Kc) Kt=uconvert(u"lbf*inch", Kt_single) Kec=uconvert(u"lbf*inch", Kec) Ic_eff=uconvert(u"inch^4", Ic_eff)
-        end
-    end
 
     # ── Build nodes ──
     nodes = Node[]
@@ -809,14 +711,12 @@ function build_efm_asap_model(
     end
 
     # Face-of-column nodes (2 per span: left face, right face)
-    # These are intermediate nodes within each span.
-    face_node_indices = Vector{NTuple{2, Int}}(undef, n_spans)  # (left_face, right_face)
+    face_node_indices = Vector{NTuple{2, Int}}(undef, n_spans)
     for i in 1:n_spans
         sp = spans[i]
         x_left_center = nodes[slab_node_indices[i]].position[1]
         x_right_center = nodes[slab_node_indices[i+1]].position[1]
 
-        # Half-column widths at each end
         c1_left_half  = uconvert(u"m", sp.c1_left / 2)
         c1_right_half = uconvert(u"m", sp.c1_right / 2)
 
@@ -830,25 +730,14 @@ function build_efm_asap_model(
         face_node_indices[i] = (idx_lf, idx_rf)
     end
 
-    # Column base nodes (fixed, H/2 below slab)
-    col_base_indices = Int[]
-    H_stub_m = uconvert(u"m", H / 2)
-    for j in 1:n_joints
-        x_j = nodes[slab_node_indices[j]].position[1]
-        push!(nodes, Node([x_j, 0.0u"m", -H_stub_m], :fixed))
-        push!(col_base_indices, length(nodes))
-    end
-
     # ── Build slab-beam elements (3 per span) ──
     elements = Element[]
-    span_elements = Element[]  # all slab elements in order: [rigid_L₁, clear₁, rigid_R₁, rigid_L₂, ...]
+    span_elements = Element[]
 
-    # Section properties
     Is_gross = l2 * h^3 / 12
     A_slab   = l2 * h
     J_slab   = _torsional_constant_rect(l2, h)
 
-    # Clear-span section: gross I
     clear_sec = Section(
         uconvert(u"m^2", A_slab),
         Ecs_Pa,
@@ -864,7 +753,6 @@ function build_efm_asap_model(
         (idx_lf, idx_rf) = face_node_indices[i]
 
         # Rigid-zone section: ACI 318-11 §13.7.3.3
-        # I_rigid = I_s / (1 - c₂/l₂)²
         c2_left  = sp.c2_left
         c2_right = sp.c2_right
         ratio_left  = ustrip(c2_left) / ustrip(uconvert(unit(c2_left), l2))
@@ -873,29 +761,20 @@ function build_efm_asap_model(
         Is_rigid_right = Is_gross / (1 - ratio_right)^2
 
         rigid_sec_left = Section(
-            uconvert(u"m^2", A_slab),
-            Ecs_Pa,
-            uconvert(u"Pa", G_slab),
+            uconvert(u"m^2", A_slab), Ecs_Pa, uconvert(u"Pa", G_slab),
             uconvert(u"m^4", Is_rigid_left),
             uconvert(u"m^4", Is_rigid_left / 10),
-            uconvert(u"m^4", J_slab),
-            ρ
+            uconvert(u"m^4", J_slab), ρ
         )
         rigid_sec_right = Section(
-            uconvert(u"m^2", A_slab),
-            Ecs_Pa,
-            uconvert(u"Pa", G_slab),
+            uconvert(u"m^2", A_slab), Ecs_Pa, uconvert(u"Pa", G_slab),
             uconvert(u"m^4", Is_rigid_right),
             uconvert(u"m^4", Is_rigid_right / 10),
-            uconvert(u"m^4", J_slab),
-            ρ
+            uconvert(u"m^4", J_slab), ρ
         )
 
-        # Element 1: rigid zone left (column center → left face)
         e_rigid_L = Element(nodes[slab_node_indices[i]], nodes[idx_lf], rigid_sec_left)
-        # Element 2: clear span (left face → right face)
         e_clear   = Element(nodes[idx_lf], nodes[idx_rf], clear_sec)
-        # Element 3: rigid zone right (right face → column center)
         e_rigid_R = Element(nodes[idx_rf], nodes[slab_node_indices[i+1]], rigid_sec_right)
 
         push!(elements, e_rigid_L); push!(span_elements, e_rigid_L)
@@ -903,28 +782,49 @@ function build_efm_asap_model(
         push!(elements, e_rigid_R); push!(span_elements, e_rigid_R)
     end
 
-    # ── Build column stub elements ──
+    # ── Build column stub elements (same pattern as FEA) ──
+    col_stubs = Dict{Int, NamedTuple}()
+
     for j in 1:n_joints
-        if j == 1
-            c1 = spans[1].c1_left;  c2 = spans[1].c2_left
-        elseif j == n_joints
-            c1 = spans[end].c1_right; c2 = spans[end].c2_right
-        else
-            c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
-            c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
+        col = columns[j]
+        slab_node = nodes[slab_node_indices[j]]
+        x_j = slab_node.position[1]
+
+        # Below column (always present)
+        Lc_below = col.base.L
+        base_below = Node([x_j, 0.0u"m", -uconvert(u"m", Lc_below)], :fixed)
+        push!(nodes, base_below)
+
+        sec_below = column_asap_section(
+            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=col_I_factor)
+        elem_below = Element(base_below, slab_node, sec_below)
+        push!(elements, elem_below)
+
+        # Above column (if column above exists)
+        col_above = hasproperty(col, :column_above) ? col.column_above : nothing
+        elem_above = nothing
+        if !isnothing(col_above)
+            Lc_above = col_above.base.L
+            base_above = Node([x_j, 0.0u"m", uconvert(u"m", Lc_above)], :fixed)
+            push!(nodes, base_above)
+
+            sec_above = column_asap_section(
+                col_above.c1, col_above.c2, col_shape(col_above), Ecc, ν_concrete;
+                I_factor=col_I_factor)
+            elem_above = Element(slab_node, base_above, sec_above)
+            push!(elements, elem_above)
         end
 
-        col_sec = Section(
-            uconvert(u"m^2", c1 * c2),
-            Ecc_Pa,
-            uconvert(u"Pa", G_col),
-            uconvert(u"m^4", joint_Ic_eff[j]),
-            uconvert(u"m^4", joint_Ic_eff[j]),
-            uconvert(u"m^4", _torsional_constant_rect(c1, c2)),
-            ρ
+        col_stubs[j] = (
+            below = (element=elem_below, base_node=base_below, slab_node=slab_node),
+            above = isnothing(elem_above) ? nothing :
+                    (element=elem_above, base_node=base_above, slab_node=slab_node),
         )
 
-        push!(elements, Element(nodes[col_base_indices[j]], nodes[slab_node_indices[j]], col_sec))
+        if verbose
+            above_str = isnothing(col_above) ? "roof (no above)" : "above+below"
+            @debug "Joint $j column stubs" c1=col.c1 c2=col.c2 Lc_below=Lc_below type=above_str
+        end
     end
 
     # ── Apply loads to ALL slab elements (rigid + clear) ──
@@ -936,7 +836,7 @@ function build_efm_asap_model(
 
     model = Model(nodes, elements, loads)
 
-    return model, span_elements, joint_Kec
+    return model, span_elements, col_stubs
 end
 
 """
@@ -1695,7 +1595,7 @@ This overload accepts a pre-built FrameLine which already has:
 - Joint positions (exterior/interior) determined
 
 # Arguments
-- `method::EFM`: EFM method with solver selection (:asap or :moment_distribution)
+- `method::EFM`: EFM method with solver selection (:asap or :hardy_cross)
 - `frame_line::FrameLine`: Pre-built frame strip with columns and spans
 - `struc`: BuildingStructure (for tributary area lookup)
 - `h::Length`: Slab thickness
@@ -1712,7 +1612,7 @@ This overload accepts a pre-built FrameLine which already has:
 # Example
 ```julia
 fl = FrameLine(:x, columns, l2, get_pos, get_width)
-result = run_moment_analysis(EFM(:asap), fl, struc, h, fc, Ecs, Ecc, qu, qD, qL)
+result = run_moment_analysis(EFM(solver=:asap), fl, struc, h, fc, Ecs, Ecc, qu, qD, qL)
 ```
 """
 function run_moment_analysis(
@@ -1795,37 +1695,42 @@ function run_moment_analysis(
     # Detect column shape from first column
     col_shape_val = col_shape(sorted_columns[1])
     
+    # Derive col_I_factor from method fields
+    col_I_factor = (method.solver == :asap && method.cracked_columns) ? 0.70 : 1.0
+    
     # Solve using selected method
     if method.solver == :asap
         if !isnothing(efm_cache) && efm_cache.initialized
             _update_efm_sections_and_loads!(
-                efm_cache, spans, joint_positions, qu, Ecs, Ecc, H,
-                ν_concrete, ρ_concrete;
-                column_shape = col_shape_val,
+                efm_cache, spans, qu, Ecs, Ecc,
+                ν_concrete, ρ_concrete, sorted_columns;
+                col_I_factor = col_I_factor,
             )
             solve_efm_frame!(efm_cache.model; full_process=false)
             span_moments = extract_span_moments(
                 efm_cache.model, efm_cache.span_elements, spans; qu=qu
             )
         else
-            model, span_elements, jKec = build_efm_asap_model(
+            model, span_elements, col_stubs = build_efm_asap_model(
                 spans, joint_positions, qu;
-                column_height = H,
-                Ecs = Ecs,
-                Ecc = Ecc,
+                Ecs = Ecs, Ecc = Ecc,
                 ν_concrete = ν_concrete,
                 ρ_concrete = ρ_concrete,
-                column_shape = col_shape_val,
+                columns = sorted_columns,
                 verbose = verbose,
+                col_I_factor = col_I_factor,
             )
             solve_efm_frame!(model)
             span_moments = extract_span_moments(model, span_elements, spans; qu=qu)
 
-            !isnothing(efm_cache) && _populate_efm_cache!(efm_cache, model, span_elements, spans, jKec)
+            !isnothing(efm_cache) && _populate_efm_cache!(efm_cache, model, span_elements, col_stubs, spans)
         end
         
-    elseif method.solver == :moment_distribution
-        joint_Kec = _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; column_shape=col_shape_val)
+    elseif method.solver == :hardy_cross
+        use_kc_only = method.column_stiffness == :Kc
+        joint_Kec = _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc;
+                                       column_shape=col_shape_val, use_kc_only=use_kc_only,
+                                       columns=sorted_columns)
         span_moments = solve_moment_distribution(spans, joint_Kec, joint_positions, qu; verbose=verbose)
     else
         error("Unknown EFM solver: $(method.solver)")

@@ -50,16 +50,30 @@ const ALL_METHODS = [
     (key=:rot,    name="ACI Min",     method=SR.RuleOfThumb()),
     (key=:mddm,   name="MDDM",       method=SR.DDM(:simplified)),
     (key=:ddm,    name="DDM (Full)",  method=SR.DDM(:full)),
-    (key=:efm_hc, name="EFM (HC)",    method=SR.EFM(:moment_distribution; pattern_loading=false)),
-    (key=:efm,    name="EFM (ASAP)",  method=SR.EFM(:asap; pattern_loading=false)),
-    (key=:efm_kc, name="EFM (Kc)",    method=SR.EFM_Kc(:asap; pattern_loading=false)),
+    (key=:efm_hc, name="EFM (HC)",    method=SR.EFM(solver=:hardy_cross, pattern_loading=false)),
+    (key=:efm,    name="EFM (ASAP)",  method=SR.EFM(solver=:asap, pattern_loading=false)),
+    (key=:efm_kc, name="EFM (Kc)",    method=SR.EFM(solver=:asap, column_stiffness=:Kc, pattern_loading=false)),
     (key=:fea,    name="FEA",         method=SR.FEA(; pattern_loading=false)),
 ]
 
+# Full factorial of EFM options for side-by-side comparison:
+#
+#   Solver        × Column Stiffness × Cracked Columns
+#   ─────────────   ─────────────────   ────────────────
+#   :hardy_cross    :Kec (standard)     false (gross Ig)
+#   :asap           :Kc  (raw)          true  (0.70 Ig)
+#
+# Note: cracked_columns only affects :asap stubs (Hardy Cross always uses gross Ig).
 const ALL_EFM = [
-    (key=:efm_hc, name="EFM (HC)",    method=SR.EFM(:moment_distribution; pattern_loading=false)),
-    (key=:efm,    name="EFM (ASAP)",  method=SR.EFM(:asap; pattern_loading=false)),
-    (key=:efm_kc, name="EFM (Kc)",    method=SR.EFM_Kc(:asap; pattern_loading=false)),
+    # ── Hardy Cross ──────────────────────────────────────────────────────────
+    (key=:hc_kec,         name="HC  Kec",          method=SR.EFM(solver=:hardy_cross, column_stiffness=:Kec, pattern_loading=false)),
+    (key=:hc_kc,          name="HC  Kc",           method=SR.EFM(solver=:hardy_cross, column_stiffness=:Kc,  pattern_loading=false)),
+    # ── ASAP (gross Ig) ─────────────────────────────────────────────────────
+    (key=:asap_kec,       name="ASAP Kec",         method=SR.EFM(solver=:asap, column_stiffness=:Kec, pattern_loading=false)),
+    (key=:asap_kc,        name="ASAP Kc",          method=SR.EFM(solver=:asap, column_stiffness=:Kc,  pattern_loading=false)),
+    # ── ASAP (cracked 0.70 Ig) ──────────────────────────────────────────────
+    (key=:asap_kec_crack, name="ASAP Kec cracked",  method=SR.EFM(solver=:asap, column_stiffness=:Kec, cracked_columns=true, pattern_loading=false)),
+    (key=:asap_kc_crack,  name="ASAP Kc  cracked",  method=SR.EFM(solver=:asap, column_stiffness=:Kc,  cracked_columns=true, pattern_loading=false)),
 ]
 
 # ==============================================================================

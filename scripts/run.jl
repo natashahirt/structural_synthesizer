@@ -112,8 +112,10 @@ design = design_building(struc, DesignParameters(
     #   Analysis method (flat plate/slab only):
     #     DDM()                    → Direct Design Method (ACI tables)
     #     DDM(:simplified)         → Modified DDM (0.65/0.35 coefficients)
-    #     EFM()                    → Equivalent Frame Method (ASAP solver)
-    #     EFM(:moment_distribution)→ EFM with Hardy Cross
+    #     EFM()                    → Equivalent Frame Method (ASAP solver, Kec, gross Ig)
+    #     EFM(solver=:hardy_cross) → EFM with Hardy Cross moment distribution
+    #     EFM(column_stiffness=:Kc)→ EFM with raw column stiffness (no torsion)
+    #     EFM(cracked_columns=true)→ EFM with 0.70 Ig column stubs
     #     FEA()                    → Finite Element Analysis (shell model)
     #
     #   Punching shear resolution (ACI 318-11 §11.11):

@@ -4,6 +4,7 @@
 # Generic conversion of StructuralSizer section types to Asap.Section for FEA.
 
 using Unitful
+using Asap: Length, Pressure
 
 """
     to_asap_section(section, material) -> Asap.Section
@@ -373,5 +374,61 @@ function to_asap_section(sec::AbstractSection, mat::AbstractMaterial)
         uconvert(u"m^4", sec.Iy),
         uconvert(u"m^4", sec.J),
         uconvert(u"kg/m^3", mat.ρ)
+    )
+end
+
+# -----------------------------------------------------------------------------
+# Geometry-only column section (no rebar / no full Concrete material required)
+# -----------------------------------------------------------------------------
+
+"""
+    column_asap_section(c1, c2, shape, Ec, ν; I_factor=0.70) -> Asap.Section
+
+Build an Asap.Section from raw column geometry and elastic constants.
+
+This is the single source of truth for computing column gross-section
+properties (A, Ig, J) with an ACI 318-11 §10.10.4.1 cracking reduction.
+Used by FEA slab models and EFM frame models where only cross-section
+dimensions and concrete elastic properties are available (no full
+`RCColumnSection` or `Concrete` material object).
+
+# Arguments
+- `c1`, `c2`: Cross-section dimensions (Length).  For circular columns,
+  `c1 = c2 = D`.
+- `shape`: `:rectangular` or `:circular`.
+- `Ec`: Concrete elastic modulus (Pressure).
+- `ν`: Concrete Poisson's ratio (Float64).
+- `I_factor`: Cracking reduction factor (default 0.70 per ACI 318-11 §10.10.4.1).
+"""
+function column_asap_section(
+    c1::Length, c2::Length, shape::Symbol,
+    Ec::Pressure, ν::Float64;
+    I_factor::Float64 = 0.70,
+)
+    G = Ec / (2 * (1 + ν))
+
+    if shape == :circular
+        D = c1
+        A  = π * D^2 / 4
+        Ix = I_factor * π * D^4 / 64
+        Iy = Ix
+        J  = Ix + Iy   # polar = 2I for circle
+    else
+        A  = c1 * c2
+        Ix = I_factor * c1 * c2^3 / 12
+        Iy = I_factor * c2 * c1^3 / 12
+        # Torsional constant (rectangular approximation)
+        a = max(c1, c2); b = min(c1, c2)
+        β = 1/3 - 0.21 * (b / a) * (1 - (b / a)^4 / 12)
+        J  = I_factor * β * a * b^3
+    end
+
+    return Asap.Section(
+        uconvert(u"m^2", A),
+        uconvert(u"Pa", Ec),
+        uconvert(u"Pa", G),
+        uconvert(u"m^4", Ix),
+        uconvert(u"m^4", Iy),
+        uconvert(u"m^4", J),
     )
 end

@@ -98,10 +98,48 @@ function initialize_members!(struc::BuildingStructure{T};
     n_total = length(struc.beams) + length(struc.columns) + length(struc.struts)
     @debug "Initialized members from $(length(struc.segments)) segments" beams=length(struc.beams) columns=length(struc.columns) struts=length(struc.struts)
     
+    # Link columns across stories (col.column_above)
+    link_column_stack!(struc)
+    
     # Compute Voronoi tributary areas for columns
     compute_column_tributaries!(struc)
     
     return struc
+end
+
+"""
+    link_column_stack!(struc::BuildingStructure)
+
+Populate `col.column_above` for every column by matching `(x, y)` position
+across stories.  A column on story `s` is linked to the column at the same
+`(x, y)` on story `s + 1`, if one exists.  Roof-level columns (no column
+above) keep `column_above = nothing`.
+
+Called automatically by `initialize_members!`.
+"""
+function link_column_stack!(struc::BuildingStructure)
+    vc = struc.skeleton.geometry.vertex_coords
+
+    # Build (x, y, story) → Column reference lookup
+    ColT = eltype(struc.columns)
+    lookup = Dict{Tuple{Float64, Float64, Int}, ColT}()
+    for col in struc.columns
+        key = (round(vc[col.vertex_idx, 1]; digits=COORD_DIGITS),
+               round(vc[col.vertex_idx, 2]; digits=COORD_DIGITS),
+               col.story)
+        lookup[key] = col
+    end
+
+    n_linked = 0
+    for col in struc.columns
+        above_key = (round(vc[col.vertex_idx, 1]; digits=COORD_DIGITS),
+                     round(vc[col.vertex_idx, 2]; digits=COORD_DIGITS),
+                     col.story + 1)
+        col.column_above = get(lookup, above_key, nothing)
+        !isnothing(col.column_above) && (n_linked += 1)
+    end
+
+    @debug "Linked column stack" total=length(struc.columns) linked=n_linked roof=(length(struc.columns) - n_linked)
 end
 
 """

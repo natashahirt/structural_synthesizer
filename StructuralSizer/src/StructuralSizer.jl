@@ -145,7 +145,7 @@ export sfrm_thickness_x772, intumescent_thickness_n643, compute_surface_coating
 # --- Section interface ---
 export section_area, section_depth, section_width, weight_per_length, bounding_box
 export Ix, Iy, Sx, Sy
-export to_asap_section
+export to_asap_section, column_asap_section
 
 # --- Sections: Steel (W shapes) ---
 export ISymmSection, W, W_names, all_W, preferred_W
@@ -376,7 +376,7 @@ export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
 export estimate_column_size, estimate_column_size_from_span, face_of_support_moment
 
 # --- Flat plate analysis methods ---
-export FlatPlateAnalysisMethod, DDM, EFM, EFM_Kc, FEA, RuleOfThumb
+export FlatPlateAnalysisMethod, DDM, EFM, FEA, RuleOfThumb
 export MomentAnalysisResult
 export DDMApplicabilityError, EFMApplicabilityError
 export EFMSpanProperties, EFMJointStiffness, EFMModelCache, FEAModelCache

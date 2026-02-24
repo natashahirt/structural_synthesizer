@@ -1013,20 +1013,17 @@ end
             eq_side, patch_area, circle_area)
 end
 
-@testset "FEA circular column — stub section properties" begin
-    # Verify circular column stub uses correct section properties
+@testset "FEA circular column — section properties (column_asap_section)" begin
+    # Verify circular vs rectangular column section properties
     D = 16.0u"inch"
     Ec = 4000.0u"ksi"
 
-    col_circ = (c1=D, c2=D, shape=:circular)
-    col_rect = (c1=D, c2=D, shape=:rectangular)
+    sec_circ = StructuralSizer.column_asap_section(D, D, :circular, Ec, 0.20)
+    sec_rect = StructuralSizer.column_asap_section(D, D, :rectangular, Ec, 0.20)
 
-    sec_circ = StructuralSizer._column_stub_section(col_circ, Ec, 0.20)
-    sec_rect = StructuralSizer._column_stub_section(col_rect, Ec, 0.20)
-
-    # Circular A = 2 × πD²/4  vs  Rectangular A = 2 × c1 × c2
-    A_circ_expected = 2 * π * ustrip(u"m", D)^2 / 4
-    A_rect_expected = 2 * ustrip(u"m", D)^2
+    # Circular A = πD²/4  vs  Rectangular A = c1 × c2
+    A_circ_expected = π * ustrip(u"m", D)^2 / 4
+    A_rect_expected = ustrip(u"m", D)^2
 
     @test ustrip(u"m^2", sec_circ.A) ≈ A_circ_expected rtol=0.01
     @test ustrip(u"m^2", sec_rect.A) ≈ A_rect_expected rtol=0.01
@@ -1034,18 +1031,18 @@ end
     # Circular area < rectangular area (π/4 ≈ 0.785)
     @test sec_circ.A < sec_rect.A
 
-    # Circular Ix = 2 × I_factor × πD⁴/64  vs  Rectangular Ix = 2 × I_factor × c·c³/12
-    # I_factor = 0.70 per ACI 318-14 §6.6.3.1.1 (default for columns)
+    # Circular Ix = I_factor × πD⁴/64  vs  Rectangular Ix = I_factor × c·c³/12
+    # I_factor = 0.70 per ACI 318-11 §10.10.4.1 (default for columns)
     I_factor = 0.70
-    Ix_circ_expected = 2 * I_factor * π * ustrip(u"m", D)^4 / 64
-    Ix_rect_expected = 2 * I_factor * ustrip(u"m", D)^4 / 12
+    Ix_circ_expected = I_factor * π * ustrip(u"m", D)^4 / 64
+    Ix_rect_expected = I_factor * ustrip(u"m", D)^4 / 12
 
     @test ustrip(u"m^4", sec_circ.Ix) ≈ Ix_circ_expected rtol=0.01
     @test ustrip(u"m^4", sec_rect.Ix) ≈ Ix_rect_expected rtol=0.01
 
-    println("  Stub section: circular A = $(round(ustrip(u"m^2", sec_circ.A)*1e4, digits=1)) cm², " *
+    println("  Column section: circular A = $(round(ustrip(u"m^2", sec_circ.A)*1e4, digits=1)) cm², " *
             "rect A = $(round(ustrip(u"m^2", sec_rect.A)*1e4, digits=1)) cm²")
-    println("  Stub section: circular Ix = $(round(ustrip(u"m^4", sec_circ.Ix)*1e8, digits=1)) cm⁴, " *
+    println("  Column section: circular Ix = $(round(ustrip(u"m^4", sec_circ.Ix)*1e8, digits=1)) cm⁴, " *
             "rect Ix = $(round(ustrip(u"m^4", sec_rect.Ix)*1e8, digits=1)) cm⁴")
 end
 

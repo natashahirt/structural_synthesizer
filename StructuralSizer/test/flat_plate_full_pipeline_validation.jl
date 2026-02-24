@@ -111,8 +111,8 @@ results = Dict{String, NamedTuple}()
 method_configs = [
     ("DDM (Full)",       DDM(:full)),
     ("DDM (Simplified)", DDM(:simplified)),
-    ("EFM (ASAP)",       EFM(:asap)),
-    ("EFM (MomentDist)", EFM(:moment_distribution)),
+    ("EFM (ASAP)",       EFM(solver=:asap)),
+    ("EFM (MomentDist)", EFM(solver=:hardy_cross)),
 ]
 
 for (name, method_obj) in method_configs

@@ -10,7 +10,7 @@
 #     └── TimberOptions            → CLT / DLT / NLT panels
 #
 # Usage:
-#   DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
+#   DesignParameters(floor = FlatPlateOptions(method = EFM(solver=:asap)))
 
 # =============================================================================
 # Abstract parent
@@ -35,7 +35,7 @@ eliminating the need for a `floor_type::Symbol` discriminator.
 # Example
 ```julia
 # Direct usage (recommended):
-params = DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
+params = DesignParameters(floor = FlatPlateOptions(method = EFM(solver=:asap)))
 
 # The type carries the floor system identity:
 opts = FlatSlabOptions()
@@ -94,8 +94,10 @@ Options for flat plate / flat slab / waffle / PT slab sizing per ACI 318 Chapter
 - `method`: Typed analysis method object (default: `DDM()`)
   - `DDM()` — Direct Design Method (full ACI tables)
   - `DDM(:simplified)` — Modified DDM (simplified 0.65/0.35 coefficients)
-  - `EFM()` — Equivalent Frame Method (default solver: ASAP)
-  - `EFM(:moment_distribution)` — EFM with Hardy Cross
+  - `EFM()` — Equivalent Frame Method (default: ASAP solver, Kec, gross Ig)
+  - `EFM(solver=:hardy_cross)` — EFM with Hardy Cross moment distribution
+  - `EFM(column_stiffness=:Kc)` — EFM with raw column stiffness (no torsion)
+  - `EFM(cracked_columns=true)` — EFM with 0.70 Ig column stubs
   - `FEA()` — Finite Element Analysis (shell model, no geometry restrictions)
 
 # Edge Conditions
@@ -137,14 +139,15 @@ Options for flat plate / flat slab / waffle / PT slab sizing per ACI 318 Chapter
 - `objective`: Objective for `size_flat_plate_optimized` grid search
   - `MinVolume()` (default), `MinWeight()`, `MinCost()`, `MinCarbon()`
 
-# Column Cracking (FEA only)
+# Column Cracking (FEA)
 - `col_I_factor`: Cracking reduction for FEA column stubs (default: 0.70 per ACI 318-11 §10.10.4.1).
   Set to 1.0 to recover gross (uncracked) column stiffness.
+  For EFM, column cracking is controlled by `EFM(cracked_columns=true/false)` — see [`EFM`](@ref).
 
 # Example
 ```julia
 # Recommended: use typed method objects
-params = DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
+params = DesignParameters(floor = FlatPlateOptions(method = EFM(solver=:asap)))
 
 # Enable studs if columns can't resolve punching
 opts = FlatPlateOptions(punching_strategy = :reinforce_last)
@@ -291,7 +294,8 @@ end
 function _method_to_symbol(m::FlatPlateAnalysisMethod)
     m isa DDM && m.variant == :simplified && return :mddm
     m isa DDM && return :ddm
-    m isa EFM && m.solver == :moment_distribution && return :efm_hc
+    m isa EFM && m.solver == :hardy_cross && return :efm_hc
+    m isa EFM && m.column_stiffness == :Kc && return :efm_kc
     m isa EFM && return :efm
     m isa FEA && return :fea
     return :ddm
@@ -302,10 +306,11 @@ function _symbol_to_method(s::Symbol)::FlatPlateAnalysisMethod
     s == :ddm      ? DDM() :
     s == :mddm     ? DDM(:simplified) :
     s == :efm      ? EFM() :
-    s == :efm_hc   ? EFM(:moment_distribution) :
-    s == :efm_asap ? EFM(:asap) :
+    s == :efm_hc   ? EFM(solver=:hardy_cross) :
+    s == :efm_asap ? EFM(solver=:asap) :
+    s == :efm_kc   ? EFM(column_stiffness=:Kc) :
     s == :fea      ? FEA() :
-    throw(ArgumentError("Unknown analysis_method :$s. Use :ddm, :mddm, :efm, :efm_hc, :efm_asap, or :fea."))
+    throw(ArgumentError("Unknown analysis_method :$s. Use :ddm, :mddm, :efm, :efm_hc, :efm_asap, :efm_kc, or :fea."))
 end
 
 
@@ -348,8 +353,8 @@ opts = FlatSlabOptions(base = FlatPlateOptions(method = EFM()))
 # Convenience Constructor
 Pass flat plate keyword arguments directly — they forward to `base`:
 ```julia
-flat_slab(method = EFM(:asap), punching_strategy = :reinforce_last)
-flat_slab(method = EFM(:asap), shear_studs = :if_needed)  # backward compat
+flat_slab(method = EFM(solver=:asap), punching_strategy = :reinforce_last)
+flat_slab(method = EFM(solver=:asap), shear_studs = :if_needed)  # backward compat
 ```
 
 # Reference
@@ -386,8 +391,8 @@ Convenience constructor: forward flat plate kwargs through `base`.
 
 # Example
 ```julia
-flat_slab(method = EFM(:asap), punching_strategy = :reinforce_last)
-flat_slab(method = EFM(:asap), shear_studs = :if_needed)  # backward compat
+flat_slab(method = EFM(solver=:asap), punching_strategy = :reinforce_last)
+flat_slab(method = EFM(solver=:asap), shear_studs = :if_needed)  # backward compat
 ```
 """
 function flat_slab(; h_drop = nothing, a_drop_ratio = nothing, base_kw...)

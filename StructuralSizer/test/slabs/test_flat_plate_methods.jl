@@ -42,9 +42,17 @@ using StructuralSizer: kip, ksi, psf, ksf, pcf
         @test efm isa FlatPlateAnalysisMethod
         @test efm isa EFM
         @test efm.solver == :asap
+        @test efm.column_stiffness == :Kec
+        @test efm.cracked_columns == false
+        
+        # EFM with options
+        efm_kc = EFM(column_stiffness=:Kc)
+        @test efm_kc.column_stiffness == :Kc
+        efm_cracked = EFM(column_stiffness=:Kc, cracked_columns=true)
+        @test efm_cracked.cracked_columns == true
         
         # Invalid EFM solver should error
-        @test_throws ErrorException EFM(:invalid)
+        @test_throws ErrorException EFM(solver=:invalid)
     end
     
     # =========================================================================
