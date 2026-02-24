@@ -673,7 +673,7 @@ end
 
 
 # =============================================================================
-# T-Beam Flange Parameters (ACI 318-19 §6.3.2.1)
+# T-Beam Flange Parameters (ACI 318-11 §8.12.2)
 # =============================================================================
 
 """
@@ -795,7 +795,7 @@ results and passes them through to the ACI 318 beam checker. When Nu > 0
 
 When `ConcreteBeamOptions.include_flange = true`, the dispatcher automatically:
 - Reads slab thicknesses from `struc.slabs` (slabs must be sized first)
-- Computes effective flange widths per ACI 318-19 §6.3.2.1 using beam
+- Computes effective flange widths per ACI 318-11 §8.12.2 using beam
   tributary widths and edge/interior classification
 - Routes to `size_tbeams` (discrete) or `size_rc_tbeams_nlp` (NLP)
 
@@ -859,7 +859,15 @@ function _size_beams_impl!(
 end
 
 # --- Shared helper: apply MIP/NLP beam results to the BuildingStructure ---
-"""Apply sized sections (from MIP `result.sections`) to member groups, members, and ASAP elements."""
+"""
+    _apply_beam_results!(struc, result, group_ids, member_array, edge_ids_in_group, mat)
+
+Apply sized sections (from MIP `result.sections`) to member groups, members, and ASAP elements.
+
+When the result comes from multi-material optimization (`hasproperty(result, :materials_chosen)`),
+each group uses its own material from `result.materials_chosen[g_idx]`. Otherwise, the single
+`mat` argument is used for all groups.
+"""
 function _apply_beam_results!(
     struc::BuildingStructure,
     result,
@@ -868,13 +876,16 @@ function _apply_beam_results!(
     edge_ids_in_group::Set{Int},
     mat::StructuralSizer.AbstractMaterial,
 )
+    has_multi_mat = hasproperty(result, :materials_chosen)
+
     for (g_idx, gid) in enumerate(group_ids)
         chosen = result.sections[g_idx]
+        group_mat = has_multi_mat ? result.materials_chosen[g_idx] : mat
 
         mg = struc.member_groups[gid]
         mg.section = chosen
 
-        asap_sec = StructuralSizer.to_asap_section(chosen, mat)
+        asap_sec = StructuralSizer.to_asap_section(chosen, group_mat)
 
         for m_idx in mg.member_indices
             m = member_array[m_idx]
@@ -882,7 +893,7 @@ function _apply_beam_results!(
             L_raw = sum(struc.segments[i].L for i in segment_indices(m))
             L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
             set_section!(m, chosen)
-            set_volumes!(m, MaterialVolumes(mat => StructuralSizer.section_area(chosen) * L_total))
+            set_volumes!(m, MaterialVolumes(group_mat => StructuralSizer.section_area(chosen) * L_total))
 
             for seg_idx in segment_indices(m)
                 edge_idx = struc.segments[seg_idx].edge_idx
@@ -1158,6 +1169,117 @@ function _size_beams_impl!(
     return struc
 end
 
+# --- PixelFrame beams (discrete MIP) ---
+function _size_beams_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.PixelFrameBeamOptions,
+    ::Val{:discrete};
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    edge_ids_in_group = Set(get(skel.groups_edges, :beams, Int[]))
+
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+
+    # Extract demands from analysis (MemberDemand in SI: N, N·m, m)
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=:beams, resolution=resolution)
+
+    isempty(group_ids) && return struc
+
+    member_array = struc.beams
+
+    # Build demand vectors with Unitful SI units
+    Mu = [d.Mux * u"N*m"      for d in demands]
+    Vu = [d.Vu_strong * u"N"   for d in demands]
+
+    # Build geometries (L_totals are Float64 in meters)
+    geoms = [StructuralSizer.ConcreteMemberGeometry(L) for L in L_totals]
+
+    # Call PixelFrame beam sizing (validates pixel divisibility, runs MIP)
+    result = StructuralSizer.size_beams(Mu, Vu, geoms, opts)
+
+    # Build per-pixel material pool from catalog
+    cat = if !isnothing(opts.custom_catalog)
+        opts.custom_catalog
+    else
+        StructuralSizer.generate_pixelframe_catalog(;
+            StructuralSizer._pf_catalog_kwargs(opts)...)
+    end
+    material_pool = unique(s.material for s in cat)
+
+    # Build checker for per-pixel assignment
+    checker = StructuralSizer.PixelFrameChecker(;
+        StructuralSizer._pf_checker_kwargs(opts)...)
+
+    # Strip pixel length to mm at the boundary
+    px_mm = StructuralSizer._pf_pixel_mm(opts)
+
+    # Apply results to member groups + ASAP elements + individual members
+    for (g_idx, gid) in enumerate(group_ids)
+        chosen = result.sections[g_idx]
+        n_px = result.n_pixels[g_idx]
+
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+
+        # Build ASAP section for FEA stiffness update
+        asap_sec = StructuralSizer.to_asap_section(chosen)
+
+        # Build uniform pixel demands (same demand for all pixels in this group)
+        # The MIP already selected the governing section; per-pixel relaxation
+        # assigns the lowest-carbon material at each pixel position.
+        pixel_demands = [demands[g_idx] for _ in 1:n_px]
+
+        # Build PixelFrameDesign with per-pixel material assignment
+        design = StructuralSizer.build_pixel_design(
+            chosen,
+            L_totals[g_idx] * u"m",
+            px_mm,
+            pixel_demands,
+            material_pool,
+            checker,
+        )
+
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            set_section!(m, chosen)
+            set_pixel_design!(m, design)
+
+            # Compute volumes from per-pixel material assignment
+            pv = StructuralSizer.pixel_volumes(design)
+            vols = MaterialVolumes()
+            for (mat, vol) in pv
+                vols[mat] = vol
+            end
+            set_volumes!(m, vols)
+
+            # Update ASAP elements
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
+    n_total = length(group_ids)
+    λs = join(string.(opts.λ_values), ",")
+    @info "Sized $n_total PixelFrame beam groups via MIP" layups=λs pixel_mm=StructuralSizer._pf_pixel_mm(opts)
+
+    return struc
+end
+
 # =============================================================================
 # Member Sizing Orchestrator
 # =============================================================================
@@ -1339,6 +1461,118 @@ function _size_columns_impl!(
     return struc
 end
 
+# PixelFrame column implementation
+function _size_columns_impl!(
+    struc::BuildingStructure,
+    opts::StructuralSizer.PixelFrameColumnOptions;
+    resolution::Int,
+    reanalyze::Bool,
+    gravity_factor::Quantity,
+)
+    skel = struc.skeleton
+    member_edge_group = :columns
+    edge_ids_in_group = Set(get(skel.groups_edges, member_edge_group, Int[]))
+
+    # Add gravity loads
+    _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
+
+    # Get group demands
+    group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs =
+        member_group_demands(struc; member_edge_group=member_edge_group, resolution=resolution)
+
+    isempty(group_ids) && return struc
+
+    member_array = struc.columns
+
+    # Build demand vectors with Unitful SI units
+    Pu  = [d.Pu_c * u"N"    for d in demands]
+    Mux = [d.Mux * u"N*m"   for d in demands]
+    Muy = [d.Muy * u"N*m"   for d in demands]
+
+    # Build geometries
+    geometries = [StructuralSizer.ConcreteMemberGeometry(L; Lu=Lb, k=Ky)
+                  for (L, Lb, Ky) in zip(L_totals, Lb_govs, Ky_govs)]
+
+    # Call PixelFrame column sizing (validates pixel divisibility, runs MIP)
+    result = StructuralSizer.size_columns(Pu, Mux, geometries, opts; Muy=Muy)
+
+    # Build per-pixel material pool from catalog
+    cat = if !isnothing(opts.custom_catalog)
+        opts.custom_catalog
+    else
+        StructuralSizer.generate_pixelframe_catalog(;
+            StructuralSizer._pf_catalog_kwargs(opts)...)
+    end
+    material_pool = unique(s.material for s in cat)
+
+    # Build checker for per-pixel assignment
+    checker = StructuralSizer.PixelFrameChecker(;
+        StructuralSizer._pf_checker_kwargs(opts)...)
+
+    # Strip pixel length to mm at the boundary
+    px_mm = StructuralSizer._pf_pixel_mm(opts)
+
+    # Apply results to member groups + ASAP elements + individual members
+    for (g_idx, gid) in enumerate(group_ids)
+        chosen = result.sections[g_idx]
+        n_px = result.n_pixels[g_idx]
+
+        mg = struc.member_groups[gid]
+        mg.section = chosen
+
+        # Build ASAP section for FEA stiffness update
+        asap_sec = StructuralSizer.to_asap_section(chosen)
+
+        # Build uniform pixel demands (same demand for all pixels in this group)
+        pixel_demands = [demands[g_idx] for _ in 1:n_px]
+
+        # Build PixelFrameDesign with per-pixel material assignment
+        design = StructuralSizer.build_pixel_design(
+            chosen,
+            L_totals[g_idx] * u"m",
+            px_mm,
+            pixel_demands,
+            material_pool,
+            checker,
+        )
+
+        for m_idx in mg.member_indices
+            m = member_array[m_idx]
+
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            set_section!(m, chosen)
+            set_pixel_design!(m, design)
+
+            # Compute volumes from per-pixel material assignment
+            pv = StructuralSizer.pixel_volumes(design)
+            vols = MaterialVolumes()
+            for (mat, vol) in pv
+                vols[mat] = vol
+            end
+            set_volumes!(m, vols)
+
+            # Update ASAP elements
+            for seg_idx in segment_indices(m)
+                edge_idx = struc.segments[seg_idx].edge_idx
+                edge_idx in edge_ids_in_group || continue
+                struc.asap_model.elements[edge_idx].section = asap_sec
+            end
+        end
+    end
+
+    if reanalyze
+        Asap.process!(struc.asap_model)
+        Asap.solve!(struc.asap_model)
+    end
+
+    n_total = length(group_ids)
+    λs = join(string.(opts.λ_values), ",")
+    @info "Sized $n_total PixelFrame column groups via MIP" layups=λs pixel_mm=StructuralSizer._pf_pixel_mm(opts)
+
+    return struc
+end
+
 # Helper: add gravity loads
 function _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
     existing_gravity_ids = Set{UInt}()
@@ -1356,21 +1590,32 @@ function _add_gravity_loads!(struc, edge_ids_in_group, gravity_factor)
 end
 
 # Helper: apply optimization results
+"""
+    _apply_column_results!(struc, result, group_ids, material, material_type, edge_ids_in_group; I_factor)
+
+Apply sized sections to column member groups, members, and ASAP elements.
+
+When the result comes from multi-material optimization (`hasproperty(result, :materials_chosen)`),
+each group uses its own material from `result.materials_chosen[g_idx]`. Otherwise, the single
+`material` argument is used for all groups.
+"""
 function _apply_column_results!(struc, result, group_ids, material, material_type, edge_ids_in_group;
                                  I_factor::Real = 0.70)
     member_array = struc.columns
+    has_multi_mat = hasproperty(result, :materials_chosen)
     
     for (g_idx, gid) in enumerate(group_ids)
         chosen = result.sections[g_idx]
+        group_mat = has_multi_mat ? result.materials_chosen[g_idx] : material
         
         mg = struc.member_groups[gid]
         mg.section = chosen
         
-        # Build ASAP section (I_factor only applies to concrete per ACI 318-14 §6.6.3.1.1)
+        # Build ASAP section (I_factor only applies to concrete per ACI 318-11 §10.10.4.1)
         asap_sec = if material_type === :concrete
-            StructuralSizer.to_asap_section(chosen, material; I_factor=I_factor)
+            StructuralSizer.to_asap_section(chosen, group_mat; I_factor=I_factor)
         else
-            StructuralSizer.to_asap_section(chosen, material)
+            StructuralSizer.to_asap_section(chosen, group_mat)
         end
         
         for m_idx in mg.member_indices
@@ -1381,7 +1626,7 @@ function _apply_column_results!(struc, result, group_ids, material, material_typ
             L_total = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
             
             set_section!(m, chosen)
-            set_volumes!(m, MaterialVolumes(material => StructuralSizer.section_area(chosen) * L_total))
+            set_volumes!(m, MaterialVolumes(group_mat => StructuralSizer.section_area(chosen) * L_total))
             
             # Update ASAP elements
             for seg_idx in segment_indices(m)

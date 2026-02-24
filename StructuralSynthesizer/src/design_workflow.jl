@@ -254,7 +254,7 @@ The slab loop designs columns from tributary Pu (single-floor tributary).
 For multi-story buildings, Asap model forces may be larger due to load
 accumulation from upper floors.  This stage grows any column whose
 Asap-model axial demand exceeds slab-design capacity, using pure
-compression capacity: ϕPn = 0.65 × 0.80 × f′c × Ag  (ACI 318-19 §22.4.2.1).
+compression capacity: ϕPn = 0.65 × 0.80 × f′c × Ag  (ACI 318-11 §10.3.6.2).
 
 Returns the mutated structure and the number of columns that grew.
 """
@@ -269,7 +269,7 @@ function _reconcile_columns!(struc::BuildingStructure, params::DesignParameters)
     ν_c = conc.ν
     G_Pa = E_Pa / (2.0 * (1.0 + ν_c))
     ρ_kg = ustrip(u"kg/m^3", conc.ρ)
-    I_factor = 0.70  # ACI 318-14 §6.6.3.1.1
+    I_factor = 0.70  # ACI 318-11 §10.10.4.1
 
     for col in struc.columns
         isnothing(col.c1) && continue
@@ -395,7 +395,7 @@ function _size_beams_columns!(struc::BuildingStructure, params::DesignParameters
         first_iter = false
     end
     
-    # ─── P-Δ second-order analysis (ACI 318-19 §6.7) ───
+    # ─── P-Δ second-order analysis (ACI 318-11 §10.10) ───
     # After first-order sizing converges, check if any story has δs > 1.5.
     # If so, run iterative P-Δ to capture second-order effects, then re-size
     # columns with the updated forces.
@@ -714,7 +714,7 @@ function _populate_column_results!(design::BuildingDesign, struc::BuildingStruct
         end
         
         # ─── Approximate capacity ratios ───
-        # ACI 318-19 §22.4.2.1 — maximum axial capacity for tied columns:
+        # ACI 318-11 §10.3.6.2 — maximum axial capacity for tied columns:
         #   φPn(max) = 0.80 × φ × [0.85 × f'c × (Ag − Ast) + fy × Ast]
         # We use ρg = 1% (code minimum) for a lower-bound estimate.
         if !isnothing(col.c1) && !isnothing(col.c2)

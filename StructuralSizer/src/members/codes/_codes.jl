@@ -46,5 +46,11 @@ include("nds/_nds.jl")
 # ACI 318: Concrete
 include("aci/_aci.jl")
 
+# fib Model Code 2010: FRC shear (used by PixelFrame)
+include("fib/_fib.jl")
+
+# PixelFrame: Reusable segmented concrete (ACI 318-19 + fib MC2010)
+include("pixelframe/_pixelframe.jl")
+
 # Future:
 # include("eurocode/_eurocode.jl")

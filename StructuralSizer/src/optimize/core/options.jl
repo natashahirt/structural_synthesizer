@@ -54,6 +54,7 @@ opts = SteelBeamOptions(deflection_limit = 1/240)
 """
 Base.@kwdef struct SteelMemberOptions
     material::StructuralSteel = A992_Steel
+    materials::Union{Nothing, Vector{<:StructuralSteel}} = nothing  # multi-material MIP
     section_type::Symbol = :w           # :w, :hss, :pipe, :w_and_hss
     catalog::Symbol = :preferred        # :common, :preferred, :all
     custom_catalog::Union{Nothing, Vector} = nothing
@@ -79,16 +80,36 @@ const SteelBeamOptions = SteelMemberOptions
 
 Configuration for reinforced concrete column sizing.
 
+The `size_columns` API accepts **any Unitful quantity** for demands — conversions to
+ACI units (kip, kip·ft) happen automatically via `Asap.to_kip`/`Asap.to_kipft`.
+Bare `Real` values are treated as already in kip / kip·ft.
+
+# Sizing Strategy
+- `:catalog` (default) — MIP discrete selection from an RC column catalog.
+  Uses `optimizer` to pick the lightest feasible section from the catalog.
+- `:nlp` — Continuous NLP optimization (Ipopt) for column dimensions (b, h)
+  and reinforcement ratio (ρg).  Produces the minimum-volume section that
+  satisfies ACI 318 P-M interaction, then snaps to practical increments.
+
+Both strategies share the same material, slenderness, and shape-control
+fields.  Catalog-specific fields (`catalog`, `custom_catalog`, `n_max_sections`,
+`optimizer`) are ignored when `sizing_strategy == :nlp`.  NLP-specific fields
+(`nlp_*`) are ignored when `sizing_strategy == :catalog`.
+
 # Example
 ```julia
+# Default: MIP catalog selection
 opts = ConcreteColumnOptions()
+
+# NLP continuous optimization
+opts = ConcreteColumnOptions(sizing_strategy = :nlp)
 
 opts = ConcreteColumnOptions(section_shape = :circular)
 
 opts = ConcreteColumnOptions(
     grade = NWC_6000,
-    section_shape = :rect,
-    max_depth = 0.6,
+    sizing_strategy = :nlp,
+    nlp_prefer_square = 0.1,
 )
 
 opts = ConcreteColumnOptions(
@@ -106,6 +127,7 @@ opts = ConcreteColumnOptions(
 - `transverse_rebar_grade`: RebarSteel for ties/spirals (default: same as rebar_grade)
 - `cover`: Clear cover to transverse reinforcement (default: 1.5" or 38mm)
 - `transverse_bar_size`: Tie/spiral bar size, :no3, :no4, :no5 (default: :no4)
+- `sizing_strategy`: `:catalog` (MIP) or `:nlp` (continuous Ipopt) (default: `:catalog`)
 - `catalog`: `:standard`, `:low_capacity`, `:high_capacity`, `:all` (default: `:standard`)
 - `custom_catalog`: Custom section vector (overrides catalog)
 - `max_depth`: Maximum depth/diameter in meters (default: Inf)
@@ -122,6 +144,16 @@ opts = ConcreteColumnOptions(
 - `max_aspect_ratio`: Maximum c1/c2 or c2/c1 when `shape_constraint == :bounded` (default: 2.0)
 - `size_increment`: Rounding increment for column dimensions (default: 0.5")
 
+## NLP-Specific Fields (ignored when `sizing_strategy == :catalog`)
+- `nlp_dim_increment`: Round NLP solution to this increment (default: 2")
+- `nlp_aspect_limit`: Maximum aspect ratio max(b,h)/min(b,h) (default: 3.0)
+- `nlp_prefer_square`: Penalty for non-square sections, 0 = none (default: 0.0)
+- `nlp_ρ_max`: Practical max ρg (ACI allows 0.08, practical ≤ 0.06) (default: 0.06)
+- `nlp_solver`: NLP backend :ipopt, :grid, :nlopt (default: :ipopt)
+- `nlp_maxiter`: Maximum NLP solver iterations (default: 200)
+- `nlp_tol`: NLP convergence tolerance (default: 1e-4)
+- `nlp_n_multistart`: Multi-start count, >1 for non-smooth problems (default: 1)
+
 # Material Presets
 - Concrete: NWC_3000, NWC_4000, NWC_5000, NWC_6000, NWC_GGBS, NWC_PFA
 - Rebar: Rebar_40, Rebar_60, Rebar_75, Rebar_80
@@ -129,11 +161,18 @@ opts = ConcreteColumnOptions(
 """
 Base.@kwdef struct ConcreteColumnOptions
     grade::Concrete = NWC_4000
+    grades::Union{Nothing, Vector{<:Concrete}} = nothing  # multi-material MIP
     section_shape::Symbol = :rect       # :rect or :circular
     rebar_grade::RebarSteel = Rebar_60
     transverse_rebar_grade::Union{Nothing, RebarSteel} = nothing  # defaults to rebar_grade
     cover::Length = 38.1u"mm"                    # Clear cover to ties (≈1.5")
     transverse_bar_size::Symbol = :no4         # :no3, :no4, :no5
+
+    # ─── Sizing Strategy ───
+    # :catalog — MIP discrete selection from RC column catalog (default)
+    # :nlp     — Continuous NLP optimization (Ipopt) for b, h, ρg
+    sizing_strategy::Symbol = :catalog
+
     catalog::Symbol = :standard         # :standard, :low_capacity, :high_capacity, :all
     custom_catalog::Union{Nothing, Vector} = nothing
     max_depth::Length = Inf * u"m"       # depth for rect, diameter for circular
@@ -143,6 +182,16 @@ Base.@kwdef struct ConcreteColumnOptions
     βdns::Float64 = 0.6
     objective::AbstractObjective = MinVolume()
     optimizer::Symbol = :auto
+
+    # ─── NLP-Specific Settings (ignored when sizing_strategy == :catalog) ───
+    nlp_dim_increment::Length = 2.0u"inch"
+    nlp_aspect_limit::Float64 = 3.0
+    nlp_prefer_square::Float64 = 0.0
+    nlp_ρ_max::Float64 = 0.06
+    nlp_solver::Symbol = :ipopt
+    nlp_maxiter::Int = 200
+    nlp_tol::Float64 = 1e-4
+    nlp_n_multistart::Int = 1
 
     # ─── Column Shape / Growth Control ───
     # Controls how column dimensions (c1, c2) evolve during the slab-column
@@ -192,9 +241,19 @@ end
 
 Configuration for reinforced concrete beam sizing (ACI 318 flexure + shear).
 
+The `size_beams` API accepts **any Unitful quantity** for demands — conversions to
+ACI units (kip, kip·ft) happen automatically via `Asap.to_kip`/`Asap.to_kipft`.
+Bare `Real` values are treated as already in kip / kip·ft.
+
 # Example
 ```julia
 opts = ConcreteBeamOptions()
+
+# Unitful demands — units converted automatically
+size_beams([60.0u"kN*m"], [40.0u"kN"], geoms, opts)
+
+# Bare floats — assumed kip·ft / kip
+size_beams([120.0], [25.0], geoms, opts)
 
 opts = ConcreteBeamOptions(
     grade = NWC_5000,
@@ -245,6 +304,7 @@ opts = ConcreteBeamOptions(
 Base.@kwdef struct ConcreteBeamOptions
     # Materials
     grade::Concrete = NWC_4000
+    grades::Union{Nothing, Vector{<:Concrete}} = nothing  # multi-material MIP
     rebar_grade::RebarSteel = Rebar_60
     transverse_rebar_grade::Union{Nothing, RebarSteel} = nothing
     cover::Length = 38.1u"mm"            # ≈ 1.5" to stirrups
@@ -283,17 +343,328 @@ function get_transverse_bar_diameter(opts::ConcreteBeamOptions)
 end
 
 # ==============================================================================
+# PixelFrame Beam Options
+# ==============================================================================
+
+"""
+    PixelFrameBeamOptions
+
+Configuration for PixelFrame beam sizing (MIP discrete catalog optimization).
+
+PixelFrame beams use fiber-reinforced concrete (FRC) with external post-tensioning.
+The capacity checker uses ACI 318-19 for axial/flexural capacity and fib MC2010
+for FRC shear capacity.
+
+All physical quantities accept **Unitful values** — conversions to internal
+units happen automatically at the catalog-generation and checker boundaries.
+Bare `Real` values are still accepted and interpreted as mm / MPa / mm² / kg/m³
+for backward compatibility, but Unitful is preferred for safety.
+
+# Example
+```julia
+# Default: Y-section, fc′ swept 28–100 MPa
+opts = PixelFrameBeamOptions()
+
+# Custom: specific catalog (Unitful)
+opts = PixelFrameBeamOptions(
+    fc_values     = [40.0, 57.0, 80.0] .* u"MPa",
+    λ_values      = [:Y],
+    dosage_values = [20.0, 40.0] .* u"kg/m^3",
+    L_px_values   = [125.0, 200.0] .* u"mm",
+    A_s_values    = [157.0, 402.0] .* u"mm^2",
+)
+
+# With deflection check (service loads)
+opts = PixelFrameBeamOptions(deflection_limit = 1/360)
+```
+
+# Fields
+## Catalog Generation
+- `L_px_values`: Pixel arm lengths (default: [125mm])
+- `t_values`: Wall thicknesses (default: [30mm])
+- `L_c_values`: Curve leg lengths (default: [30mm])
+- `λ_values`: Layup types (default: [:Y])
+- `fc_values`: Concrete strengths (default: 28:100 MPa)
+- `dosage_values`: Fiber dosages (default: [20 kg/m³])
+- `A_s_values`: Tendon areas (default: [157, 226, 402] mm²)
+- `f_pe_values`: Effective prestress (default: [500 MPa])
+- `d_ps_values`: Tendon eccentricities (default: 50:25:250 mm)
+- `fiber_ecc`: Fiber embodied carbon [kgCO₂e/kg] — dimensionless (default: 1.4)
+- `custom_catalog`: Custom catalog vector (overrides generation)
+
+## Checker Settings
+- `E_s`: Tendon elastic modulus (default: 200 GPa)
+- `f_py`: Tendon yield strength (default: 1860 MPa)
+- `γ_c`: fib partial safety factor for concrete — dimensionless (default: 1.0)
+
+## Minimum Bounding Box
+- `min_depth`: Minimum section bounding-box depth (default: 0mm = no constraint).
+  Set by the flat plate pipeline when punching shear requires a larger section.
+- `min_width`: Minimum section bounding-box width (default: 0mm = no constraint)
+
+## Pixel Discretization
+- `pixel_length`: Along-span length of each physical pixel piece (default: 500mm).
+  Spans must be exact multiples of this value; an error is raised otherwise.
+
+## Deflection (serviceability)
+- `deflection_limit`: L/δ ratio for serviceability, e.g. `1/360`.
+  `nothing` = no deflection check (default: `nothing`)
+
+## Optimization
+- `n_max_sections`: Limit unique sections, 0 = no limit (default: 0)
+- `objective`: MinVolume(), MinWeight(), MinCost(), MinCarbon() (default: MinCarbon())
+- `optimizer`: `:auto`, `:highs`, `:gurobi` (default: `:auto`)
+"""
+Base.@kwdef struct PixelFrameBeamOptions
+    # Catalog generation — Unitful vectors
+    L_px_values::Vector{<:Union{Real, Length}}       = [125.0u"mm"]
+    t_values::Vector{<:Union{Real, Length}}           = [30.0u"mm"]
+    L_c_values::Vector{<:Union{Real, Length}}         = [30.0u"mm"]
+    λ_values::Vector{Symbol}                          = [:Y]
+    fc_values::Vector{<:Union{Real, Unitful.Pressure}} = collect(28:100) .* u"MPa"
+    dosage_values::Vector{<:Union{Real, Unitful.Density}} = [20.0u"kg/m^3"]
+    A_s_values::Vector{<:Union{Real, Unitful.Area}}  = [157.0, 226.0, 402.0] .* u"mm^2"
+    f_pe_values::Vector{<:Union{Real, Unitful.Pressure}} = [500.0u"MPa"]
+    d_ps_values::Vector{<:Union{Real, Length}}        = collect(Float64, 50:25:250) .* u"mm"
+    fiber_ecc::Float64                                = 1.4   # kgCO₂e/kg (dimensionless)
+    custom_catalog::Union{Nothing, Vector}            = nothing
+
+    # Checker settings — Unitful scalars
+    E_s::Union{Real, Unitful.Pressure}   = 200.0u"GPa"
+    f_py::Union{Real, Unitful.Pressure}  = 1860.0u"MPa"
+    γ_c::Float64                         = 1.0
+
+    # Minimum bounding box (0 = no constraint)
+    min_depth::Union{Real, Length}  = 0.0u"mm"
+    min_width::Union{Real, Length}  = 0.0u"mm"
+
+    # Pixel discretization
+    # Per Wongsittikan (2024) §2.3, the standard pixel length is 500 mm.
+    pixel_length::Union{Real, Length} = 500.0u"mm"
+
+    # Deflection (serviceability)
+    deflection_limit::Union{Nothing, Float64} = nothing
+
+    # Optimization
+    n_max_sections::Int = 0
+    objective::AbstractObjective = MinCarbon()
+    optimizer::Symbol = :auto
+end
+
+# ── Boundary helpers: strip Unitful to bare mm / MPa / mm² / kg/m³ ──
+
+"""Strip a length value to mm (bare Float64). Bare Real is assumed mm."""
+_to_mm(x::Real)              = Float64(x)
+_to_mm(x::Unitful.Length)    = ustrip(u"mm", x)
+
+"""Strip a pressure value to MPa (bare Float64). Bare Real is assumed MPa."""
+_to_MPa(x::Real)                = Float64(x)
+_to_MPa(x::Unitful.Pressure)   = ustrip(u"MPa", x)
+
+"""Strip an area value to mm² (bare Float64). Bare Real is assumed mm²."""
+_to_mm2(x::Real)             = Float64(x)
+_to_mm2(x::Unitful.Area)    = ustrip(u"mm^2", x)
+
+"""Strip a density value to kg/m³ (bare Float64). Bare Real is assumed kg/m³."""
+_to_kgm3(x::Real)                = Float64(x)
+_to_kgm3(x::Unitful.Density)    = ustrip(u"kg/m^3", x)
+
+"""Extract bare catalog-generation vectors from PixelFrameBeamOptions."""
+function _pf_catalog_kwargs(opts::PixelFrameBeamOptions)
+    (;
+        L_px_values   = _to_mm.(opts.L_px_values),
+        t_values      = _to_mm.(opts.t_values),
+        L_c_values    = _to_mm.(opts.L_c_values),
+        λ_values      = opts.λ_values,
+        fc_values     = _to_MPa.(opts.fc_values),
+        dosage_values = _to_kgm3.(opts.dosage_values),
+        A_s_values    = _to_mm2.(opts.A_s_values),
+        f_pe_values   = _to_MPa.(opts.f_pe_values),
+        d_ps_values   = _to_mm.(opts.d_ps_values),
+        fiber_ecc     = opts.fiber_ecc,
+    )
+end
+
+"""Extract bare checker kwargs from PixelFrameBeamOptions."""
+function _pf_checker_kwargs(opts::PixelFrameBeamOptions)
+    (;
+        E_s_MPa      = _to_MPa(opts.E_s),
+        f_py_MPa     = _to_MPa(opts.f_py),
+        γ_c          = opts.γ_c,
+        min_depth_mm = _to_mm(opts.min_depth),
+        min_width_mm = _to_mm(opts.min_width),
+    )
+end
+
+"""Pixel length in mm (bare Float64) from PixelFrameBeamOptions."""
+_pf_pixel_mm(opts::PixelFrameBeamOptions) = _to_mm(opts.pixel_length)
+
+function Base.show(io::IO, opts::PixelFrameBeamOptions)
+    n_fc = length(opts.fc_values)
+    λs = join(string.(opts.λ_values), ",")
+    px_mm = _to_mm(opts.pixel_length)
+    print(io, "PixelFrameBeamOptions(λ=[", λs, "], fc=", n_fc, " grades")
+    print(io, ", px=", Int(px_mm), "mm")
+    !isnothing(opts.deflection_limit) && print(io, ", L/", Int(round(1/opts.deflection_limit)))
+    d_mm = _to_mm(opts.min_depth); w_mm = _to_mm(opts.min_width)
+    (d_mm > 0 || w_mm > 0) && print(io, ", min_bbox=", d_mm, "×", w_mm, "mm")
+    opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
+    print(io, ")")
+end
+
+# ==============================================================================
+# PixelFrame Column Options
+# ==============================================================================
+
+"""
+    PixelFrameColumnOptions
+
+Configuration for PixelFrame column sizing (MIP discrete catalog optimization).
+
+PixelFrame columns typically use the X4 (4-arm) layup for biaxial resistance.
+The capacity checker uses ACI 318-19 for axial/flexural capacity and fib MC2010
+for FRC shear capacity.
+
+All physical quantities accept **Unitful values** — conversions to internal
+units happen automatically at the catalog-generation and checker boundaries.
+Bare `Real` values are still accepted and interpreted as mm / MPa / mm² / kg/m³
+for backward compatibility, but Unitful is preferred for safety.
+
+# Example
+```julia
+# Default: X4-section for columns
+opts = PixelFrameColumnOptions()
+
+# Custom catalog for specific strengths (Unitful)
+opts = PixelFrameColumnOptions(
+    fc_values = [57.0, 80.0] .* u"MPa",
+    λ_values  = [:X4],
+    d_ps_values = [100.0, 150.0, 200.0] .* u"mm",
+)
+```
+
+# Fields
+## Catalog Generation
+- `L_px_values`: Pixel arm lengths (default: [125mm])
+- `t_values`: Wall thicknesses (default: [30mm])
+- `L_c_values`: Curve leg lengths (default: [30mm])
+- `λ_values`: Layup types (default: [:X4])
+- `fc_values`: Concrete strengths (default: 28:100 MPa)
+- `dosage_values`: Fiber dosages (default: [20 kg/m³])
+- `A_s_values`: Tendon areas (default: [157, 226, 402] mm²)
+- `f_pe_values`: Effective prestress (default: [500 MPa])
+- `d_ps_values`: Tendon eccentricities (default: 50:25:250 mm)
+- `fiber_ecc`: Fiber embodied carbon [kgCO₂e/kg] — dimensionless (default: 1.4)
+- `custom_catalog`: Custom catalog vector (overrides generation)
+
+## Checker Settings
+- `E_s`: Tendon elastic modulus (default: 200 GPa)
+- `f_py`: Tendon yield strength (default: 1860 MPa)
+- `γ_c`: fib partial safety factor for concrete — dimensionless (default: 1.0)
+
+## Minimum Bounding Box
+- `min_depth`: Minimum section bounding-box depth (default: 0mm = no constraint).
+  Set by the flat plate pipeline when punching shear requires a larger section.
+  After a punching failure, set `min_depth` / `min_width` to the failed
+  section's bounding box + increment, then re-run `size_columns`.
+- `min_width`: Minimum section bounding-box width (default: 0mm = no constraint)
+
+## Pixel Discretization
+- `pixel_length`: Along-span length of each physical pixel piece (default: 500mm).
+  Column heights must be exact multiples of this value; an error is raised otherwise.
+
+## Optimization
+- `n_max_sections`: Limit unique sections, 0 = no limit (default: 0)
+- `objective`: MinVolume(), MinWeight(), MinCost(), MinCarbon() (default: MinCarbon())
+- `optimizer`: `:auto`, `:highs`, `:gurobi` (default: `:auto`)
+"""
+Base.@kwdef struct PixelFrameColumnOptions
+    # Catalog generation — Unitful vectors
+    L_px_values::Vector{<:Union{Real, Length}}       = [125.0u"mm"]
+    t_values::Vector{<:Union{Real, Length}}           = [30.0u"mm"]
+    L_c_values::Vector{<:Union{Real, Length}}         = [30.0u"mm"]
+    λ_values::Vector{Symbol}                          = [:X4]
+    fc_values::Vector{<:Union{Real, Unitful.Pressure}} = collect(28:100) .* u"MPa"
+    dosage_values::Vector{<:Union{Real, Unitful.Density}} = [20.0u"kg/m^3"]
+    A_s_values::Vector{<:Union{Real, Unitful.Area}}  = [157.0, 226.0, 402.0] .* u"mm^2"
+    f_pe_values::Vector{<:Union{Real, Unitful.Pressure}} = [500.0u"MPa"]
+    d_ps_values::Vector{<:Union{Real, Length}}        = collect(Float64, 50:25:250) .* u"mm"
+    fiber_ecc::Float64                                = 1.4   # kgCO₂e/kg (dimensionless)
+    custom_catalog::Union{Nothing, Vector}            = nothing
+
+    # Checker settings — Unitful scalars
+    E_s::Union{Real, Unitful.Pressure}   = 200.0u"GPa"
+    f_py::Union{Real, Unitful.Pressure}  = 1860.0u"MPa"
+    γ_c::Float64                         = 1.0
+
+    # Minimum bounding box (0 = no constraint)
+    min_depth::Union{Real, Length}  = 0.0u"mm"
+    min_width::Union{Real, Length}  = 0.0u"mm"
+
+    # Pixel discretization
+    pixel_length::Union{Real, Length} = 500.0u"mm"
+
+    # Optimization
+    n_max_sections::Int = 0
+    objective::AbstractObjective = MinCarbon()
+    optimizer::Symbol = :auto
+end
+
+"""Extract bare catalog-generation vectors from PixelFrameColumnOptions."""
+function _pf_catalog_kwargs(opts::PixelFrameColumnOptions)
+    (;
+        L_px_values   = _to_mm.(opts.L_px_values),
+        t_values      = _to_mm.(opts.t_values),
+        L_c_values    = _to_mm.(opts.L_c_values),
+        λ_values      = opts.λ_values,
+        fc_values     = _to_MPa.(opts.fc_values),
+        dosage_values = _to_kgm3.(opts.dosage_values),
+        A_s_values    = _to_mm2.(opts.A_s_values),
+        f_pe_values   = _to_MPa.(opts.f_pe_values),
+        d_ps_values   = _to_mm.(opts.d_ps_values),
+        fiber_ecc     = opts.fiber_ecc,
+    )
+end
+
+"""Extract bare checker kwargs from PixelFrameColumnOptions."""
+function _pf_checker_kwargs(opts::PixelFrameColumnOptions)
+    (;
+        E_s_MPa      = _to_MPa(opts.E_s),
+        f_py_MPa     = _to_MPa(opts.f_py),
+        γ_c          = opts.γ_c,
+        min_depth_mm = _to_mm(opts.min_depth),
+        min_width_mm = _to_mm(opts.min_width),
+    )
+end
+
+"""Pixel length in mm (bare Float64) from PixelFrameColumnOptions."""
+_pf_pixel_mm(opts::PixelFrameColumnOptions) = _to_mm(opts.pixel_length)
+
+function Base.show(io::IO, opts::PixelFrameColumnOptions)
+    n_fc = length(opts.fc_values)
+    λs = join(string.(opts.λ_values), ",")
+    px_mm = _to_mm(opts.pixel_length)
+    print(io, "PixelFrameColumnOptions(λ=[", λs, "], fc=", n_fc, " grades")
+    print(io, ", px=", Int(px_mm), "mm")
+    d_mm = _to_mm(opts.min_depth); w_mm = _to_mm(opts.min_width)
+    (d_mm > 0 || w_mm > 0) && print(io, ", min_bbox=", d_mm, "×", w_mm, "mm")
+    opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
+    print(io, ")")
+end
+
+# ==============================================================================
 # Union Types for Dispatch
 # ==============================================================================
 
-"""Column sizing options (either steel or concrete)."""
-const ColumnOptions = Union{SteelMemberOptions, ConcreteColumnOptions}
+"""Column sizing options (steel, concrete, or PixelFrame)."""
+const ColumnOptions = Union{SteelMemberOptions, ConcreteColumnOptions, PixelFrameColumnOptions}
 
-"""Beam sizing options (steel, concrete, or nothing)."""
-const BeamOptions = Union{SteelMemberOptions, ConcreteBeamOptions}
+"""Beam sizing options (steel, concrete, or PixelFrame)."""
+const BeamOptions = Union{SteelMemberOptions, ConcreteBeamOptions, PixelFrameBeamOptions}
 
 """Any member sizing options."""
-const MemberOptions = Union{SteelMemberOptions, ConcreteColumnOptions, ConcreteBeamOptions}
+const MemberOptions = Union{SteelMemberOptions, ConcreteColumnOptions, ConcreteBeamOptions,
+                            PixelFrameBeamOptions, PixelFrameColumnOptions}
 
 # ==============================================================================
 # Display
@@ -312,7 +683,8 @@ end
 function Base.show(io::IO, opts::ConcreteColumnOptions)
     mat_str = material_name(opts.grade)
     shape_str = opts.section_shape == :circular ? "CIRCULAR" : "RECT"
-    print(io, "ConcreteColumnOptions(", mat_str, " ", shape_str)
+    strat_str = opts.sizing_strategy == :nlp ? " NLP" : ""
+    print(io, "ConcreteColumnOptions(", mat_str, " ", shape_str, strat_str)
     isfinite(opts.max_depth) && print(io, ", max_depth=", opts.max_depth)
     opts.n_max_sections > 0 && print(io, ", n_max=", opts.n_max_sections)
     !opts.include_slenderness && print(io, ", no_slenderness")

@@ -285,3 +285,193 @@ function optimize_discrete(
     
     return (; section_indices, sections, status, objective_value=JuMP.objective_value(m))
 end
+
+# =============================================================================
+# Multi-Material Discrete Optimization
+# =============================================================================
+
+"""
+    expand_catalog_with_materials(catalog, materials) -> (expanded_catalog, sec_indices, mat_indices)
+
+Create an expanded catalog where each entry is a (section, material) pair.
+The expanded catalog has `N_sections × M_materials` entries.
+
+# Returns
+- `expanded_catalog`: Vector of sections (repeated for each material)
+- `sec_indices`: Maps expanded index k → original section index j
+- `mat_indices`: Maps expanded index k → material index m
+"""
+function expand_catalog_with_materials(
+    catalog::AbstractVector{<:AbstractSection},
+    materials::AbstractVector{<:AbstractMaterial},
+)
+    n_sec = length(catalog)
+    n_mat = length(materials)
+    n_total = n_sec * n_mat
+
+    expanded = Vector{eltype(catalog)}(undef, n_total)
+    sec_idx = Vector{Int}(undef, n_total)
+    mat_idx = Vector{Int}(undef, n_total)
+
+    k = 0
+    for mi in 1:n_mat, ji in 1:n_sec
+        k += 1
+        expanded[k] = catalog[ji]
+        sec_idx[k] = ji
+        mat_idx[k] = mi
+    end
+
+    return expanded, sec_idx, mat_idx
+end
+
+"""
+    optimize_discrete(
+        checker::AbstractCapacityChecker,
+        demands::AbstractVector{<:AbstractDemand},
+        geometries::AbstractVector{<:AbstractMemberGeometry},
+        catalog::AbstractVector{<:AbstractSection},
+        materials::AbstractVector{<:AbstractMaterial};
+        kwargs...
+    )
+
+Multi-material discrete optimization. Expands the catalog into
+`N_sections × M_materials` candidates, precomputes a separate capacity
+cache per material, and solves a single MIP that can assign different
+materials to different member groups.
+
+# Returns
+Named tuple: `(; section_indices, sections, material_indices, materials_chosen,
+                 status, objective_value)`
+
+where `section_indices` and `material_indices` index into the original
+`catalog` and `materials` vectors respectively.
+
+# Example
+```julia
+result = optimize_discrete(checker, demands, geometries, catalog,
+                           [NWC_4000, NWC_5000, NWC_6000];
+                           objective=MinCarbon())
+result.materials_chosen  # Vector of materials chosen per group
+```
+"""
+function optimize_discrete(
+    checker::AbstractCapacityChecker,
+    demands::AbstractVector{<:AbstractDemand},
+    geometries::AbstractVector{<:AbstractMemberGeometry},
+    catalog::AbstractVector{<:AbstractSection},
+    materials::AbstractVector{<:AbstractMaterial};
+    objective::AbstractObjective = MinVolume(),
+    n_max_sections::Integer = 0,
+    optimizer::Symbol = :auto,
+    mip_gap::Real = 1e-4,
+    output_flag::Integer = 0,
+    time_limit_sec::Real = 30.0,
+)
+    n_groups = length(demands)
+    n_groups == length(geometries) || throw(ArgumentError("demands and geometries must have the same length"))
+    n_sec = length(catalog)
+    n_mat = length(materials)
+
+    # Expand catalog: k = (m-1)*n_sec + j
+    expanded, sec_idx_map, mat_idx_map = expand_catalog_with_materials(catalog, materials)
+    n_total = length(expanded)
+
+    # Extract lengths for objective calculation
+    lengths = [g.L isa Length ? ustrip(u"m", g.L) : Float64(g.L) for g in geometries]
+
+    # Precompute one cache per material
+    caches = Vector{AbstractCapacityCache}(undef, n_mat)
+    for mi in 1:n_mat
+        caches[mi] = create_cache(checker, n_sec)
+        precompute_capacities!(checker, caches[mi], catalog, materials[mi], objective)
+    end
+
+    # Filter feasible expanded candidates per group
+    feasible = Vector{Vector{Int}}(undef, n_groups)
+    errors = Vector{Union{Nothing, String}}(nothing, n_groups)
+
+    for i in 1:n_groups
+        idxs = Int[]
+        for k in 1:n_total
+            j = sec_idx_map[k]
+            mi = mat_idx_map[k]
+            if is_feasible(checker, caches[mi], j, catalog[j], materials[mi], demands[i], geometries[i])
+                push!(idxs, k)
+            end
+        end
+        if isempty(idxs)
+            errors[i] = get_feasibility_error_msg(checker, demands[i], geometries[i])
+        end
+        feasible[i] = idxs
+    end
+
+    # Check for infeasible groups
+    for i in 1:n_groups
+        if !isnothing(errors[i])
+            throw(ArgumentError("No feasible sections for group $i (multi-material): $(errors[i])"))
+        end
+    end
+
+    # Build MIP model
+    opt_factory, solver = _choose_mip_optimizer(optimizer)
+    m = JuMP.Model(opt_factory)
+
+    if solver === :highs
+        JuMP.set_optimizer_attribute(m, "output_flag", output_flag > 0)
+        JuMP.set_optimizer_attribute(m, "mip_rel_gap", mip_gap)
+        JuMP.set_optimizer_attribute(m, "time_limit", Float64(time_limit_sec))
+    else
+        if output_flag == 0
+            JuMP.set_silent(m)
+        else
+            JuMP.set_optimizer_attribute(m, "OutputFlag", output_flag)
+        end
+        JuMP.set_optimizer_attribute(m, "MIPGap", mip_gap)
+        JuMP.set_optimizer_attribute(m, "TimeLimit", Float64(time_limit_sec))
+    end
+
+    # Decision: x[i,k] = 1 if group i uses expanded candidate k
+    JuMP.@variable(m, x[i=1:n_groups, k=feasible[i]], binary=true)
+    JuMP.@constraint(m, [i=1:n_groups], sum(x[i,k] for k in feasible[i]) == 1)
+
+    # Optional: limit unique (section, material) pairs
+    if n_max_sections > 0
+        JuMP.@variable(m, z[k=1:n_total], binary=true)
+        JuMP.@constraint(m, [k=1:n_total],
+            sum(x[i,k] for i in 1:n_groups if k in feasible[i]) <= n_groups * z[k]
+        )
+        JuMP.@constraint(m, sum(z[k] for k in 1:n_total) <= n_max_sections)
+    end
+
+    # Objective: use the cache for the material associated with each expanded index
+    JuMP.@objective(m, Min,
+        sum(sum(x[i,k] * get_objective_coeff(checker, caches[mat_idx_map[k]], sec_idx_map[k]) * lengths[i]
+                for k in feasible[i])
+            for i in 1:n_groups))
+
+    JuMP.optimize!(m)
+
+    status = JuMP.termination_status(m)
+    status == JuMP.MOI.OPTIMAL || status == JuMP.MOI.TIME_LIMIT ||
+        @warn "Multi-material MIP did not reach OPTIMAL" status
+
+    # Extract solution
+    section_indices = Vector{Int}(undef, n_groups)
+    material_indices = Vector{Int}(undef, n_groups)
+    sections = Vector{eltype(catalog)}(undef, n_groups)
+    materials_chosen = Vector{eltype(materials)}(undef, n_groups)
+
+    for i in 1:n_groups
+        vals = [JuMP.value(x[i, k]) for k in feasible[i]]
+        bestk = feasible[i][argmax(vals)]
+        j = sec_idx_map[bestk]
+        mi = mat_idx_map[bestk]
+        section_indices[i] = j
+        material_indices[i] = mi
+        sections[i] = catalog[j]
+        materials_chosen[i] = materials[mi]
+    end
+
+    return (; section_indices, sections, material_indices, materials_chosen,
+              status, objective_value=JuMP.objective_value(m))
+end

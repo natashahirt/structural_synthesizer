@@ -53,7 +53,7 @@ Build an RC column catalog.
 - `:square` — Square columns only (b = h)
 - `:rectangular` — Square + rectangular aspect ratios
 - `:low_capacity` — Smaller sizes (12"-24") for light loads
-- `:high_capacity` — Larger sizes (18"-48") with heavy rebar
+- `:high_capacity` — Larger sizes (18"-72") with heavy rebar
 - `:standard` — Default square columns (12"-36")
 - `:all` — Comprehensive (10"-48" with all options)
 

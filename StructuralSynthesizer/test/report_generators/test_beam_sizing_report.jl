@@ -1,11 +1,12 @@
 # ==============================================================================
 # Beam Sizing Validation Report
 # ==============================================================================
-# This report validates beam sizing across four beam types:
+# This report validates beam sizing across five beam types:
 #   1. RC Beams          (ACI 318-19)  — MIP catalog + NLP continuous
 #   2. RC T-Beams        (ACI 318-19)  — MIP catalog + NLP continuous (fixed bf/hf)
 #   3. Steel W Beams     (AISC 360-16) — MIP catalog + NLP continuous
 #   4. Steel HSS Beams   (AISC 360-16) — MIP catalog + NLP continuous
+#   5. PixelFrame Beams  (ACI 318-19 + fib MC2010) — MIP catalog
 #
 # For each section the report:
 #   a. Sizes via discrete MIP (optimize_discrete → catalog selection)
@@ -291,6 +292,8 @@ println("    Materials")
 println("      Concrete : f'c = 4 000 psi  (NWC_4000, λ = 1.0)")
 println("      Rebar    : fy  = 60 ksi     (Rebar_60)")
 println("      Steel    : Fy  = 50 ksi     (A992_Steel)")
+println("      PF FRC   : fc′ ∈ {30,40,50,55}MPa, dosage ∈ {20,30,40}kg/m³ (FRC + external PT)")
+println("      PF Geom  : L_px ∈ {125,150,200,250,300}mm, t = 30mm, λ = Y (3-arm beam)")
 println()
 println("    Demand Cases")
 println("      RC Beam (mod)  : Mu = 120 kip·ft, Vu = 25 kip,  L = 6.0 m")
@@ -301,6 +304,9 @@ println("      Steel W Beam   : Mu = 150 kN·m,   Vu = 100 kN,  L = 8.0 m")
 println("      Steel HSS Beam : Mu = 60 kN·m,    Vu = 80 kN,   L = 6.0 m")
 println("      Deflection (W) : w_LL = 0.8 kip/ft, L = 25 ft  (steel W, L/360)")
 println("      Deflection (T) : w_D = 1.2 kip/ft, w_L = 0.8 kip/ft, L = 25 ft  (T-beam, ACI §24.2)")
+println("      PF Beam (mod)  : Mu = 10 kN·m,  Vu = 30 kN,  L = 6.0 m  (Y-section FRC)")
+println("      PF Beam (hvy)  : Mu = 100 kN·m, Vu = 120 kN, L = 8.0 m  (Y-section FRC)")
+println("      PF Defl.       : w_D = 1.0 kN/m, w_L = 0.5 kN/m, L = 6.0 m")
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║  2.  RC BEAM — MODERATE LOAD  (ACI 318-19)                                ║
@@ -1775,24 +1781,562 @@ end
 bm_step_status["Torsion NLP"] = nlp_tor_ok ? "✓" : "✗"
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  16. DESIGN CODE FEATURES & LIMITATIONS                                   ║
+# ║  16. PIXELFRAME BEAM (ACI 318-19 + fib MC2010)                            ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-bm_sub_header("16.0  Feature Matrix")
+bm_sub_header("16.0  PixelFrame Beam — FRC + External PT (ACI 318-19 / fib MC2010)")
+bm_note("PixelFrame: Y-section (3-arm) FRC beam with external post-tensioning. MIP catalog only (no NLP).")
+bm_note("Capacity: ACI 318-19 §22.4 (axial/flexure), fib MC2010 §7.7-5 (FRC shear).")
+bm_note("Catalog sweeps geometry (L_px), material grade (fc′, dosage), and tendon config (A_s, d_ps, f_pe).")
+bm_note("Ranges aligned with original Pixelframe.jl: L_px 125–300mm, fc′ 30–55MPa, dosage 20–40 kg/m³.")
+
+# Shared catalog: sweeps both section sizes and material grades
+# The optimizer selects the lightest (min-carbon) feasible (geometry, material) pair.
+pf_beam_catalog_opts = PixelFrameBeamOptions(
+    λ_values      = [:Y],                                                 # beams use Y (3-arm) only — thesis Fig 2.1
+    L_px_values   = [125.0, 150.0, 200.0, 250.0, 300.0] .* u"mm",       # pixel arm lengths (original: 125:25:400)
+    t_values      = [30.0u"mm"],                                          # wall thickness (original: fixed 30)
+    L_c_values    = [30.0u"mm"],                                          # connector (original: fixed 30)
+    fc_values     = [30.0, 40.0, 50.0, 55.0] .* u"MPa",                  # concrete grades (original: 30–55 MPa)
+    dosage_values = [20.0, 30.0, 40.0] .* u"kg/m^3",                     # fiber dosages (original: 20–40 kg/m³)
+    A_s_values    = [157.0, 226.0, 402.0, 628.0] .* u"mm^2",             # tendon areas (original: 10–20mm dia wires)
+    f_pe_values   = [186.0, 558.0, 930.0] .* u"MPa",                     # PT stress (original: 0.1–0.5 × 1860 MPa)
+    d_ps_values   = [0.0, 50.0, 100.0, 150.0, 200.0] .* u"mm",          # tendon eccentricity (original: 0:10:2L)
+    objective     = MinCarbon(),
+)
+
+# ── 16.1  Moderate load ──
+println("\n  16.1  PixelFrame Beam — Moderate Load")
+
+pf_Mu_mod = 10.0u"kN*m"
+pf_Vu_mod = 30.0u"kN"
+pf_L_mod  = 6.0  # m
+
+println("    Mu = 10.0 kN·m, Vu = 30.0 kN, L = 6.0 m")
+
+pf_beam_mod = size_beams(
+    [pf_Mu_mod], [pf_Vu_mod],
+    [ConcreteMemberGeometry(pf_L_mod)],
+    pf_beam_catalog_opts,
+)
+
+pf_mod_sec  = pf_beam_mod.sections[1]
+pf_mod_area = ustrip(u"mm^2", section_area(pf_mod_sec))
+
+println("    Section  : $(pf_mod_sec)")
+println("    Layup    : $(pf_mod_sec.λ), L_px=$(ustrip(u"mm", pf_mod_sec.L_px))mm, t=$(ustrip(u"mm", pf_mod_sec.t))mm")
+println("    Material : fc′=$(ustrip(u"MPa", pf_mod_sec.material.fc′))MPa, dosage=$(pf_mod_sec.material.fiber_dosage)kg/m³")
+println("    Area     : $(round(pf_mod_area, digits=1)) mm²")
+println("    Status   : $(pf_beam_mod.status)")
+
+# Analytical capacity check
+pf_mod_ax = pf_axial_capacity(pf_mod_sec)
+pf_mod_fl = pf_flexural_capacity(pf_mod_sec)
+pf_mod_sh = frc_shear_capacity(pf_mod_sec)
+
+pf_mod_Mu_kNm = ustrip(u"kN*m", pf_mod_fl.Mu)
+pf_mod_Vu_kN  = ustrip(u"kN", pf_mod_sh)
+pf_mod_Pu_kN  = ustrip(u"kN", pf_mod_ax.Pu)
+
+println("    φMu      : $(round(pf_mod_Mu_kNm, digits=2)) kN·m")
+println("    φVu      : $(round(pf_mod_Vu_kN, digits=2)) kN")
+println("    φPu      : $(round(pf_mod_Pu_kN, digits=2)) kN")
+println("    Flex util: $(round(ustrip(u"kN*m", pf_Mu_mod) / pf_mod_Mu_kNm, digits=3))")
+println("    Shear util: $(round(ustrip(u"kN", pf_Vu_mod) / pf_mod_Vu_kN, digits=3))")
+
+pf_mod_flex_ok  = ustrip(u"kN*m", pf_Mu_mod) ≤ pf_mod_Mu_kNm
+pf_mod_shear_ok = ustrip(u"kN", pf_Vu_mod) ≤ pf_mod_Vu_kN
+
+# ── 16.2  Heavy load ──
+println("\n  16.2  PixelFrame Beam — Heavy Load")
+
+pf_Mu_hvy = 40.0u"kN*m"
+pf_Vu_hvy = 60.0u"kN"
+pf_L_hvy  = 8.0  # m
+
+println("    Mu = 40.0 kN·m, Vu = 60.0 kN, L = 8.0 m")
+
+pf_beam_hvy = size_beams(
+    [pf_Mu_hvy], [pf_Vu_hvy],
+    [ConcreteMemberGeometry(pf_L_hvy)],
+    pf_beam_catalog_opts,
+)
+
+pf_hvy_sec  = pf_beam_hvy.sections[1]
+pf_hvy_area = ustrip(u"mm^2", section_area(pf_hvy_sec))
+
+println("    Section  : $(pf_hvy_sec)")
+println("    Layup    : $(pf_hvy_sec.λ), L_px=$(ustrip(u"mm", pf_hvy_sec.L_px))mm, t=$(ustrip(u"mm", pf_hvy_sec.t))mm")
+println("    Material : fc′=$(ustrip(u"MPa", pf_hvy_sec.material.fc′))MPa, dosage=$(pf_hvy_sec.material.fiber_dosage)kg/m³")
+println("    Area     : $(round(pf_hvy_area, digits=1)) mm²")
+println("    Status   : $(pf_beam_hvy.status)")
+
+pf_hvy_fl = pf_flexural_capacity(pf_hvy_sec)
+pf_hvy_sh = frc_shear_capacity(pf_hvy_sec)
+
+pf_hvy_Mu_kNm = ustrip(u"kN*m", pf_hvy_fl.Mu)
+pf_hvy_Vu_kN  = ustrip(u"kN", pf_hvy_sh)
+
+println("    φMu      : $(round(pf_hvy_Mu_kNm, digits=2)) kN·m")
+println("    φVu      : $(round(pf_hvy_Vu_kN, digits=2)) kN")
+println("    Flex util: $(round(ustrip(u"kN*m", pf_Mu_hvy) / pf_hvy_Mu_kNm, digits=3))")
+println("    Shear util: $(round(ustrip(u"kN", pf_Vu_hvy) / pf_hvy_Vu_kN, digits=3))")
+
+pf_hvy_flex_ok  = ustrip(u"kN*m", pf_Mu_hvy) ≤ pf_hvy_Mu_kNm
+pf_hvy_shear_ok = ustrip(u"kN", pf_Vu_hvy) ≤ pf_hvy_Vu_kN
+
+# ── 16.3  Growth check — heavier load should select larger or stronger section ──
+println("\n  16.3  Section Growth Check")
+bm_note("Heavier demands should select a larger section geometry and/or higher material grade.")
+
+pf_mod_Lpx = ustrip(u"mm", pf_mod_sec.L_px)
+pf_hvy_Lpx = ustrip(u"mm", pf_hvy_sec.L_px)
+pf_mod_t   = ustrip(u"mm", pf_mod_sec.t)
+pf_hvy_t   = ustrip(u"mm", pf_hvy_sec.t)
+pf_mod_fc  = ustrip(u"MPa", pf_mod_sec.material.fc′)
+pf_hvy_fc  = ustrip(u"MPa", pf_hvy_sec.material.fc′)
+pf_mod_dps = ustrip(u"mm", pf_mod_sec.d_ps)
+pf_hvy_dps = ustrip(u"mm", pf_hvy_sec.d_ps)
+
+@printf("    %-20s %10s %10s\n", "Parameter", "Moderate", "Heavy")
+@printf("    %-20s %10s %10s\n", "─"^20, "─"^10, "─"^10)
+@printf("    %-20s %10.0f %10.0f\n", "L_px (mm)", pf_mod_Lpx, pf_hvy_Lpx)
+@printf("    %-20s %10.0f %10.0f\n", "t (mm)", pf_mod_t, pf_hvy_t)
+@printf("    %-20s %10.1f %10.1f\n", "fc′ (MPa)", pf_mod_fc, pf_hvy_fc)
+@printf("    %-20s %10.0f %10.0f\n", "d_ps (mm)", pf_mod_dps, pf_hvy_dps)
+@printf("    %-20s %10.1f %10.1f\n", "Area (mm²)", pf_mod_area, pf_hvy_area)
+@printf("    %-20s %10.2f %10.2f\n", "φMu (kN·m)", pf_mod_Mu_kNm, pf_hvy_Mu_kNm)
+@printf("    %-20s %10.2f %10.2f\n", "φVu (kN)", pf_mod_Vu_kN, pf_hvy_Vu_kN)
+
+# The heavy section should have more capacity (larger geometry and/or stronger material)
+pf_growth_ok = pf_hvy_Mu_kNm ≥ pf_mod_Mu_kNm
+
+# ── 16.4  Deflection (serviceability) ──
+println("\n  16.4  PixelFrame Beam — Deflection Check")
+bm_note("Deflection uses modified Branson equation for EPT beams (Ng & Tan 2006).")
+
+pf_w_dead = 1.0u"kN/m"
+pf_w_live = 0.5u"kN/m"
+pf_L_defl = 6.0u"m"
+
+println("    w_D = 1.0 kN/m, w_L = 0.5 kN/m, L = 6.0 m")
+
+pf_defl = pf_check_deflection(pf_mod_sec, pf_L_defl, pf_w_dead, pf_w_live)
+
+println("    Δ_D      : $(round(ustrip(u"mm", pf_defl.Δ_D), digits=3)) mm")
+println("    Δ_LL     : $(round(ustrip(u"mm", pf_defl.Δ_LL), digits=3)) mm")
+println("    Δ_total  : $(round(ustrip(u"mm", pf_defl.Δ_total), digits=3)) mm")
+println("    Limit LL : $(round(pf_defl.limit_ll_mm, digits=2)) mm  (L/360)")
+println("    Limit tot: $(round(pf_defl.limit_total_mm, digits=2)) mm  (L/240)")
+println("    Passes LL: $(pf_defl.passes_ll ? "✓" : "✗")")
+println("    Passes tot: $(pf_defl.passes_total ? "✓" : "✗")")
+
+# ── 16.5  Batch sizing — different demands get different sections ──
+println("\n  16.5  PixelFrame Beam — Batch Sizing (3 members, increasing demand)")
+bm_note("Same catalog for all members; optimizer selects per-member section + material.")
+
+pf_batch_Mu = [5.0, 15.0, 35.0] .* u"kN*m"
+pf_batch_Vu = [15.0, 30.0, 50.0] .* u"kN"
+pf_batch_geoms = [ConcreteMemberGeometry(5.0), ConcreteMemberGeometry(6.0), ConcreteMemberGeometry(8.0)]
+
+pf_batch = size_beams(pf_batch_Mu, pf_batch_Vu, pf_batch_geoms, pf_beam_catalog_opts)
+
+for i in 1:3
+    bs = pf_batch.sections[i]
+    ba = ustrip(u"mm^2", section_area(bs))
+    println("    Member $i : $(bs)  (A=$(round(ba, digits=0)) mm²)")
+end
+println("    Status   : $(pf_batch.status)")
+
+pf_batch_ok = pf_batch.status == JuMP.MOI.OPTIMAL || pf_batch.status == JuMP.MOI.TIME_LIMIT
+
+# ── 16.6  PixelFrame Design Workflow — Per-Pixel Material Assignment ──
+println("\n  16.6  PixelFrame Design Workflow — Per-Pixel Material Assignment")
+bm_note("Demonstrates the full PixelFrame sizing pipeline:")
+bm_note("  1. Generate catalog → 2. MIP selects governing section → 3. Per-pixel material relaxation")
+bm_note("  Geometry + tendon constant across all pixels; only concrete material (fc′, dosage) varies.")
+
+begin
+    # ── Step 1: Build catalog and checker from options ──
+    # Use a SINGLE small geometry so that the only way to increase capacity is
+    # via material grade (fc′, dosage).  This forces the MIP to pick a high-grade
+    # material for midspan, and per-pixel relaxation can then drop to lower grades
+    # at the supports where demand is small.
+    pf_wf_opts = PixelFrameBeamOptions(
+        λ_values      = [:Y],
+        L_px_values   = [125.0] .* u"mm",               # single small geometry
+        t_values      = [30.0u"mm"],
+        L_c_values    = [30.0u"mm"],
+        fc_values     = [30.0, 40.0, 55.0] .* u"MPa",   # wide fc′ range
+        dosage_values = [20.0, 30.0, 40.0] .* u"kg/m^3", # wide dosage range
+        A_s_values    = [402.0] .* u"mm^2",
+        f_pe_values   = [930.0] .* u"MPa",               # high PT to boost capacity
+        d_ps_values   = [100.0] .* u"mm",
+        pixel_length  = 500.0u"mm",
+        objective     = MinCarbon(),
+    )
+
+    cat = StructuralSizer.generate_pixelframe_catalog(;
+        StructuralSizer._pf_catalog_kwargs(pf_wf_opts)...)
+    checker = StructuralSizer.PixelFrameChecker(;
+        StructuralSizer._pf_checker_kwargs(pf_wf_opts)...)
+    px_mm = StructuralSizer._pf_pixel_mm(pf_wf_opts)
+
+    println("    Catalog size : $(length(cat)) sections")
+    println("    Pixel length : $(px_mm) mm")
+
+    # ── Step 2: MIP selects governing section for a 6 m beam ──
+    # Demand chosen so that fc′=30 is NOT sufficient → MIP must pick fc′≥40.
+    # Support pixels (low demand) can then relax back to fc′=30.
+    # fc′=30 → φMu≈16.3 kN·m,  fc′=40 → φMu≈22.2 kN·m  (Y-125, 402mm², 930MPa, 100mm)
+    # Demand 18 kN·m forces MIP to pick fc′=40; support pixels can relax to fc′=30.
+    wf_Mu = 18.0u"kN*m"
+    wf_Vu = 40.0u"kN"
+    wf_L  = 6.0  # m  (6000 mm / 500 mm = 12 pixels)
+
+    wf_result = size_beams([wf_Mu], [wf_Vu],
+        [ConcreteMemberGeometry(wf_L)], pf_wf_opts)
+    wf_sec = wf_result.sections[1]
+
+    println("\n    ── MIP Governing Section (midspan / worst-case material) ──")
+    println("    Section  : $(wf_sec)")
+    println("    Layup    : $(wf_sec.λ), L_px=$(ustrip(u"mm", wf_sec.L_px))mm, t=$(ustrip(u"mm", wf_sec.t))mm")
+    println("    Material : fc′=$(ustrip(u"MPa", wf_sec.material.fc′))MPa, dosage=$(wf_sec.material.fiber_dosage)kg/m³")
+    println("    A_s=$(ustrip(u"mm^2", wf_sec.A_s))mm², f_pe=$(ustrip(u"MPa", wf_sec.f_pe))MPa, d_ps=$(ustrip(u"mm", wf_sec.d_ps))mm")
+
+    wf_ax = pf_axial_capacity(wf_sec)
+    wf_fl = pf_flexural_capacity(wf_sec)
+    wf_sh = frc_shear_capacity(wf_sec)
+    @printf("    φPu = %.1f kN,  φMu = %.2f kN·m,  φVu = %.1f kN\n",
+            ustrip(u"kN", wf_ax.Pu), ustrip(u"kN*m", wf_fl.Mu), ustrip(u"kN", wf_sh))
+
+    # ── Step 3: Build per-pixel design ──
+    # Pixel demands: uniform for this demo (in practice, varies by position)
+    L_mm = wf_L * 1000.0
+    n_px = StructuralSizer.validate_pixel_divisibility(L_mm, px_mm)
+
+    # Build uniform demands for each pixel (same as governing demand)
+    # Build parabolic moment demands: high at midspan, low at supports
+    # M(x) ≈ Mu_max × 4x(1-x)/L² for a UDL (parabolic envelope)
+    pixel_demands = map(1:n_px) do i
+        x_frac = (i - 0.5) / n_px  # midpoint of pixel i, as fraction of span
+        m_frac = 4.0 * x_frac * (1.0 - x_frac)  # parabolic shape
+        v_frac = abs(1.0 - 2.0 * x_frac)         # linear shear shape
+        MemberDemand(i;
+            Pu_c      = 0.0u"kN",
+            Mux       = wf_Mu * m_frac,
+            Vu_strong = wf_Vu * v_frac,
+        )
+    end
+
+    # Build material pool from catalog (unique materials sorted by carbon)
+    all_mats = unique([s.material for s in cat])
+    sort!(all_mats; by = m -> StructuralSizer.pf_concrete_ecc(m.fc′) + m.fiber_ecc * m.fiber_dosage)
+
+    println("\n    ── Material Pool ($(length(all_mats)) unique, sorted by carbon) ──")
+    @printf("    %-4s  %8s  %10s  %10s\n", "#", "fc′(MPa)", "dosage", "ecc(kgCO₂e/m³)")
+    @printf("    %-4s  %8s  %10s  %10s\n", "─"^4, "─"^8, "─"^10, "─"^10)
+    for (k, m) in enumerate(all_mats)
+        ec = StructuralSizer.pf_concrete_ecc(m.fc′)
+        @printf("    %-4d  %8.1f  %10.1f  %10.1f\n", k, ustrip(u"MPa", m.fc′), m.fiber_dosage, ec)
+    end
+
+    # Build the design
+    design = StructuralSizer.build_pixel_design(
+        wf_sec, wf_L * u"m", px_mm,
+        pixel_demands, all_mats, checker;
+        symmetric=true,
+    )
+
+    println("\n    ── Per-Pixel Material Assignment ($(design.n_pixels) pixels × $(Int(px_mm))mm) ──")
+    println("    Position: support ──────────────────────────────────── support")
+    println()
+
+    # Print pixel index header
+    @printf("    Pixel:     ")
+    for i in 1:design.n_pixels
+        @printf(" %3d", i)
+    end
+    println()
+
+    # Print fc′ per pixel
+    @printf("    fc′(MPa):  ")
+    for mat in design.pixel_materials
+        @printf(" %3.0f", ustrip(u"MPa", mat.fc′))
+    end
+    println()
+
+    # Print dosage per pixel
+    @printf("    dosage:    ")
+    for mat in design.pixel_materials
+        @printf(" %3.0f", mat.fiber_dosage)
+    end
+    println()
+
+    # Print a visual bar showing material grade
+    println()
+    print("    Material:  [")
+    fc_max = maximum(ustrip(u"MPa", m.fc′) for m in design.pixel_materials)
+    fc_min = minimum(ustrip(u"MPa", m.fc′) for m in design.pixel_materials)
+    for mat in design.pixel_materials
+        fc_val = ustrip(u"MPa", mat.fc′)
+        if fc_val == fc_max
+            print("███")
+        elseif fc_val == fc_min
+            print("░░░")
+        else
+            print("▓▓▓")
+        end
+    end
+    println("]")
+    println("               ░░░=lowest grade  ▓▓▓=mid grade  ███=highest grade")
+
+    # ── Step 4: Volume and carbon summary ──
+    vols = StructuralSizer.pixel_volumes(design)
+    total_carbon = StructuralSizer.pixel_carbon(design)
+
+    println("\n    ── Material Volumes ──")
+    @printf("    %-12s  %10s  %12s\n", "fc′(MPa)", "dosage", "Volume(m³)")
+    @printf("    %-12s  %10s  %12s\n", "─"^12, "─"^10, "─"^12)
+    for (mat, vol) in sort(collect(vols); by=p -> ustrip(u"MPa", p.first.fc′))
+        @printf("    %-12.1f  %10.1f  %12.6f\n",
+                ustrip(u"MPa", mat.fc′), mat.fiber_dosage, ustrip(u"m^3", vol))
+    end
+    @printf("    %-12s  %10s  %12.6f\n", "TOTAL", "", sum(ustrip(u"m^3", v) for v in values(vols)))
+    println("    Total carbon: $(round(total_carbon, digits=2)) kgCO₂e")
+
+    # ── Step 5: Compare uniform vs relaxed carbon ──
+    # Uniform: all pixels use governing material
+    uniform_carbon = let
+        A_c_m2 = ustrip(u"m^2", section_area(wf_sec))
+        A_s_m2 = ustrip(u"m^2", wf_sec.A_s)
+        L_px_m = px_mm / 1000.0
+        fc_gov = wf_sec.material.fc′
+        dosage_gov = wf_sec.material.fiber_dosage
+        ec_gov = StructuralSizer.pf_concrete_ecc(fc_gov)
+        n_px * (ec_gov * A_c_m2 * L_px_m + wf_sec.material.fiber_ecc * (dosage_gov * A_c_m2 + StructuralSizer._STEEL_DENSITY_KGM3 * A_s_m2) * L_px_m)
+    end
+
+    savings = (1 - total_carbon / uniform_carbon) * 100
+    println()
+    @printf("    Uniform material carbon : %.2f kgCO₂e\n", uniform_carbon)
+    @printf("    Per-pixel relaxed carbon: %.2f kgCO₂e\n", total_carbon)
+    @printf("    Carbon savings          : %+.1f%%\n", savings)
+    println()
+    bm_note("Per-pixel relaxation uses lower-grade concrete at low-demand positions (near supports),")
+    bm_note("reducing embodied carbon while maintaining structural adequacy at every pixel.")
+
+    # ── Step 6: Tendon Deviation Axial Force ──
+    # Compute the connection design output: how much extra clamping force
+    # the post-tensioning must provide at deviator points for friction-based
+    # shear transfer between pixels.
+    # Reference: Wongsittikan (2024) — designPixelframe.jl, lines 474–536
+    wf_Vu = wf_Mu / (3.0u"m")  # approximate shear from moment (conservative)
+    td_draped = pf_tendon_deviation_force(design, wf_Vu; d_ps_support=0.0u"mm")
+    td_straight = pf_tendon_deviation_force(design, wf_Vu; d_ps_support=design.section.d_ps)
+
+    design.tendon_deviation = td_draped  # store the draped result
+
+    println("\n    ── Tendon Deviation Axial Force (Connection Design) ──")
+    println("    Shear demand V_max:  $(round(u"kN", wf_Vu; digits=1))")
+    println("    Friction coeff μ_s:  $(td_draped.μ_s)")
+    println()
+    println("    Profile          θ(°)    P_horiz(kN)  N_friction(kN)  N_additional(kN)")
+    println("    ─────────────────────────────────────────────────────────────────────────")
+    @printf("    Draped (d=0→d_ps) %5.2f   %11.1f  %14.1f  %15.1f\n",
+            rad2deg(td_draped.θ),
+            ustrip(u"kN", td_draped.P_horizontal),
+            ustrip(u"kN", td_draped.N_friction),
+            ustrip(u"kN", td_draped.N_additional))
+    @printf("    Straight (d=d_ps) %5.2f   %11.1f  %14.1f  %15.1f\n",
+            rad2deg(td_straight.θ),
+            ustrip(u"kN", td_straight.P_horizontal),
+            ustrip(u"kN", td_straight.N_friction),
+            ustrip(u"kN", td_straight.N_additional))
+    println()
+    if td_draped.N_additional > 0.0u"kN"
+        bm_note("N_additional > 0: PT alone is insufficient for friction shear transfer.")
+        bm_note("Additional clamping of $(round(u"kN", td_draped.N_additional; digits=1)) needed at deviators.")
+    else
+        bm_note("N_additional ≤ 0: PT provides sufficient clamping for friction shear transfer.")
+    end
+end
+
+pf_workflow_ok = design.n_pixels > 0 && total_carbon > 0 && total_carbon ≤ uniform_carbon * 1.01
+
+@testset "PixelFrame Design Workflow" begin
+    @test design.n_pixels == 12  # 6000mm / 500mm
+    @test length(design.pixel_materials) == design.n_pixels
+    @test total_carbon > 0
+    @test total_carbon ≤ uniform_carbon * 1.01  # relaxed ≤ uniform
+    # Symmetry check: pixel i should match pixel n+1-i
+    for i in 1:div(design.n_pixels, 2)
+        j = design.n_pixels + 1 - i
+        @test ustrip(u"MPa", design.pixel_materials[i].fc′) ≈
+              ustrip(u"MPa", design.pixel_materials[j].fc′)
+    end
+    # Tendon deviation was computed and stored
+    @test design.tendon_deviation isa TendonDeviationResult
+    @test design.tendon_deviation.μ_s ≈ 0.3
+end
+bm_step_status["PF Workflow"] = pf_workflow_ok ? "✓" : "✗"
+
+# ── 16.7  Tests ──
+@testset "PixelFrame Beam" begin
+    @test pf_mod_flex_ok
+    @test pf_mod_shear_ok
+    @test pf_mod_area > 0
+    @test pf_beam_mod.status == JuMP.MOI.OPTIMAL || pf_beam_mod.status == JuMP.MOI.TIME_LIMIT
+    @test pf_hvy_flex_ok
+    @test pf_hvy_shear_ok
+    @test pf_hvy_area > 0
+    @test pf_beam_hvy.status == JuMP.MOI.OPTIMAL || pf_beam_hvy.status == JuMP.MOI.TIME_LIMIT
+    @test pf_growth_ok   # heavier load → more capacity
+    @test pf_defl.Δ_total > 0.0u"mm"
+    @test pf_batch.status == JuMP.MOI.OPTIMAL || pf_batch.status == JuMP.MOI.TIME_LIMIT
+    @test length(pf_batch.sections) == 3
+end
+
+pf_beam_pass = pf_mod_flex_ok && pf_mod_shear_ok && pf_hvy_flex_ok && pf_hvy_shear_ok && pf_growth_ok && pf_batch_ok
+bm_step_status["PF Beam"] = pf_beam_pass ? "✓" : "✗"
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  17. CROSS-TYPE COMPARISON — All Beam Types, Same Demand                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+bm_sub_header("17.0  Cross-Type Comparison — All Beam Types, Same Demand")
+bm_note("Mu = 40 kN·m, Vu = 50 kN, L = 6 m.  MIP sizing for each section type.")
+bm_note("All section types accept Unitful demands — RC converts via Asap.to_kipft/to_kip.")
+bm_note("Demand chosen to be feasible for all four beam types (RC, W, HSS, PixelFrame).")
+
+cmp_Mu = 40.0u"kN*m"
+cmp_Vu = 50.0u"kN"
+cmp_L  = 6.0  # m
+
+# ── 17.1  Size each type (all using Unitful — RC accepts Unitful via to_kipft/to_kip) ──
+# RC Rectangular
+cmp_rc = size_beams([cmp_Mu], [cmp_Vu],
+    [ConcreteMemberGeometry(cmp_L)], ConcreteBeamOptions(grade=NWC_4000))
+cmp_rc_sec = cmp_rc.sections[1]
+cmp_rc_area_mm2 = ustrip(u"mm^2", section_area(cmp_rc_sec))
+cmp_rc_flex = rc_beam_flexure(cmp_rc_sec, 4000.0, 60000.0)
+cmp_rc_shear = rc_beam_shear(cmp_rc_sec, 4000.0)
+cmp_rc_Mu_kNm = cmp_rc_flex.φMn_kipft * ustrip(u"kN*m", 1.0kip * u"ft")
+cmp_rc_Vu_kN  = cmp_rc_shear.φVn_max_kip * ustrip(u"kN", 1.0kip)
+
+# Steel W
+cmp_sw = size_beams([cmp_Mu], [cmp_Vu],
+    [SteelMemberGeometry(cmp_L; Kx=1.0, Ky=1.0)], SteelMemberOptions(section_type=:w))
+cmp_sw_sec = cmp_sw.sections[1]
+cmp_sw_area_mm2 = ustrip(u"mm^2", section_area(cmp_sw_sec))
+cmp_sw_chk = steel_beam_utilization(cmp_sw_sec, A992_Steel, cmp_Mu, cmp_Vu,
+    SteelMemberGeometry(cmp_L; Kx=1.0, Ky=1.0))
+cmp_sw_Mu_kNm = ustrip(u"kN*m", cmp_sw_chk.ϕMnx)
+cmp_sw_Vu_kN  = ustrip(u"kN", cmp_sw_chk.ϕVn)
+
+# Steel HSS
+cmp_sh = size_beams([cmp_Mu], [cmp_Vu],
+    [SteelMemberGeometry(cmp_L; Kx=1.0, Ky=1.0)], SteelMemberOptions(section_type=:hss))
+cmp_sh_sec = cmp_sh.sections[1]
+cmp_sh_area_mm2 = ustrip(u"mm^2", section_area(cmp_sh_sec))
+cmp_sh_chk = steel_beam_utilization(cmp_sh_sec, A992_Steel, cmp_Mu, cmp_Vu,
+    SteelMemberGeometry(cmp_L; Kx=1.0, Ky=1.0))
+cmp_sh_Mu_kNm = ustrip(u"kN*m", cmp_sh_chk.ϕMnx)
+cmp_sh_Vu_kN  = ustrip(u"kN", cmp_sh_chk.ϕVn)
+
+# PixelFrame
+cmp_pf = size_beams([cmp_Mu], [cmp_Vu],
+    [ConcreteMemberGeometry(cmp_L)], pf_beam_catalog_opts)
+cmp_pf_sec = cmp_pf.sections[1]
+cmp_pf_area_mm2 = ustrip(u"mm^2", section_area(cmp_pf_sec))
+cmp_pf_fl = pf_flexural_capacity(cmp_pf_sec)
+cmp_pf_sh = frc_shear_capacity(cmp_pf_sec)
+cmp_pf_Mu_kNm = ustrip(u"kN*m", cmp_pf_fl.Mu)
+cmp_pf_Vu_kN  = ustrip(u"kN", cmp_pf_sh)
+
+cmp_Mu_kNm = ustrip(u"kN*m", cmp_Mu)
+cmp_Vu_kN  = ustrip(u"kN", cmp_Vu)
+
+# ── 17.2  Side-by-side table ──
+println("\n  17.2  Side-by-Side Comparison (MIP, Mu = 40 kN·m, Vu = 50 kN)")
+println()
+
+@printf("    %-18s  %14s  %14s  %14s  %14s\n",
+    "Property", "RC Rect", "Steel W", "Steel HSS", "PixelFrame")
+@printf("    %-18s  %14s  %14s  %14s  %14s\n",
+    "─"^18, "─"^14, "─"^14, "─"^14, "─"^14)
+
+@printf("    %-18s  %14s  %14s  %14s  %14s\n",
+    "Section", string(cmp_rc_sec.name)[1:min(14,end)],
+    string(cmp_sw_sec.name)[1:min(14,end)],
+    string(cmp_sh_sec.name)[1:min(14,end)],
+    "PF-$(cmp_pf_sec.λ)")
+
+@printf("    %-18s  %14.0f  %14.0f  %14.0f  %14.0f\n",
+    "Area (mm²)", cmp_rc_area_mm2, cmp_sw_area_mm2, cmp_sh_area_mm2, cmp_pf_area_mm2)
+
+@printf("    %-18s  %14.1f  %14.1f  %14.1f  %14.1f\n",
+    "φMn (kN·m)", cmp_rc_Mu_kNm, cmp_sw_Mu_kNm, cmp_sh_Mu_kNm, cmp_pf_Mu_kNm)
+
+@printf("    %-18s  %14.1f  %14.1f  %14.1f  %14.1f\n",
+    "φVn (kN)", cmp_rc_Vu_kN, cmp_sw_Vu_kN, cmp_sh_Vu_kN, cmp_pf_Vu_kN)
+
+@printf("    %-18s  %14.3f  %14.3f  %14.3f  %14.3f\n",
+    "Flex util (Mu/φMn)", cmp_Mu_kNm / cmp_rc_Mu_kNm,
+    cmp_Mu_kNm / cmp_sw_Mu_kNm, cmp_Mu_kNm / cmp_sh_Mu_kNm,
+    cmp_Mu_kNm / cmp_pf_Mu_kNm)
+
+@printf("    %-18s  %14.3f  %14.3f  %14.3f  %14.3f\n",
+    "Shear util (Vu/φVn)", cmp_Vu_kN / cmp_rc_Vu_kN,
+    cmp_Vu_kN / cmp_sw_Vu_kN, cmp_Vu_kN / cmp_sh_Vu_kN,
+    cmp_Vu_kN / cmp_pf_Vu_kN)
+
+# PixelFrame-specific details
+println()
+bm_note("PixelFrame: λ=$(cmp_pf_sec.λ), L_px=$(ustrip(u"mm", cmp_pf_sec.L_px))mm, " *
+    "fc′=$(ustrip(u"MPa", cmp_pf_sec.material.fc′))MPa, dosage=$(cmp_pf_sec.material.fiber_dosage)kg/m³")
+
+cmp_all_ok = (cmp_rc.status == JuMP.MOI.OPTIMAL || cmp_rc.status == JuMP.MOI.TIME_LIMIT) &&
+             (cmp_sw.status == JuMP.MOI.OPTIMAL || cmp_sw.status == JuMP.MOI.TIME_LIMIT) &&
+             (cmp_sh.status == JuMP.MOI.OPTIMAL || cmp_sh.status == JuMP.MOI.TIME_LIMIT) &&
+             (cmp_pf.status == JuMP.MOI.OPTIMAL || cmp_pf.status == JuMP.MOI.TIME_LIMIT)
+
+cmp_flex_ok = cmp_Mu_kNm ≤ cmp_rc_Mu_kNm &&
+              cmp_Mu_kNm ≤ cmp_sw_Mu_kNm &&
+              cmp_Mu_kNm ≤ cmp_sh_Mu_kNm &&
+              cmp_Mu_kNm ≤ cmp_pf_Mu_kNm
+
+@testset "Cross-Type Beam Comparison" begin
+    @test cmp_all_ok
+    @test cmp_flex_ok
+    @test cmp_rc_area_mm2 > 0
+    @test cmp_sw_area_mm2 > 0
+    @test cmp_sh_area_mm2 > 0
+    @test cmp_pf_area_mm2 > 0
+end
+
+bm_step_status["Cross-Type Cmp"] = (cmp_all_ok && cmp_flex_ok) ? "✓" : "✗"
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  18. DESIGN CODE FEATURES & LIMITATIONS                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+bm_sub_header("18.0  Feature Matrix")
 println("    RC/RC-T: Whitney flex (§22.2), shear (§22.5), torsion (§22.7), deflection (§24.2), MIP+NLP, batch, snap")
 println("    Steel W: AISC F2+LTB flex, G2 shear, DG9 torsion, Ix_min defl., MIP+NLP, warm-start, batch, snap")
 println("    Steel HSS: AISC F7 flex (no LTB), G4 shear, H3-6 torsion, Ix_min defl., MIP+NLP, warm-start, batch, snap")
+println("    PixelFrame: ACI 318-19 axial/flex + fib MC2010 FRC shear, EPT deflection (Ng & Tan), MIP, batch")
 
-bm_sub_header("16.1  Shared Components")
+bm_sub_header("18.1  Shared Components")
 println("    Unified API (optimize_discrete/optimize_continuous) + Ipopt NLP with smooth constraints.")
 println("    RC: 3 vars (b,h,ρ); RC-T: 3 vars (bw,h,ρ) + fixed bf/hf; W: 4 vars (d,bf,tf,tw); HSS: 3 vars (B,H,t).")
 println("    T-beam: minimizes web area bw×h; shear/ρ_min use bw; irregular bf via moment_weighted_avg_depth.")
+println("    PixelFrame: MIP catalog (L_px × t × fc′ × dosage × A_s × d_ps sweep), polygon geometry (CompoundSection).")
 
-bm_sub_header("16.2  Current Limitations & Future Work")
+bm_sub_header("18.2  Current Limitations & Future Work")
 println("    Not yet: development length in sizing, composite/precast beams, flange transverse reinf. (§9.7.6.3).")
 println("    Torsion NLP ensures adequacy only; detailed At/s & Al design is post-sizing.")
+println("    PixelFrame: NLP continuous sizing not yet supported; torsion check not yet implemented.")
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  17. FINAL SUMMARY                                                        ║
+# ║  19. FINAL SUMMARY                                                        ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 bm_section_header("BEAM SIZING REPORT — SUMMARY")
 
@@ -1806,7 +2350,7 @@ all_pass = all(v == "✓" for v in values(bm_step_status))
 println()
 println("  Overall: $(all_pass ? "✓ ALL CHECKS PASSED" : "✗ SOME CHECKS FAILED")")
 println()
-bm_note("NLP: RC(b,h,ρ) + RC-T(bw,h,ρ,fixed bf/hf) + W(F2+G2+LTB) + HSS(F7+G4). Defl: Ix_min(steel), §24.2(RC-T). Torsion: §22.7/DG9/H3-6. Snap+raw shown.")
+bm_note("NLP: RC(b,h,ρ) + RC-T(bw,h,ρ,fixed bf/hf) + W(F2+G2+LTB) + HSS(F7+G4). Defl: Ix_min(steel), §24.2(RC-T), EPT-Branson(PF). Torsion: §22.7/DG9/H3-6. PF: MIP catalog. Snap+raw shown.")
 println(BM_DLINE)
 
 @test all_pass

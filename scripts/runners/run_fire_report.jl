@@ -18,7 +18,7 @@ function strip_ansi(s::AbstractString)
     replace(s, r"\e\[[0-9;]*[A-Za-z]" => "")
 end
 
-const SCRIPT = joinpath(@__DIR__, "..", "..", "StructuralSynthesizer", "test", "sizing", "test_fire_rating_report.jl")
+const SCRIPT = joinpath(@__DIR__, "..", "..", "StructuralSynthesizer", "test", "report_generators", "test_fire_rating_report.jl")
 const OUTFILE = joinpath(REPORT_DIR, "fire_rating_report.txt")
 
 # Capture stdout to file

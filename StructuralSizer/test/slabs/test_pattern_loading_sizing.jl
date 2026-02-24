@@ -52,9 +52,10 @@ function create_pattern_loading_spans()
     Ecs = wc^1.5 * 33 * sqrt(ustrip(u"psi", fc_slab)) * u"psi"
     Ecc = wc^1.5 * 33 * sqrt(ustrip(u"psi", fc_col)) * u"psi"
     
-    # Build spans
+    # Build spans with PCA table lookup
     Is = SR.slab_moment_of_inertia(l2, h)
-    Ksb = SR.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2)
+    sf_pl = SR.pca_slab_beam_factors(c1, l1, c2, l2)
+    Ksb = SR.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=sf_pl.k)
     
     l1_in = uconvert(u"inch", l1)
     l2_in = uconvert(u"inch", l2)
@@ -68,7 +69,7 @@ function create_pattern_loading_spans()
             l1_in, l2_in, ln_in,
             h_in, c1_in, c1_in, c1_in, c1_in,
             Is, Ksb,
-            0.08429, 0.507, 4.127
+            sf_pl.m, sf_pl.COF, sf_pl.k
         )
         for i in 1:3
     ]
@@ -337,7 +338,8 @@ end
         Ecc = wc^1.5 * 33 * sqrt(ustrip(u"psi", fc_col)) * u"psi"
         
         Is = SR.slab_moment_of_inertia(l2, h)
-        Ksb = SR.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c1)
+        sf_2sp = SR.pca_slab_beam_factors(c1, l1, c1, l2)
+        Ksb = SR.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c1; k_factor=sf_2sp.k)
         
         spans_2 = [
             SR.EFMSpanProperties(
@@ -345,7 +347,7 @@ end
                 uconvert(u"inch", l1), uconvert(u"inch", l2), uconvert(u"inch", ln),
                 uconvert(u"inch", h), uconvert(u"inch", c1), uconvert(u"inch", c1),
                 uconvert(u"inch", c1), uconvert(u"inch", c1),
-                Is, Ksb, 0.08429, 0.507, 4.127
+                Is, Ksb, sf_2sp.m, sf_2sp.COF, sf_2sp.k
             )
             for i in 1:2
         ]

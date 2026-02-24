@@ -146,7 +146,7 @@ import Meshes
         beam_start = (0.0, 0.0)
         beam_end = (10.0, 0.0)
         
-        abs_verts = vertices(cs, beam_start, beam_end)
+        abs_verts = StructuralSizer.vertices(cs, beam_start, beam_end)
         
         # Should have vertices
         @test length(abs_verts) >= 3

@@ -261,12 +261,14 @@ end
             2.36u"inch^2",      # As_provided
             5,                  # bar_size
             6u"inch",           # spacing
-            14                  # n_bars
+            14,                 # n_bars
+            true                # section_adequate
         )
         
         @test sr.location == :int_neg
         @test sr.bar_size == 5
         @test sr.n_bars == 14
+        @test sr.section_adequate == true
     end
     
     @testset "FlatPlatePanelResult Type" begin
@@ -274,7 +276,7 @@ end
         # This tests that the result type has the expected fields
         
         sr = StripReinforcement(:pos, 30u"kip*ft", 1.2u"inch^2", 1.06u"inch^2", 
-                                1.24u"inch^2", 4, 8u"inch", 10)
+                                1.24u"inch^2", 4, 8u"inch", 10, true)
         
         result = FlatPlatePanelResult(
             18u"ft",            # l1

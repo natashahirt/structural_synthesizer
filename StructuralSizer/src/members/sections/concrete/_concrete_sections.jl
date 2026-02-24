@@ -23,3 +23,12 @@ include("catalogs/rc_beams.jl")
 
 # RC T-beam catalog (requires flange geometry from building context)
 include("catalogs/rc_tbeams.jl")
+
+# PixelFrame polygon geometry (must come before pixelframe_section.jl)
+include("pixelframe_geometry.jl")
+
+# PixelFrame section (FRC + external post-tensioning, Y-shaped polygon)
+include("pixelframe_section.jl")
+
+# Note: PixelFrame catalog (catalogs/pixelframe_catalog.jl) is included from
+# codes/pixelframe/_pixelframe.jl because it depends on capacity functions.

@@ -59,30 +59,25 @@ Torsional parameter 'a' for open sections:
 - DG9 Eq. 3.4
 """
 function dg9_torsional_parameter(s::ISymmSection, mat::Metal)
-    E = mat.E
-    G = E / (2 * (1 + 0.3))  # ν ≈ 0.3 for steel
-    return sqrt(E * s.Cw / (G * s.J))
+    return sqrt(mat.E * s.Cw / (mat.G * s.J))
 end
 
 # ==============================================================================
 # Internal helpers — kip/inch arithmetic (avoids Unitful overflow)
 # ==============================================================================
 
-const _INCH_IN_M = 0.0254
-const _KIP_IN_N  = 4448.2216152605
-const _KSI_IN_PA = _KIP_IN_N / _INCH_IN_M^2  # ≈ 6.894757e6
-
 """Convert section to raw-number tuple in inches."""
 function _torsion_props_in(s::ISymmSection)
-    d_in   = ustrip(s.d) / _INCH_IN_M
-    bf_in  = ustrip(s.bf) / _INCH_IN_M
-    tw_in  = ustrip(s.tw) / _INCH_IN_M
-    tf_in  = ustrip(s.tf) / _INCH_IN_M
-    ho_in  = ustrip(s.ho) / _INCH_IN_M
-    J_in4  = ustrip(s.J) / _INCH_IN_M^4
-    Cw_in6 = ustrip(s.Cw) / _INCH_IN_M^6
-    Ix_in4 = ustrip(s.Ix) / _INCH_IN_M^4
-    Sx_in3 = ustrip(s.Sx) / _INCH_IN_M^3
+    d_in   = ustrip(u"inch", s.d)
+    bf_in  = ustrip(u"inch", s.bf)
+    tw_in  = ustrip(u"inch", s.tw)
+    tf_in  = ustrip(u"inch", s.tf)
+    ho_in  = ustrip(u"inch", s.ho)
+    J_in4  = ustrip(u"inch^4", s.J)
+    # Convert Cw via m→inch factor to avoid Unitful Int64 overflow on inch^6
+    Cw_in6 = ustrip(u"m^6", s.Cw) * (1.0 / 0.0254)^6
+    Ix_in4 = ustrip(u"inch^4", s.Ix)
+    Sx_in3 = ustrip(u"inch^3", s.Sx)
     Wno_in2 = bf_in * ho_in / 4
     Sw1_in4 = tf_in * bf_in^2 * ho_in / 16
     return (d=d_in, bf=bf_in, tw=tw_in, tf=tf_in, ho=ho_in,
@@ -280,7 +275,7 @@ function design_w_torsion(
 
     E_ksi = to_ksi(mat.E)
     Fy_ksi = to_ksi(mat.Fy)
-    G_ksi = E_ksi / (2 * (1 + 0.3))
+    G_ksi = to_ksi(mat.G)
 
     p = _torsion_props_in(s)  # all inch-based
     a_in = sqrt(E_ksi * p.Cw / (G_ksi * p.J))

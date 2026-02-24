@@ -48,7 +48,8 @@ function _flexural_steel_footing(Mu::Torque, b::Length, d::Length,
     β1_val = beta1(fc)
     c_depth = a / β1_val
     if ustrip(u"inch", c_depth) > 0
-        εt = 0.003 * (d / c_depth - 1.0)
+        εcu = 0.003  # ACI 318-11 §10.2.3
+        εt = εcu * (d / c_depth - 1.0)
         εt < 0.005 && @warn "Section not tension-controlled (εt=$(round(εt, digits=4)))"
     end
 

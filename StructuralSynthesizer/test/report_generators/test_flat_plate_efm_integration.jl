@@ -39,7 +39,7 @@ using StructuralSynthesizer
 # Report helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-include(joinpath(@__DIR__, "..", "..", "shared", "report_helpers.jl"))
+include(joinpath(@__DIR__, "..", "shared", "report_helpers.jl"))
 const _rpt = ReportHelpers.Printer()
 
 function table_head()
@@ -256,8 +256,10 @@ _rpt.note("C tolerance wider — SP may use different rectangle decomposition fo
 _rpt.section("STEP 2 — EFM STIFFNESSES  (SP Table 2)")
 println("  Ksb (PCA A7), Kc, Kt, Kec = 1/(1/ΣKc+1/ΣKt).  Interior: ΣKc=2Kc, ΣKt=2Kt.")
 
-Ksb = StructuralSizer.slab_beam_stiffness_Ksb(Ecs, Is, l1, c_col, c_col)
-Kc  = StructuralSizer.column_stiffness_Kc(Ecc, Ic, H, h)
+sf_int = StructuralSizer.pca_slab_beam_factors(c_col, l1, c_col, l2)
+cf_int = StructuralSizer.pca_column_factors(H, h)
+Ksb = StructuralSizer.slab_beam_stiffness_Ksb(Ecs, Is, l1, c_col, c_col; k_factor=sf_int.k)
+Kc  = StructuralSizer.column_stiffness_Kc(Ecc, Ic, H, h; k_factor=cf_int.k)
 Kt  = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C, l2, c_col)
 Kec = StructuralSizer.equivalent_column_stiffness_Kec(2Kc, 2Kt)
 
@@ -384,12 +386,12 @@ _rpt.note("MDDM coefficients differ slightly from DDM — different source deriv
 
 # ── 4D: EFM Computed — Hardy Cross with our stiffness values ──
 _rpt.sub("4D — EFM Computed (Hardy Cross Moment Distribution)")
-println("  Hardy Cross with Step 2 stiffnesses. FEM = m·qu·l₂·l₁² (PCA m=0.08429).")
+println("  Hardy Cross with Step 2 stiffnesses. FEM = m·qu·l₂·l₁² (PCA Table A1 lookup).")
 
-FEM = StructuralSizer.fixed_end_moment_FEM(qu, l2, l1)
+FEM = StructuralSizer.fixed_end_moment_FEM(qu, l2, l1; m_factor=sf_int.m)
 DF_ext_val = StructuralSizer.distribution_factor_DF(Ksb, Kec; is_exterior=true)
 DF_int_val = StructuralSizer.distribution_factor_DF(Ksb, Kec; is_exterior=false)
-COF_val    = StructuralSizer.carryover_factor_COF()
+COF_val    = sf_int.COF
 
 @printf("    FEM    = %.2f kip·ft\n", ustrip(u"kip*ft", FEM))
 @printf("    DF_ext = %.4f   (Ksb / (Ksb + Kec))\n", DF_ext_val)
@@ -479,7 +481,7 @@ spans_asap = [
         l1_in, l2_in, ln_in,
         h_in, c_in, c_in, c_in, c_in,
         Is_in4, Ksb_inlb,
-        0.08429, 0.507, 4.127
+        sf_int.m, sf_int.COF, sf_int.k
     ) for i in 1:3
 ]
 
@@ -493,8 +495,7 @@ model_asap, span_elements_asap, joint_Kec_asap = StructuralSizer.build_efm_asap_
     Ecs = Ecs,
     Ecc = Ecc,
     ν_concrete = 0.20,
-    ρ_concrete = 2380.0u"kg/m^3",
-    k_col = 4.74
+    ρ_concrete = 2380.0u"kg/m^3"
 )
 StructuralSizer.solve_efm_frame!(model_asap)
 
@@ -1069,7 +1070,7 @@ for c_t in c_trials
     ln_t = l1 - c_t
     Ic_t = StructuralSizer.column_moment_of_inertia(c_t, c_t)
     C_t  = StructuralSizer.torsional_constant_C(h, c_t)
-    Kc_t = StructuralSizer.column_stiffness_Kc(Ecc, Ic_t, H, h)
+    Kc_t = StructuralSizer.column_stiffness_Kc(Ecc, Ic_t, H, h; k_factor=cf_int.k)
     Kt_t = StructuralSizer.torsional_member_stiffness_Kt(Ecs, C_t, l2, c_t)
     Kec_t = StructuralSizer.equivalent_column_stiffness_Kec(2Kc_t, 2Kt_t)
     αec_t = ustrip(u"lbf*inch", Kec_t) / (2 * ustrip(u"lbf*inch", Ksb))

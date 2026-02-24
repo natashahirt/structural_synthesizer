@@ -99,7 +99,8 @@ using StructuralSizer
     @testset "Slab-Beam Stiffness Ksb" begin
         # Use StructurePoint's Ecs value for validation
         Is = slab_moment_of_inertia(l2, h)
-        Ksb = slab_beam_stiffness_Ksb(Ecs_ref, Is, l1, c1, c2)
+        sf = pca_slab_beam_factors(c1, l1, c2, l2)
+        Ksb = slab_beam_stiffness_Ksb(Ecs_ref, Is, l1, c1, c2; k_factor=sf.k)
         Ksb_val = ustrip(u"lbf*inch", Ksb)
         @test isapprox(Ksb_val, Ksb_ref, rtol=0.02)
     end
@@ -107,7 +108,8 @@ using StructuralSizer
     @testset "Column Stiffness Kc" begin
         # Use StructurePoint's Ecc value for validation
         Ic = column_moment_of_inertia(c1, c2)
-        Kc = column_stiffness_Kc(Ecc_ref, Ic, H, h)
+        cf = pca_column_factors(H, h)
+        Kc = column_stiffness_Kc(Ecc_ref, Ic, H, h; k_factor=cf.k)
         Kc_val = ustrip(u"lbf*inch", Kc)
         @test isapprox(Kc_val, Kc_ref, rtol=0.02)
     end
@@ -143,8 +145,9 @@ using StructuralSizer
     end
     
     @testset "Carryover Factor" begin
-        COF = carryover_factor_COF()
-        @test isapprox(COF, COF_ref, rtol=0.01)
+        # COF now comes from PCA Table A1 lookup
+        sf_cof = pca_slab_beam_factors(c1, l1, c2, l2)
+        @test isapprox(sf_cof.COF, COF_ref, rtol=0.02)
     end
     
     @testset "Fixed-End Moment" begin
@@ -153,7 +156,8 @@ using StructuralSizer
         qu = 1.2 * (sw + SDL) + 1.6 * LL
         qu_ksf = uconvert(u"ksf", qu)
         
-        FEM = fixed_end_moment_FEM(qu_ksf, l2, l1)
+        sf_fem = pca_slab_beam_factors(c1, l1, c2, l2)
+        FEM = fixed_end_moment_FEM(qu_ksf, l2, l1; m_factor=sf_fem.m)
         FEM_kipft = ustrip(u"kip*ft", FEM)
         
         # StructurePoint: FEM = 73.79 ft-kip

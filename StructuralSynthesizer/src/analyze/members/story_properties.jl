@@ -1,5 +1,5 @@
 # =============================================================================
-# Story Properties for Sway Magnification (ACI 318-19 §6.6.4.6)
+# Story Properties for Sway Magnification (ACI 318-11 §10.10.7)
 # =============================================================================
 #
 # Computes story-level properties needed for sway moment magnification:
@@ -21,7 +21,7 @@ Compute and assign story properties to all columns for sway magnification.
 
 This function should be called after structural analysis (ASAP solve) when
 displacements and member forces are available. It populates the `story_properties`
-field on each Column for use in ACI 318-19 sway moment magnification.
+field on each Column for use in ACI 318-11 §10.10.7 sway moment magnification.
 
 # Keyword Arguments
 - `concrete`: Concrete material for Ec estimation (default: `NWC_4000`)
@@ -345,7 +345,7 @@ function _get_solved_model(struc)
 end
 
 # =============================================================================
-# P-Δ Iterative Second-Order Analysis (ACI 318-19 §6.7 / §10.10.4)
+# P-Δ Iterative Second-Order Analysis (ACI 318-11 §10.10.4)
 # =============================================================================
 #
 # Performs elastic second-order analysis by iteratively applying equivalent
@@ -354,10 +354,10 @@ end
 #   F_PΔ = ΣPu × Δ / lc   at each story level
 #
 # The iteration continues until lateral drifts converge (< tolerance) or the
-# ACI 318-19 §6.6.4.6.2 limit is exceeded (secondary moments > 1.4 × primary).
+# ACI 318-11 §10.10.2.1 limit is exceeded (secondary moments > 1.4 × primary).
 #
 # Reference:
-#   ACI 318-11 §10.10.4, ACI 318-19 §6.7 — Elastic second-order analysis
+#   ACI 318-11 §10.10.4 — Elastic second-order analysis
 #   ACI 318-11 §10.10.2.1 — Total moment ≤ 1.4 × first-order moment
 # =============================================================================
 
@@ -525,7 +525,7 @@ function p_delta_iterate!(struc;
             @info "P-Δ iteration $iter" max_change=round(max_change, digits=4) max_drift_ratio=round(max_drift_ratio, digits=3)
         end
 
-        # ACI 318-19 §6.6.4.6.2: total moment ≤ 1.4 × first-order
+        # ACI 318-11 §10.10.2.1: total moment ≤ 1.4 × first-order
         # Using drift as a proxy (moments scale with drift in elastic analysis)
         if max_drift_ratio > 1.4
             attention = [s for (s, _) in columns_by_story

@@ -9,6 +9,13 @@ abstract type AbstractMember{T} end
     MemberBase{T}
 
 Shared fields for all member types. Uses composition pattern.
+
+# PixelFrame Per-Pixel Design
+For PixelFrame members, `pixel_design` stores the per-pixel material assignment.
+The `section` field holds the governing section (highest-demand material), while
+`pixel_design.pixel_materials` is a `Vector{FiberReinforcedConcrete}` with one
+entry per physical pixel piece along the span. When `pixel_design` is set,
+`volumes` is computed from per-pixel contributions rather than `section × L`.
 """
 @kwdef mutable struct MemberBase{T}
     segment_indices::Vector{Int} = Int[]
@@ -19,6 +26,7 @@ Shared fields for all member types. Uses composition pattern.
     Cb::Float64 = 1.0                       # Moment gradient factor
     group_id::Union{UInt64, Nothing} = nothing
     section::Union{AbstractSection, Nothing} = nothing
+    pixel_design::Union{Nothing, StructuralSizer.PixelFrameDesign} = nothing
     volumes::MaterialVolumes = MaterialVolumes()
 end
 
@@ -47,6 +55,8 @@ Vertical member (columns).
 - `base::MemberBase{T}`: Shared member properties
 - `vertex_idx::Int`: Skeleton vertex index (column location)
 - `c1`, `c2`: Cross-section dimensions (for punching shear, etc.)
+- `shape::Symbol`: `:rectangular` or `:circular` (for circular, c1 = c2 = D)
+- `concrete`: Per-column concrete grade (`nothing` → use `ConcreteColumnOptions.grade`)
 - `story::Int`: Story index (0 = ground level)
 - `position::Symbol`: `:interior`, `:edge`, `:corner` (for punching shear coefficients)
 - `braced`: Whether column is part of a braced frame (no sway amplification needed)
@@ -65,10 +75,10 @@ Use accessor functions:
 
 For sway frames:
 - Steel: AISC Chapter C requires B1/B2 moment amplification (not yet implemented)
-- RC: ACI 318-19 §6.6.4.6 requires δs magnification at ends + δns along length
+- RC: ACI 318-11 §10.10.7 requires δs magnification at ends + δns along length
 
 # Story Properties for Sway Magnification
-For sway frame analysis (ACI 318-19 §6.6.4.6), columns need access to story-level 
+For sway frame analysis (ACI 318-11 §10.10.7), columns need access to story-level 
 properties. After structural analysis, call `compute_story_properties!(struc)` to 
 populate the `story_properties` field with:
 - `ΣPu`: Sum of factored axial loads on all columns in story
@@ -85,6 +95,9 @@ populate the `story_properties` field with:
     # Column cross-section shape: :rectangular or :circular
     # For :circular, c1 = c2 = diameter D.
     shape::Symbol = :rectangular
+    # Per-column concrete grade (nothing → use ConcreteColumnOptions.grade).
+    # Set when columns on different stories use different f'c.
+    concrete::Union{Nothing, StructuralSizer.Concrete} = nothing
     story::Int = 0
     position::Symbol = :interior
     # Unit vectors pointing along boundary edges (edges that belong to only one face).
@@ -166,11 +179,13 @@ member_length(m::AbstractMember) = m.base.L
 unbraced_length(m::AbstractMember) = m.base.Lb
 group_id(m::AbstractMember) = m.base.group_id
 section(m::AbstractMember) = m.base.section
+pixel_design(m::AbstractMember) = m.base.pixel_design
 volumes(m::AbstractMember) = m.base.volumes
 
 # Setters
 set_group_id!(m::AbstractMember, gid) = (m.base.group_id = gid)
 set_section!(m::AbstractMember, sec) = (m.base.section = sec)
+set_pixel_design!(m::AbstractMember, pd) = (m.base.pixel_design = pd)
 set_volumes!(m::AbstractMember, vols) = (m.base.volumes = vols)
 
 """Optimization grouping for similar members (pure grouping logic + shared section for ASAP)."""

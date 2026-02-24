@@ -6,14 +6,17 @@
 # This file contains only the high-level workflow - all helper functions
 # are in separate modules (helpers.jl, checks.jl, reinforcement.jl, results.jl).
 #
-# Workflow:
-#   Phase A: Moment Analysis (method-specific: DDM or EFM)
-#   Phase B: Design Loop (shared)
-#     1. Column P-M design
-#     2. Punching shear check
-#     3. Two-way deflection check  
-#     4. One-way shear check
-#     5. Reinforcement design
+# Two-Phase Design (mirrors engineering practice):
+#   Phase A — Depth convergence: iterate h for deflection, one-way shear,
+#             flexural adequacy, and column P-M.  No punching check.
+#   Phase B — Punching resolution: at the converged h, resolve punching via
+#             column growth and/or shear studs.  h is locked unless studs +
+#             columns are both maxed (last resort).
+#   Phase C — Final design: rebar detailing, transfer reinforcement,
+#             integrity steel, result assembly.
+#
+# An outer loop ties A→B→C: if Phase B or C signals "need more depth",
+# h is bumped and Phase A restarts with the new floor.
 #
 # Reference: ACI 318-11 Chapters 9, 10, 11, 13
 #
@@ -71,7 +74,19 @@ end
                                  moment_results, secondary_results, h, d, fc, h_increment;
                                  verbose) -> (grew::Bool, h_new)
 
-Handle punching shear failures using the configured stud strategy.
+Handle punching shear failures using the configured punching strategy.
+
+# Strategies (`opts.punching_strategy`)
+- `:grow_columns`    — Only grow columns; bump h if maxed out (legacy `:never`)
+- `:reinforce_last`  — Grow columns first, reinforce only if columns max out (legacy `:if_needed`)
+- `:reinforce_first` — Try reinforcement first, grow columns if reinforcement fails (legacy `:always`)
+
+# Reinforcement Types (`opts.punching_reinforcement`)
+- `:headed_studs_generic`, `:headed_studs_incon`, `:headed_studs_ancon` — Headed shear studs (§11.11.5)
+- `:closed_stirrups` — Closed stirrup reinforcement (§11.11.3)
+- `:shear_caps` — Localized slab thickening at columns (§13.2.6)
+- `:column_capitals` — Flared column head enlargement (§13.1.2)
+
 Returns `(columns_grew, updated_h)`.
 """
 function _resolve_punching_failures!(punching_local, columns, all_fails, opts, column_opts,
@@ -82,10 +97,8 @@ function _resolve_punching_failures!(punching_local, columns, all_fails, opts, c
     _shape_con = column_opts.shape_constraint
     _max_ar = column_opts.max_aspect_ratio
     _c_inc = column_opts.size_increment
-    stud_strategy = opts.shear_studs
-    stud_mat = opts.stud_material
-    stud_diam = opts.stud_diameter
-    fyt = stud_mat.Fy
+    strategy = opts.punching_strategy
+    reinforcement = opts.punching_reinforcement
 
     columns_grew = false
 
@@ -111,36 +124,31 @@ function _resolve_punching_failures!(punching_local, columns, all_fails, opts, c
         )
         _exceeds_max = max(c1_req, c2_req) > c_max
 
-        if stud_strategy == :always
-            studs = design_shear_studs(vu, fc, β, αs, b0, d, col.position,
-                                       fyt, stud_diam; λ=λ, φ=φ_shear,
-                                       c1=col.c1, c2=col.c2, qu=moment_results.qu)
-            stud_check = check_punching_with_studs(vu, studs; φ=φ_shear)
+        if strategy === :reinforce_first
+            # ── Try reinforcement first, grow columns only if reinforcement fails ──
+            reinf_result = _try_reinforcement(reinforcement, vu, fc, β, αs, b0, d, h,
+                                               col, opts, moment_results; λ=λ, φ=φ_shear)
 
-            if stud_check.ok
-                punching_local[i] = (ok=true, ratio=stud_check.ratio, vu=vu,
-                    φvc=studs.vcs + studs.vs, b0=b0, Jc=pr.Jc, studs=studs)
-                verbose && @info "Column $i ($(col.position)): Shear studs designed - $(studs.n_rails) rails × $(studs.n_studs_per_rail) studs"
+            if reinf_result.ok
+                punching_local[i] = _merge_reinforcement_result(pr, vu, b0, reinf_result)
+                verbose && @info "Column $i ($(col.position)): $(reinf_result.description)"
             else
                 if _exceeds_max
                     h = round_up_thickness(h + h_increment, h_increment)
-                    @warn "Column $i: Studs and columns at max. Increasing h → $h"
+                    @warn "Column $i: Reinforcement and columns at max. Increasing h → $h"
                     return (true, h)
                 else
-                    # With studs, the full unstudded solve (c1_req) overshoots.
-                    # Grow incrementally so FEA-based load redistribution stays
-                    # stable.  One `size_increment` per iteration is sufficient
-                    # because the pipeline re-checks each iteration.
                     c1_old = col.c1
                     grow_column!(col, col.c1 + _c_inc;
                                  shape_constraint = _shape_con,
                                  max_ar = _max_ar, increment = _c_inc)
                     columns_grew = true
-                    verbose && @warn "Column $i: Studs insufficient, growing column: $c1_old → $(col.c1)×$(col.c2)"
+                    verbose && @warn "Column $i: Reinforcement insufficient, growing column: $c1_old → $(col.c1)×$(col.c2)"
                 end
             end
 
-        elseif stud_strategy == :if_needed
+        elseif strategy === :reinforce_last
+            # ── Grow columns first, reinforce only when columns max out ──
             c1_original = col.c1; c2_original = col.c2
 
             if !_exceeds_max
@@ -149,26 +157,25 @@ function _resolve_punching_failures!(punching_local, columns, all_fails, opts, c
                 verbose && @warn "Column $i punching FAILED (ratio=$(round(ratio, digits=2))). Growing: $c1_original → $(col.c1)×$(col.c2)"
             else
                 col.c1 = c1_original; col.c2 = c2_original
-                studs = design_shear_studs(vu, fc, β, αs, b0, d, col.position,
-                                           fyt, stud_diam; λ=λ, φ=φ_shear,
-                                           c1=col.c1, c2=col.c2, qu=moment_results.qu)
-                stud_check = check_punching_with_studs(vu, studs; φ=φ_shear)
+                reinf_result = _try_reinforcement(reinforcement, vu, fc, β, αs, b0, d, h,
+                                                   col, opts, moment_results; λ=λ, φ=φ_shear)
 
-                if stud_check.ok
-                    punching_local[i] = (ok=true, ratio=stud_check.ratio, vu=vu,
-                        φvc=studs.vcs + studs.vs, b0=b0, Jc=pr.Jc, studs=studs)
-                    verbose && @info "Column $i at max size - using shear studs: $(studs.n_rails) rails"
+                if reinf_result.ok
+                    punching_local[i] = _merge_reinforcement_result(pr, vu, b0, reinf_result)
+                    verbose && @info "Column $i at max size — $(reinf_result.description)"
                 else
                     h = round_up_thickness(h + h_increment, h_increment)
-                    @warn "Column $i: Max size and studs insufficient. Increasing h → $h"
+                    @warn "Column $i: Max size and reinforcement insufficient. Increasing h → $h"
                     return (true, h)
                 end
             end
 
-        else  # :never (default)
+        else  # :grow_columns (default)
+            # ── Only grow columns; no reinforcement ──
             if _exceeds_max
-                @error "Column $i at max size ($c_max), shear_studs=:never" position=col.position ratio=ratio
-                error("Punching cannot be resolved. Set shear_studs=:if_needed to allow studs.")
+                h = round_up_thickness(h + h_increment, h_increment)
+                @warn "Column $i at max size ($c_max), punching_strategy=:grow_columns. Increasing h → $h" position=col.position ratio=ratio
+                return (true, h)
             end
             col.c1 = c1_req; col.c2 = c2_req
             columns_grew = true
@@ -177,6 +184,95 @@ function _resolve_punching_failures!(punching_local, columns, all_fails, opts, c
     end
 
     return (columns_grew, h)
+end
+
+"""
+    _is_headed_stud_reinforcement(reinforcement::Symbol) -> Bool
+
+Check if the reinforcement type is a headed stud variant (requires a catalog).
+"""
+_is_headed_stud_reinforcement(r::Symbol) =
+    r === :headed_studs_generic || r === :headed_studs_incon || r === :headed_studs_ancon
+
+"""
+    _try_reinforcement(reinforcement, vu, fc, β, αs, b0, d, h, col, opts, moment_results;
+                       λ, φ) -> NamedTuple
+
+Dispatch to the appropriate reinforcement design function and check.
+
+Returns `(ok, ratio, description, studs, stirrups, shear_cap, capital, φvc)`.
+"""
+function _try_reinforcement(reinforcement::Symbol, vu, fc, β, αs, b0, d, h,
+                             col, opts, moment_results;
+                             λ::Float64 = 1.0, φ::Float64 = 0.75)
+    fyt = opts.stud_material.Fy
+
+    if _is_headed_stud_reinforcement(reinforcement)
+        # ── Headed shear studs (§11.11.5) ──
+        cat = stud_catalog(reinforcement)
+        studs = design_shear_studs(vu, fc, β, αs, b0, d, col.position,
+                                    fyt, opts.stud_diameter; λ=λ, φ=φ,
+                                    c1=col.c1, c2=col.c2, qu=moment_results.qu,
+                                    catalog=cat)
+        chk = check_punching_with_studs(vu, studs; φ=φ)
+        desc = "Shear studs: $(studs.n_rails) rails × $(studs.n_studs_per_rail) studs ($(studs.catalog_name))"
+        return (ok=chk.ok, ratio=chk.ratio, description=desc,
+                studs=studs, stirrups=nothing, shear_cap=nothing, capital=nothing,
+                φvc=studs.vcs + studs.vs)
+
+    elseif reinforcement === :closed_stirrups
+        # ── Closed stirrups (§11.11.3) ──
+        stirrups = design_closed_stirrups(vu, fc, β, αs, b0, d, col.position,
+                                           fyt, opts.stirrup_bar_size; λ=λ, φ=φ,
+                                           c1=col.c1, c2=col.c2, qu=moment_results.qu)
+        chk = check_punching_with_stirrups(vu, stirrups; φ=φ)
+        desc = "Closed stirrups: #$(stirrups.bar_size), $(stirrups.n_legs) legs × $(stirrups.n_lines) lines"
+        return (ok=chk.ok, ratio=chk.ratio, description=desc,
+                studs=nothing, stirrups=stirrups, shear_cap=nothing, capital=nothing,
+                φvc=stirrups.vcs + stirrups.vs)
+
+    elseif reinforcement === :shear_caps
+        # ── Shear caps (§13.2.6) ──
+        # Use Vu and Mub from moment_results for combined stress check
+        Vu_force = moment_results.column_shears[1]   # placeholder — per-column below
+        Mub_force = moment_results.unbalanced_moments[1]
+        cap = design_shear_cap(vu, fc, d, h, col.position, col.c1, col.c2;
+                                λ=λ, φ=φ, max_projection=h)
+        chk = check_punching_with_shear_cap(cap)
+        desc = "Shear cap: h_cap=$(cap.h_cap), extent=$(cap.extent)"
+        return (ok=chk.ok, ratio=chk.ratio, description=desc,
+                studs=nothing, stirrups=nothing, shear_cap=cap, capital=nothing,
+                φvc=0.0u"psi")  # capacity encoded in cap.ratio
+
+    elseif reinforcement === :column_capitals
+        # ── Column capitals (§13.1.2) ──
+        capital = design_column_capital(vu, fc, d, h, col.position, col.c1, col.c2;
+                                         λ=λ, φ=φ)
+        chk = check_punching_with_capital(capital)
+        desc = "Column capital: h_cap=$(capital.h_cap), c_eff=$(capital.c1_eff)×$(capital.c2_eff)"
+        return (ok=chk.ok, ratio=chk.ratio, description=desc,
+                studs=nothing, stirrups=nothing, shear_cap=nothing, capital=capital,
+                φvc=0.0u"psi")  # capacity encoded in capital.ratio
+
+    else
+        error("Unknown punching_reinforcement: :$reinforcement. " *
+              "Use :headed_studs_generic, :headed_studs_incon, :headed_studs_ancon, " *
+              ":closed_stirrups, :shear_caps, or :column_capitals.")
+    end
+end
+
+"""
+    _merge_reinforcement_result(pr, vu, b0, reinf_result) -> NamedTuple
+
+Merge reinforcement design result into the punching_local entry.
+"""
+function _merge_reinforcement_result(pr, vu, b0, reinf_result)
+    return (ok=true, ratio=reinf_result.ratio, vu=vu,
+            φvc=reinf_result.φvc, b0=b0, Jc=pr.Jc,
+            studs=reinf_result.studs,
+            stirrups=reinf_result.stirrups,
+            shear_cap=reinf_result.shear_cap,
+            capital=reinf_result.capital)
 end
 
 """
@@ -392,7 +488,7 @@ function _run_final_design(method, struc, slab, columns, moment_results, seconda
 
     column_results = build_column_results(
         struc, columns, column_result,
-        Pu, moment_results.column_moments, punching_results
+        Pu, moment_results.unbalanced_moments, punching_results
     )
 
     return (
@@ -420,17 +516,22 @@ Design a flat plate slab with integrated column P-M design.
 - `DDM(:simplified)` - Modified DDM with simplified coefficients
 - `EFM()` - Equivalent Frame Method (ASAP stiffness analysis)
 
-# Design Workflow
-1. Identify supporting columns from Voronoi tributary areas
-2. Compute column axial loads (Pu)
-3. Iterate:
-   a. Run moment analysis (DDM or EFM) → MomentAnalysisResult
-   b. Design columns via P-M interaction → update column sizes
-   c. Check punching shear → increase h or columns if needed
-   d. Check two-way deflection → increase h if needed
-   e. Check one-way shear → increase h if needed
-4. Design strip reinforcement per ACI 8.10.5
-5. Build result structures
+# Two-Phase Design Workflow (mirrors engineering practice)
+1. Setup: identify columns, compute Pu, initial h from ACI Table 8.3.1.1
+2. **Phase A — Depth convergence** (iterate until stable):
+   a. Moment analysis (DDM/EFM/FEA) → MomentAnalysisResult
+   b. Column P-M design → update column sizes → re-analyse if changed
+   c. Two-way deflection check → bump h if failed
+   d. One-way shear check → bump h if failed
+   e. Flexural adequacy check → bump h if failed
+3. **Phase B — Punching resolution** (at converged h):
+   a. Punching shear check at each column
+   b. Resolve failures via strategy (:grow_columns / :reinforce_last / :reinforce_first)
+   c. Re-analyse if columns grew; bump h only as last resort
+4. **Phase C — Final design**: rebar detailing, transfer reinforcement, integrity steel
+
+An outer loop ties A→B→C: if Phase B or C signals "need more depth",
+h is bumped and Phase A restarts with the new floor.
 
 # Arguments
 - `struc::BuildingStructure`: Structure with skeleton, cells, columns
@@ -440,7 +541,7 @@ Design a flat plate slab with integrated column P-M design.
 # Keyword Arguments
 - `method::FlatPlateAnalysisMethod = DDM()`: Analysis method
 - `opts::FlatPlateOptions = FlatPlateOptions()`: Design options
-- `max_iterations::Int = 10`: Maximum design iterations
+- `max_iterations::Int = 10`: Maximum iterations per phase (each phase gets full budget)
 - `column_tol::Float64 = 0.05`: Column size change tolerance
 - `h_increment::Length = 0.5u"inch"`: Thickness rounding increment
 - `verbose::Bool = false`: Enable debug logging
@@ -692,6 +793,7 @@ function size_flat_plate!(
     end
     
     moment_results = nothing
+    secondary_results = nothing
     column_result = nothing
     # Use local Vector for punching results (convert to Dict at output boundary)
     punching_local = Vector{NamedTuple}(undef, n_cols)
@@ -709,321 +811,511 @@ function size_flat_plate!(
     Mu = Vector{Float64}(undef, n_cols)
     Mu_secondary = Vector{Float64}(undef, n_cols)
     
+    # ACI 318-11 §8.10.4: distribute unbalanced moment between columns above
+    # and below the slab in proportion to their flexural stiffnesses.
+    # Factor = K_below / (K_below + K_above); 1.0 when no column above (roof/single-story).
+    _dist_factors = column_moment_distribution_factors(struc, columns, column_opts)
+    if verbose && any(f -> f < 1.0, _dist_factors)
+        @debug "Column moment distribution factors (§8.10.4)" factors=_dist_factors
+    end
+    
     # Track which check is currently failing (for structured failure diagnostics)
     last_failing_check = ""
+    total_iters = 0   # accumulate across all phases for the result tuple
     
     d = effective_depth(h; cover=cover, bar_diameter=bar_dia)
     _prev_h = h  # Track h to avoid redundant recomputation
     
-    for iter in 1:max_iterations
-        if verbose
-            @debug "═══════════════════════════════════════════════════════════════════"
-            @debug "ITERATION $iter"
-            @debug "═══════════════════════════════════════════════════════════════════"
-        end
+    # Shared mutable state across phases
+    deflection_result = nothing
+    ρ_prime_est = 0.0
+    
+    # =====================================================================
+    # OUTER LOOP: ties Phase A → B → C together.
+    # Phase B (punching) or C (rebar) may signal "need more depth", which
+    # bumps h and restarts from Phase A.  This is the rare last-resort path.
+    # =====================================================================
+    for outer in 1:max_iterations
         
-        # ── Recompute h-dependent quantities only when h actually changed ──
-        if h != _prev_h
-            d = effective_depth(h; cover=cover, bar_diameter=bar_dia)
-            sw_estimate = slab_sw(h)
-            Pu = compute_column_axial_loads(struc, columns, slab_cell_indices, sw_estimate)
-            _prev_h = h
-        end
+        # =================================================================
+        # PHASE A — DEPTH CONVERGENCE
+        # Iterate h until deflection, one-way shear, flexural adequacy,
+        # and column P-M all stabilize.  No punching check here.
+        # =================================================================
+        depth_converged = false
         
-        # ─── Drop panel depth and extent re-check ───
-        # h may have increased in the previous iteration; ensure drop panel still complies
-        if !isnothing(drop_panel)
-            needs_resize = false
-            h_drop = drop_panel.h_drop
-            a1 = drop_panel.a_drop_1
-            a2 = drop_panel.a_drop_2
+        for iter_a in 1:max_iterations
+            total_iters += 1
             
-            if h_drop < h / 4
-                h_drop = auto_size_drop_depth(h)
-                needs_resize = true
+            if verbose
+                @debug "═══════════════════════════════════════════════════════════════════"
+                @debug "PHASE A — DEPTH CONVERGENCE  (outer=$outer, iter=$iter_a, h=$h)"
+                @debug "═══════════════════════════════════════════════════════════════════"
             end
             
-            l1 = slab.spans.primary
-            l2 = slab.spans.secondary
-            min_a1 = l1 / 6
-            min_a2 = l2 / 6
-            
-            if a1 < min_a1
-                a1 = min_a1
-                needs_resize = true
-            end
-            if a2 < min_a2
-                a2 = min_a2
-                needs_resize = true
+            # ── Recompute h-dependent quantities only when h actually changed ──
+            if h != _prev_h
+                d = effective_depth(h; cover=cover, bar_diameter=bar_dia)
+                sw_estimate = slab_sw(h)
+                Pu = compute_column_axial_loads(struc, columns, slab_cell_indices, sw_estimate)
+                _prev_h = h
             end
             
-            if needs_resize
-                drop_panel = DropPanelGeometry(h_drop, a1, a2)
-                verbose && @debug "Drop panel re-sized for ACI compliance" h_drop=h_drop a1=a1 a2=a2 h=h
+            # ─── Drop panel depth and extent re-check ───
+            if !isnothing(drop_panel)
+                needs_resize = false
+                h_drop = drop_panel.h_drop
+                a1 = drop_panel.a_drop_1
+                a2 = drop_panel.a_drop_2
+                
+                if h_drop < h / 4
+                    h_drop = auto_size_drop_depth(h)
+                    needs_resize = true
+                end
+                
+                l1 = slab.spans.primary
+                l2 = slab.spans.secondary
+                min_a1 = l1 / 6
+                min_a2 = l2 / 6
+                
+                if a1 < min_a1
+                    a1 = min_a1
+                    needs_resize = true
+                end
+                if a2 < min_a2
+                    a2 = min_a2
+                    needs_resize = true
+                end
+                
+                if needs_resize
+                    drop_panel = DropPanelGeometry(h_drop, a1, a2)
+                    verbose && @debug "Drop panel re-sized for ACI compliance" h_drop=h_drop a1=a1 a2=a2 h=h
+                end
             end
-        end
-        
-        # ─── STEP 5a: Moment Analysis ───
-        # Compute edge beam βt if applicable (depends on current h and column sizes)
-        _βt = 0.0
-        if !isnothing(opts.edge_beam_βt)
-            _βt = opts.edge_beam_βt
-        elseif opts.has_edge_beam
-            _c1_avg = sum(col.c1 for col in columns) / length(columns)
-            _c2_avg = sum(col.c2 for col in columns) / length(columns)
-            _βt = edge_beam_βt(h, _c1_avg, _c2_avg, slab.spans.secondary)
-        end
-        
-        moment_results = run_moment_analysis(
-            method, struc, slab, columns, h, fc, Ecs, γ_concrete;
-            ν_concrete = material.concrete.ν,
-            verbose=verbose,
-            efm_cache = analysis_cache isa EFMModelCache ? analysis_cache : nothing,
-            cache     = analysis_cache isa FEAModelCache ? analysis_cache : nothing,
-            drop_panel = drop_panel,
-            βt = _βt,
-            col_I_factor = opts.col_I_factor,
-        )
-        
-        # ─── STEP 5a′: Secondary (perpendicular) direction analysis ───
-        # For FEA, secondary is already populated in moment_results.secondary.
-        # For DDM/EFM, run the analysis with swapped spans (essentially free).
-        secondary_results = if method isa FEA && !isnothing(moment_results.secondary)
-            moment_results.secondary
-        else
-            run_secondary_moment_analysis(
+            
+            # ─── A1: Moment Analysis ───
+            _βt = 0.0
+            if !isnothing(opts.edge_beam_βt)
+                _βt = opts.edge_beam_βt
+            elseif opts.has_edge_beam
+                _c1_avg = sum(col.c1 for col in columns) / length(columns)
+                _c2_avg = sum(col.c2 for col in columns) / length(columns)
+                _βt = edge_beam_βt(h, _c1_avg, _c2_avg, slab.spans.secondary)
+            end
+            
+            moment_results = run_moment_analysis(
                 method, struc, slab, columns, h, fc, Ecs, γ_concrete;
-                verbose=verbose, drop_panel=drop_panel, βt=_βt,
+                ν_concrete = material.concrete.ν,
+                verbose=verbose,
+                efm_cache = analysis_cache isa EFMModelCache ? analysis_cache : nothing,
+                cache     = analysis_cache isa FEAModelCache ? analysis_cache : nothing,
+                drop_panel = drop_panel,
+                βt = _βt,
+                col_I_factor = opts.col_I_factor,
+            )
+            
+            secondary_results = if method isa FEA && !isnothing(moment_results.secondary)
+                moment_results.secondary
+            else
+                run_secondary_moment_analysis(
+                    method, struc, slab, columns, h, fc, Ecs, γ_concrete;
+                    verbose=verbose, drop_panel=drop_panel, βt=_βt,
+                )
+            end
+            
+            check_pattern_loading_requirement(moment_results; verbose=verbose)
+            
+            # Column design moments = unbalanced moments × distribution factor
+            # (ACI 318-11 §13.5.3.2 + §8.10.4)
+            @inbounds for i in eachindex(Mu)
+                Mu[i] = ustrip(kip*u"ft", moment_results.unbalanced_moments[i]) * _dist_factors[i]
+            end
+            if !isnothing(secondary_results)
+                @inbounds for i in 1:n_cols
+                    Mu_secondary[i] = ustrip(kip*u"ft", secondary_results.unbalanced_moments[i]) * _dist_factors[i]
+                end
+            else
+                fill!(Mu_secondary, 0.0)
+            end
+            
+            # ─── A2: Column P-M Design ───
+            verbose && @debug "COLUMN P-M DESIGN"
+            
+            local column_result
+            try
+                column_result = size_columns(Pu, Mu, geometries, column_opts;
+                                              Muy=Mu_secondary, cache=_col_cache)
+            catch e
+                e isa ArgumentError || rethrow()
+                verbose && @warn "Column P-M infeasible at h=$h: $(e.msg)"
+                @warn "Column P-M design infeasible — no catalog section satisfies demand" h=h
+                return (
+                    converged        = false,
+                    failure_reason   = "column_pm_infeasible",
+                    failing_check    = "column_pm",
+                    iterations       = total_iters,
+                    h_final          = h,
+                    pattern_loading  = false,
+                    slab_result      = nothing,
+                    column_results   = nothing,
+                    drop_panel       = drop_panel,
+                    integrity        = nothing,
+                    integrity_check  = nothing,
+                    transfer_results = nothing,
+                    ρ_prime          = nothing,
+                )
+            end
+            
+            columns_changed = _update_column_sizes!(
+                columns, column_result, Pu, Mu, c_span_min, material, column_tol;
+                verbose=verbose
+            )
+            
+            if columns_changed
+                verbose && @debug "⟳ Column sizes changed, re-running analysis..."
+                last_failing_check = "column_pm"
+                continue
+            end
+            
+            # ─── A3: Two-Way Deflection Check ───
+            verbose && @debug "TWO-WAY DEFLECTION CHECK (ACI 24.2)"
+            
+            _l2_defl = moment_results.l2
+            ρ_prime_est = try
+                _As_neg = required_reinforcement(
+                    0.75 * moment_results.M_neg_int, _l2_defl / 2, d, fc, fy
+                )
+                _As_neg = max(_As_neg, minimum_reinforcement(_l2_defl / 2, h, fy))
+                0.5 * ustrip(u"inch^2", _As_neg) /
+                    (ustrip(u"inch", _l2_defl / 2) * ustrip(u"inch", d))
+            catch
+                0.0
+            end
+            
+            verbose && @debug "ρ' estimate for long-term deflection" ρ_prime=round(ρ_prime_est, digits=5)
+            
+            _defl_ok = try
+                deflection_result = if !isnothing(drop_panel)
+                    check_two_way_deflection(
+                        moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns,
+                        drop_panel;
+                        verbose=verbose, limit_type=opts.deflection_limit,
+                        ρ_prime=ρ_prime_est
+                    )
+                else
+                    check_two_way_deflection(
+                        moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns;
+                        verbose=verbose, limit_type=opts.deflection_limit,
+                        ρ_prime=ρ_prime_est
+                    )
+                end
+                deflection_result.ok
+            catch
+                false
+            end
+            
+            if !_defl_ok
+                h = round_up_thickness(h + h_increment, h_increment)
+                verbose && @warn "Deflection FAILED. Increasing h → $h"
+                last_failing_check = "two_way_deflection"
+                continue
+            end
+            
+            # ─── A4: One-Way Shear Check ───
+            verbose && @debug "ONE-WAY SHEAR CHECK (ACI 22.5)"
+            
+            shear_result = check_one_way_shear(moment_results, d, fc; verbose=verbose, λ=λ, φ_shear=φ_shear)
+            
+            if !shear_result.ok
+                h = round_up_thickness(h + h_increment, h_increment)
+                verbose && @warn "One-way shear FAILED. Increasing h → $h"
+                last_failing_check = "one_way_shear"
+                continue
+            end
+            
+            # ─── A5: Flexural Adequacy (Tension-Controlled) ───
+            verbose && @debug "FLEXURAL ADEQUACY CHECK (ACI 21.2.2)"
+            
+            flexure_result = check_flexural_adequacy(moment_results, columns, d, fc; verbose=verbose)
+            
+            if !flexure_result.ok
+                h = round_up_thickness(h + h_increment, h_increment)
+                verbose && @warn "Flexure not tension-controlled (Rn/Rn_max=$(round(flexure_result.max_ratio, digits=2)) at $(flexure_result.governing_strip)). Increasing h → $h"
+                last_failing_check = "flexural_adequacy"
+                continue
+            end
+            
+            # All depth-driven checks pass — h is stable
+            depth_converged = true
+            verbose && @debug "Phase A converged: h=$h (iter=$iter_a)"
+            break
+        end  # Phase A loop
+        
+        if !depth_converged
+            @warn "Phase A (depth) did not converge in $max_iterations iterations" h=h last_check=last_failing_check
+            return (
+                converged       = false,
+                failure_reason  = "non_convergence",
+                failing_check   = last_failing_check,
+                iterations      = total_iters,
+                h_final         = h,
+                pattern_loading = false,
+                slab_result     = nothing,
+                column_results  = nothing,
+                drop_panel      = drop_panel,
+                integrity       = nothing,
+                integrity_check = nothing,
+                transfer_results = nothing,
+                ρ_prime         = nothing,
             )
         end
         
-        # Check pattern loading every iteration — L/D ratio may shift after h bumps
-        check_pattern_loading_requirement(moment_results; verbose=verbose)
+        # =================================================================
+        # PHASE B — PUNCHING RESOLUTION (h is locked)
+        # Resolve punching via column growth and/or shear studs.
+        # Column growth changes stiffness → re-run moments each iteration.
+        # h is bumped only as a true last resort (breaks to outer loop).
+        # =================================================================
+        punching_resolved = false
+        h_before_punch = h  # detect if _resolve_punching_failures! bumped h
         
-        @inbounds for i in eachindex(Mu)
-            Mu[i] = ustrip(kip*u"ft", moment_results.column_moments[i])
-        end
-        
-        # Secondary direction moments for biaxial column design (fill pre-allocated buffer)
-        if !isnothing(secondary_results)
-            @inbounds for i in 1:n_cols
-                Mu_secondary[i] = ustrip(kip*u"ft", secondary_results.column_moments[i])
-            end
-        else
-            fill!(Mu_secondary, 0.0)
-        end
-        
-        # ─── STEP 5b: Column P-M Design ───
-        if verbose
-            @debug "COLUMN P-M DESIGN"
-        end
-        
-        column_result = size_columns(Pu, Mu, geometries, column_opts;
-                                      Muy=Mu_secondary, cache=_col_cache)
-        
-        # ─── STEP 5c: Update Column Sizes ───
-        columns_changed = _update_column_sizes!(
-            columns, column_result, Pu, Mu, c_span_min, material, column_tol;
-            verbose=verbose
-        )
-        
-        if columns_changed
-            verbose && @debug "⟳ Column sizes changed, re-running analysis..."
-            last_failing_check = "column_pm"
-            continue
-        end
-        
-        # ─── STEP 5d: Punching Shear Check ───
-        if verbose
-            @debug "PUNCHING SHEAR CHECK (ACI 22.6)"
-        end
-        
-        # d, sw_estimate, Pu already computed at loop top (h-dependent cache)
-        
-        # Punching shear checks (each column is independent)
-        # For flat slab: dual check at column face (total depth) and drop panel edge (slab depth)
-        n_cols_ps = length(columns)
-        if !isnothing(drop_panel)
-            h_total = total_depth_at_drop(h, drop_panel)
-            d_total = effective_depth(h_total; cover=cover, bar_diameter=bar_dia)
+        for iter_b in 1:max_iterations
+            total_iters += 1
             
-            for i in 1:n_cols_ps
-                punching_local[i] = check_punching(
-                    columns[i], moment_results.column_shears[i],
-                    moment_results.unbalanced_moments[i],
-                    h, d, h_total, d_total, fc, drop_panel;
-                    qu=moment_results.qu,
-                    verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear
+            if verbose
+                @debug "═══════════════════════════════════════════════════════════════════"
+                @debug "PHASE B — PUNCHING RESOLUTION  (outer=$outer, iter=$iter_b)"
+                @debug "═══════════════════════════════════════════════════════════════════"
+            end
+            
+            # ── B1: Re-run moment analysis (column sizes may have changed) ──
+            _βt = 0.0
+            if !isnothing(opts.edge_beam_βt)
+                _βt = opts.edge_beam_βt
+            elseif opts.has_edge_beam
+                _c1_avg = sum(col.c1 for col in columns) / length(columns)
+                _c2_avg = sum(col.c2 for col in columns) / length(columns)
+                _βt = edge_beam_βt(h, _c1_avg, _c2_avg, slab.spans.secondary)
+            end
+            
+            moment_results = run_moment_analysis(
+                method, struc, slab, columns, h, fc, Ecs, γ_concrete;
+                ν_concrete = material.concrete.ν,
+                verbose=verbose,
+                efm_cache = analysis_cache isa EFMModelCache ? analysis_cache : nothing,
+                cache     = analysis_cache isa FEAModelCache ? analysis_cache : nothing,
+                drop_panel = drop_panel,
+                βt = _βt,
+                col_I_factor = opts.col_I_factor,
+            )
+            
+            secondary_results = if method isa FEA && !isnothing(moment_results.secondary)
+                moment_results.secondary
+            else
+                run_secondary_moment_analysis(
+                    method, struc, slab, columns, h, fc, Ecs, γ_concrete;
+                    verbose=verbose, drop_panel=drop_panel, βt=_βt,
                 )
             end
-        elseif Threads.nthreads() > 1
-            Threads.@threads for i in 1:n_cols_ps
-                punching_local[i] = check_punching_for_column(
-                    columns[i], moment_results.column_shears[i],
-                    moment_results.unbalanced_moments[i], d, h, fc;
-                    verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear,
-                    _geom_cache=_punch_geom_cache
+            
+            # Update Mu buffers — unbalanced × distribution (§13.5.3.2 + §8.10.4)
+            @inbounds for i in eachindex(Mu)
+                Mu[i] = ustrip(kip*u"ft", moment_results.unbalanced_moments[i]) * _dist_factors[i]
+            end
+            if !isnothing(secondary_results)
+                @inbounds for i in 1:n_cols
+                    Mu_secondary[i] = ustrip(kip*u"ft", secondary_results.unbalanced_moments[i]) * _dist_factors[i]
+                end
+            else
+                fill!(Mu_secondary, 0.0)
+            end
+            
+            # Re-run column P-M with updated moments (column sizes may have grown)
+            try
+                column_result = size_columns(Pu, Mu, geometries, column_opts;
+                                              Muy=Mu_secondary, cache=_col_cache)
+            catch e
+                e isa ArgumentError || rethrow()
+                verbose && @warn "Column P-M infeasible in Phase B at h=$h: $(e.msg)"
+                @warn "Column P-M design infeasible in Phase B" h=h
+                return (
+                    converged        = false,
+                    failure_reason   = "column_pm_infeasible",
+                    failing_check    = "column_pm",
+                    iterations       = total_iters,
+                    h_final          = h,
+                    pattern_loading  = false,
+                    slab_result      = nothing,
+                    column_results   = nothing,
+                    drop_panel       = drop_panel,
+                    integrity        = nothing,
+                    integrity_check  = nothing,
+                    transfer_results = nothing,
+                    ρ_prime          = nothing,
                 )
             end
-        else
-            for i in 1:n_cols_ps
-                punching_local[i] = check_punching_for_column(
-                    columns[i], moment_results.column_shears[i],
-                    moment_results.unbalanced_moments[i], d, h, fc;
-                    verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear,
-                    _geom_cache=_punch_geom_cache
-                )
-            end
-        end
-
-        # Classify failures + resolve via stud strategy (extracted helper)
-        interior_fails = Int[]
-        edge_corner_fails = Int[]
-        for i in 1:n_cols_ps
-            if !punching_local[i].ok
-                if columns[i].position == :interior
-                    push!(interior_fails, i)
-                else
-                    push!(edge_corner_fails, i)
+            _update_column_sizes!(
+                columns, column_result, Pu, Mu, c_span_min, material, column_tol;
+                verbose=verbose
+            )
+            
+            # ── B2: Punching shear check ──
+            verbose && @debug "PUNCHING SHEAR CHECK (ACI 22.6)"
+            
+            n_cols_ps = length(columns)
+            if !isnothing(drop_panel)
+                h_total = total_depth_at_drop(h, drop_panel)
+                d_total = effective_depth(h_total; cover=cover, bar_diameter=bar_dia)
+                
+                for i in 1:n_cols_ps
+                    punching_local[i] = check_punching(
+                        columns[i], moment_results.column_shears[i],
+                        moment_results.unbalanced_moments[i],
+                        h, d, h_total, d_total, fc, drop_panel;
+                        qu=moment_results.qu,
+                        verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear
+                    )
+                end
+            elseif Threads.nthreads() > 1
+                Threads.@threads for i in 1:n_cols_ps
+                    punching_local[i] = check_punching_for_column(
+                        columns[i], moment_results.column_shears[i],
+                        moment_results.unbalanced_moments[i], d, h, fc;
+                        verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear,
+                        _geom_cache=_punch_geom_cache
+                    )
+                end
+            else
+                for i in 1:n_cols_ps
+                    punching_local[i] = check_punching_for_column(
+                        columns[i], moment_results.column_shears[i],
+                        moment_results.unbalanced_moments[i], d, h, fc;
+                        verbose=false, col_idx=i, λ=λ, φ_shear=φ_shear,
+                        _geom_cache=_punch_geom_cache
+                    )
                 end
             end
-            if verbose
-                r = punching_local[i]
-                status = r.ok ? "OK" : "FAIL"
-                @debug "Punching Column $i ($(columns[i].position))" ratio=round(r.ratio, digits=3) status=status
+            
+            # ── B3: Classify failures ──
+            interior_fails = Int[]
+            edge_corner_fails = Int[]
+            for i in 1:n_cols_ps
+                if !punching_local[i].ok
+                    if columns[i].position == :interior
+                        push!(interior_fails, i)
+                    else
+                        push!(edge_corner_fails, i)
+                    end
+                end
+                if verbose
+                    r = punching_local[i]
+                    status = r.ok ? "OK" : "FAIL"
+                    @debug "Punching Column $i ($(columns[i].position))" ratio=round(r.ratio, digits=3) status=status
+                end
             end
-        end
-        
-        all_fails = vcat(interior_fails, edge_corner_fails)
-        if !isempty(all_fails)
+            
+            all_fails = vcat(interior_fails, edge_corner_fails)
+            
+            if isempty(all_fails)
+                # All columns pass punching — done
+                punching_resolved = true
+                verbose && @debug "Phase B converged: all punching OK (iter=$iter_b)"
+                break
+            end
+            
+            # ── B4: Resolve failures ──
             columns_grew, h = _resolve_punching_failures!(
                 punching_local, columns, all_fails, opts, column_opts,
                 moment_results, secondary_results,
                 h, d, fc, h_increment;
                 λ=λ, φ_shear=φ_shear, verbose=verbose
             )
+            
+            # If h was bumped (last resort), break to outer loop → restart Phase A
+            if h != h_before_punch
+                last_failing_check = "punching_shear"
+                verbose && @warn "Phase B bumped h → $h (last resort). Restarting Phase A."
+                break
+            end
+            
             if columns_grew
                 last_failing_check = "punching_shear"
+                # Re-iterate Phase B with updated column sizes
                 continue
             end
-        end
+            
+            # Studs resolved everything without column growth
+            punching_resolved = true
+            verbose && @debug "Phase B converged: studs resolved punching (iter=$iter_b)"
+            break
+        end  # Phase B loop
         
-        # ─── STEP 5e: Two-Way Deflection Check ───
-        if verbose
-            @debug "TWO-WAY DEFLECTION CHECK (ACI 24.2)"
-        end
-        
-        # The ρ' estimate and deflection computation both call
-        # required_reinforcement, which throws when d is too small for
-        # flexure (Rn > Rn_max).  Catch any such failure and treat it as
-        # "deflection failed — increase h", just like a normal exceedance.
-        # The flexural adequacy check (Step 5g) provides the definitive guard.
-        
-        # Estimate ρ' (compression reinforcement ratio at midspan)
-        _l2_defl = moment_results.l2
-        ρ_prime_est = try
-            _As_neg = required_reinforcement(
-                0.75 * moment_results.M_neg_int, _l2_defl / 2, d, fc, fy
-            )
-            _As_neg = max(_As_neg, minimum_reinforcement(_l2_defl / 2, h, fy))
-            0.5 * ustrip(u"inch^2", _As_neg) /
-                (ustrip(u"inch", _l2_defl / 2) * ustrip(u"inch", d))
-        catch
-            0.0  # section too thin; conservative fallback
-        end
-        
-        if verbose
-            @debug "ρ' estimate for long-term deflection" ρ_prime=round(ρ_prime_est, digits=5)
-        end
-        
-        deflection_result = nothing
-        _defl_ok = try
-            deflection_result = if !isnothing(drop_panel)
-                check_two_way_deflection(
-                    moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns,
-                    drop_panel;
-                    verbose=verbose, limit_type=opts.deflection_limit,
-                    ρ_prime=ρ_prime_est
-                )
-            else
-                check_two_way_deflection(
-                    moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns;
-                    verbose=verbose, limit_type=opts.deflection_limit,
-                    ρ_prime=ρ_prime_est
-                )
+        # If Phase B bumped h, restart from Phase A
+        if !punching_resolved
+            if h != h_before_punch
+                # h was bumped — update d and restart Phase A
+                d = effective_depth(h; cover=cover, bar_diameter=bar_dia)
+                sw_estimate = slab_sw(h)
+                Pu = compute_column_axial_loads(struc, columns, slab_cell_indices, sw_estimate)
+                _prev_h = h
+                continue  # outer loop → Phase A
             end
-            deflection_result.ok
-        catch
-            false  # numerical failure in deflection calc ⇒ section too thin
+            @warn "Phase B (punching) did not converge in $max_iterations iterations" h=h
+            return (
+                converged       = false,
+                failure_reason  = "non_convergence",
+                failing_check   = "punching_shear",
+                iterations      = total_iters,
+                h_final         = h,
+                pattern_loading = false,
+                slab_result     = nothing,
+                column_results  = nothing,
+                drop_panel      = drop_panel,
+                integrity       = nothing,
+                integrity_check = nothing,
+                transfer_results = nothing,
+                ρ_prime         = nothing,
+            )
         end
         
-        if !_defl_ok
-            h = round_up_thickness(h + h_increment, h_increment)
-            # d, sw_estimate, Pu recomputed at loop top
-            verbose && @warn "Deflection FAILED. Increasing h → $h"
-            last_failing_check = "two_way_deflection"
-            continue
-        end
+        # =================================================================
+        # PHASE C — FINAL DESIGN (rebar, transfer, integrity, results)
+        # =================================================================
+        verbose && @debug "═══════════════════════════════════════════════════════════════════"
+        verbose && @debug "PHASE C — FINAL DESIGN"
+        verbose && @debug "═══════════════════════════════════════════════════════════════════"
         
-        # ─── STEP 5f: One-Way Shear Check ───
-        if verbose
-            @debug "ONE-WAY SHEAR CHECK (ACI 22.5)"
-        end
-        
-        shear_result = check_one_way_shear(moment_results, d, fc; verbose=verbose, λ=λ, φ_shear=φ_shear)
-        
-        if !shear_result.ok
-            h = round_up_thickness(h + h_increment, h_increment)
-            # d, sw_estimate, Pu recomputed at loop top
-            verbose && @warn "One-way shear FAILED. Increasing h → $h"
-            last_failing_check = "one_way_shear"
-            continue
-        end
-        
-        # ─── STEP 5g: Flexural Adequacy (Tension-Controlled) ───
-        if verbose
-            @debug "FLEXURAL ADEQUACY CHECK (ACI 21.2.2)"
-        end
-        
-        flexure_result = check_flexural_adequacy(moment_results, columns, d, fc; verbose=verbose)
-        
-        if !flexure_result.ok
-            h = round_up_thickness(h + h_increment, h_increment)
-            # d, sw_estimate, Pu recomputed at loop top
-            verbose && @warn "Flexure not tension-controlled (Rn/Rn_max=$(round(flexure_result.max_ratio, digits=2)) at $(flexure_result.governing_strip)). Increasing h → $h"
-            last_failing_check = "flexural_adequacy"
-            continue
-        end
-        
-        # =========================================================================
-        # PHASE 6: FINAL DESIGN (extracted to _run_final_design helper)
-        # =========================================================================
         result = _run_final_design(
             method, struc, slab, columns, moment_results, secondary_results,
             h, d, fc, fy, cover, sw_estimate, n_cols, punching_local,
-            local_to_global, column_opts, column_result, Pu, opts, iter,
+            local_to_global, column_opts, column_result, Pu, opts, total_iters,
             deflection_result, ρ_prime_est, drop_panel, slab_sw, γ_concrete,
             material; verbose=verbose
         )
-
-        # Check if _run_final_design signaled that section needs more depth
+        
+        # If rebar design failed, bump h and restart from Phase A
         if hasproperty(result, :needs_more_depth) && result.needs_more_depth
             h = round_up_thickness(h + h_increment, h_increment)
-            verbose && @warn "Rebar design failed (section inadequate). Increasing h → $h"
+            verbose && @warn "Rebar design failed (section inadequate). Increasing h → $h, restarting Phase A."
             last_failing_check = "reinforcement_design"
-            continue
+            # Update h-dependent state for next Phase A
+            d = effective_depth(h; cover=cover, bar_diameter=bar_dia)
+            sw_estimate = slab_sw(h)
+            Pu = compute_column_axial_loads(struc, columns, slab_cell_indices, sw_estimate)
+            _prev_h = h
+            continue  # outer loop → Phase A
         end
-
+        
         return result
-    end
+    end  # outer loop
     
     # ─── Non-convergence: return structured failure ───
-    @warn "Flat plate design did not converge in $max_iterations iterations" last_check=last_failing_check h_final=h
+    @warn "Flat plate design did not converge in $max_iterations outer iterations" last_check=last_failing_check h_final=h
     return (
         converged       = false,
         failure_reason  = "non_convergence",
         failing_check   = last_failing_check,
-        iterations      = max_iterations,
+        iterations      = total_iters,
         h_final         = h,
         pattern_loading = false,
         slab_result     = nothing,

@@ -40,9 +40,10 @@ using StructuralSizer
     LL = 40.0u"psf"
     qu = 1.2 * DL + 1.6 * LL  # Factored load = 193 psf
     
-    # Compute span properties
+    # Compute span properties using PCA table lookup
     Is = StructuralSizer.slab_moment_of_inertia(l2, h)
-    Ksb = StructuralSizer.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=4.127)
+    sf_lg = StructuralSizer.pca_slab_beam_factors(c1, l1, c2, l2)
+    Ksb = StructuralSizer.slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=sf_lg.k)
     
     @testset "5-Span Symmetric Frame" begin
         n_spans = 5
@@ -55,7 +56,7 @@ using StructuralSizer
                 l1, l2, ln,
                 h, c1, c2, c1, c2,
                 Is, Ksb,
-                0.08429, 0.507, 4.127
+                sf_lg.m, sf_lg.COF, sf_lg.k
             )
             for i in 1:n_spans
         ]
@@ -69,7 +70,7 @@ using StructuralSizer
         # Run Hardy Cross
         hc_moments = StructuralSizer.solve_moment_distribution(
             spans, joint_Kec, joint_positions, qu;
-            COF=0.507, max_iterations=30, tolerance=0.001, verbose=false
+            COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
         println("\n=== 5-Span Hardy Cross Results ===")
@@ -109,7 +110,7 @@ using StructuralSizer
                 l1, l2, ln,
                 h, c1, c2, c1, c2,
                 Is, Ksb,
-                0.08429, 0.507, 4.127
+                sf_lg.m, sf_lg.COF, sf_lg.k
             )
             for i in 1:n_spans
         ]
@@ -119,7 +120,7 @@ using StructuralSizer
         
         hc_moments = StructuralSizer.solve_moment_distribution(
             spans, joint_Kec, joint_positions, qu;
-            COF=0.507, max_iterations=30, tolerance=0.001, verbose=false
+            COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
         println("\n=== 6-Span Hardy Cross Results ===")
@@ -149,7 +150,7 @@ using StructuralSizer
                 l1, l2, ln,
                 h, c1, c2, c1, c2,
                 Is, Ksb,
-                0.08429, 0.507, 4.127
+                sf_lg.m, sf_lg.COF, sf_lg.k
             )
             for i in 1:n_spans
         ]
@@ -160,7 +161,7 @@ using StructuralSizer
         # Hardy Cross solution
         hc_moments = StructuralSizer.solve_moment_distribution(
             spans, joint_Kec, joint_positions, qu;
-            COF=0.507, max_iterations=30, tolerance=0.001, verbose=false
+            COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
         # ASAP column-stub solution
@@ -211,7 +212,7 @@ using StructuralSizer
                 l1, l2, ln,
                 h, c1, c2, c1, c2,
                 Is, Ksb,
-                0.08429, 0.507, 4.127
+                sf_lg.m, sf_lg.COF, sf_lg.k
             )
         ]
         
@@ -220,7 +221,7 @@ using StructuralSizer
         
         hc_moments = StructuralSizer.solve_moment_distribution(
             spans, joint_Kec, joint_positions, qu;
-            COF=0.507, max_iterations=20, tolerance=0.001, verbose=false
+            COF=sf_lg.COF, max_iterations=20, tolerance=0.001, verbose=false
         )
         
         println("\n=== Single Span Results ===")
@@ -248,7 +249,7 @@ using StructuralSizer
                 l1, l2, ln,
                 h, c1, c2, c1, c2,
                 Is, Ksb,
-                0.08429, 0.507, 4.127
+                sf_lg.m, sf_lg.COF, sf_lg.k
             )
             for i in 1:n_spans
         ]
@@ -259,7 +260,7 @@ using StructuralSizer
         # Should converge within 30 iterations
         hc_moments = StructuralSizer.solve_moment_distribution(
             spans, joint_Kec, joint_positions, qu;
-            COF=0.507, max_iterations=30, tolerance=0.001, verbose=false
+            COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
         println("\n=== 10-Span Results (checking convergence) ===")

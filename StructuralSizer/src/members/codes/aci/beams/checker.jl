@@ -139,7 +139,8 @@ function _compute_φMn(section::RCBeamSection, fc_psi::Float64, fy_psi::Float64)
     β1   = _beta1_from_fc_psi(fc_psi)
     c_in = a_in / β1
 
-    εt = c_in > 0 ? 0.003 * (d_in - c_in) / c_in : 0.0
+    εcu = 0.003  # ACI 318-11 §10.2.3
+    εt = c_in > 0 ? εcu * (d_in - c_in) / c_in : 0.0
 
     φ = flexure_phi(εt)
 
@@ -194,7 +195,8 @@ function _compute_εt(section::RCBeamSection, fc_psi::Float64, fy_psi::Float64)
     β1   = _beta1_from_fc_psi(fc_psi)
     c_in = a_in / β1
 
-    return c_in > 0 ? 0.003 * (d_in - c_in) / c_in : Inf
+    εcu = 0.003  # ACI 318-11 §10.2.3
+    return c_in > 0 ? εcu * (d_in - c_in) / c_in : Inf
 end
 
 # ==============================================================================

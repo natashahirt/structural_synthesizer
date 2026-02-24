@@ -115,14 +115,23 @@ Options for flat plate / flat slab / waffle / PT slab sizing per ACI 318 Chapter
 # Deflection
 - `deflection_limit`: `:L_240`, `:L_360`, `:L_480`
 
-# Punching Shear Resolution (ACI 318-11 §11.11.5)
-- `shear_studs`: Strategy for punching shear reinforcement
-  - `:never` — Only grow columns; error if maxed (default)
-  - `:if_needed` — Try columns first, use studs if columns max out
-  - `:always` — Use studs first, grow columns only if studs insufficient
-- `max_column_size`: Maximum column size before considering studs (default: 30")
-- `stud_material`: Shear stud steel material (default: `Stud_51`)
-- `stud_diameter`: Stud diameter (default: 1/2")
+# Punching Shear Resolution (ACI 318-11 §11.11)
+- `punching_strategy`: *When* to apply punching reinforcement
+  - `:grow_columns` — Only grow columns; error if maxed (default)
+  - `:reinforce_last` — Try columns first, reinforce if columns max out
+  - `:reinforce_first` — Try reinforcement first, grow columns if reinf. fails
+- `punching_reinforcement`: *What type* of reinforcement to use
+  - `:headed_studs_generic` — Generic headed studs (π d²/4 area, §11.11.5)
+  - `:headed_studs_incon` — INCON ISS catalog dimensions (§11.11.5)
+  - `:headed_studs_ancon` — Ancon Shearfix catalog dimensions (§11.11.5)
+  - `:closed_stirrups` — Closed stirrup reinforcement (§11.11.3)
+  - `:shear_caps` — Localized slab thickening at columns (§13.2.6)
+  - `:column_capitals` — Flared column head enlargement (§13.1.2)
+- `max_column_size`: Maximum column size before considering reinforcement (default: 30")
+- `stud_material`: Shear stud / stirrup steel material (default: `Stud_51`)
+- `stud_diameter`: Stud diameter (default: 1/2"; ignored for non-stud types)
+- `stirrup_bar_size`: Stirrup bar size (default: 4; only used for `:closed_stirrups`)
+- `shear_studs`: **Deprecated** — backward compat alias for punching_strategy
 
 # Optimization
 - `objective`: Objective for `size_flat_plate_optimized` grid search
@@ -137,45 +146,143 @@ Options for flat plate / flat slab / waffle / PT slab sizing per ACI 318 Chapter
 # Recommended: use typed method objects
 params = DesignParameters(floor = FlatPlateOptions(method = EFM(:asap)))
 
-# Enable shear studs if columns can't resolve punching
-opts = FlatPlateOptions(shear_studs = :if_needed)
+# Enable studs if columns can't resolve punching
+opts = FlatPlateOptions(punching_strategy = :reinforce_last)
+
+# Use INCON ISS catalog studs as first resort
+opts = FlatPlateOptions(
+    punching_strategy = :reinforce_first,
+    punching_reinforcement = :headed_studs_incon)
+
+# Use closed stirrups for punching shear
+opts = FlatPlateOptions(
+    punching_strategy = :reinforce_last,
+    punching_reinforcement = :closed_stirrups,
+    stirrup_bar_size = 4)
+
+# Use shear caps
+opts = FlatPlateOptions(
+    punching_strategy = :reinforce_first,
+    punching_reinforcement = :shear_caps)
+
+# Use column capitals
+opts = FlatPlateOptions(
+    punching_strategy = :reinforce_first,
+    punching_reinforcement = :column_capitals)
 
 # Minimize embodied carbon
 opts = FlatPlateOptions(objective = MinCarbon())
 ```
 """
-Base.@kwdef struct FlatPlateOptions <: AbstractFloorOptions
-    material::ReinforcedConcreteMaterial = RC_4000_60
-    cover::Length = 19.05u"mm"
-    bar_size::Int = 5
-    has_edge_beam::Bool = false
-    edge_beam_βt::Union{Float64, Nothing} = nothing  # nothing → auto-compute if has_edge_beam
-    method::FlatPlateAnalysisMethod = DDM()
-    grouping::Symbol = :by_floor
-    φ_flexure::Float64 = 0.90
-    φ_shear::Float64 = 0.75
-    λ::Union{Float64, Nothing} = nothing  # nothing → use material.concrete.λ
-    deflection_limit::Symbol = :L_360
+struct FlatPlateOptions <: AbstractFloorOptions
+    material::ReinforcedConcreteMaterial
+    cover::Length
+    bar_size::Int
+    has_edge_beam::Bool
+    edge_beam_βt::Union{Float64, Nothing}
+    method::FlatPlateAnalysisMethod
+    grouping::Symbol
+    φ_flexure::Float64
+    φ_shear::Float64
+    λ::Union{Float64, Nothing}
+    deflection_limit::Symbol
     # Punching shear resolution
-    shear_studs::Symbol = :never
-    max_column_size::Length = 30.0u"inch"
-    stud_material::RebarSteel = Stud_51
-    stud_diameter::Length = 0.5u"inch"
+    punching_strategy::Symbol
+    punching_reinforcement::Symbol
+    max_column_size::Length
+    stud_material::RebarSteel
+    stud_diameter::Length
+    stirrup_bar_size::Int
     # Override ACI minimum thickness (nothing = use ACI Table 8.3.1.1)
-    min_h::Union{Length, Nothing} = nothing
+    min_h::Union{Length, Nothing}
     # Optimization objective (used by size_flat_plate_optimized)
-    objective::AbstractObjective = MinVolume()
+    objective::AbstractObjective
     # Column cracking factor for FEA stub stiffness (ACI 318-11 §10.10.4.1)
-    col_I_factor::Float64 = 0.70
+    col_I_factor::Float64
 end
 
 floor_symbol(::FlatPlateOptions) = :flat_plate
 
-# Backward-compat: .analysis_method returns a Symbol derived from the typed method
+# ── Backward-compatible constructor: accept legacy `shear_studs` kwarg ──
+# Maps :never → :grow_columns, :if_needed → :reinforce_last, :always → :reinforce_first
+function _shear_studs_to_strategy(s::Symbol)
+    s === :never     && return :grow_columns
+    s === :if_needed && return :reinforce_last
+    s === :always    && return :reinforce_first
+    error("Unknown shear_studs value :$s. Use :never, :if_needed, or :always.")
+end
+
+"""
+    _build_flat_plate_options(; kwargs...) -> FlatPlateOptions
+
+Internal helper: construct `FlatPlateOptions` via its positional (inner) constructor
+so that the backward-compat keyword wrapper can delegate without recursion.
+
+The positional constructor is always available (generated by Julia for every struct)
+and is never overridden by the keyword wrapper.
+"""
+function _build_flat_plate_options(;
+    material::ReinforcedConcreteMaterial = RC_4000_60,
+    cover::Length = 19.05u"mm",
+    bar_size::Int = 5,
+    has_edge_beam::Bool = false,
+    edge_beam_βt::Union{Float64, Nothing} = nothing,
+    method::FlatPlateAnalysisMethod = DDM(),
+    grouping::Symbol = :by_floor,
+    φ_flexure::Float64 = 0.90,
+    φ_shear::Float64 = 0.75,
+    λ::Union{Float64, Nothing} = nothing,
+    deflection_limit::Symbol = :L_360,
+    punching_strategy::Symbol = :grow_columns,
+    punching_reinforcement::Symbol = :headed_studs_generic,
+    max_column_size::Length = 30.0u"inch",
+    stud_material::RebarSteel = Stud_51,
+    stud_diameter::Length = 0.5u"inch",
+    stirrup_bar_size::Int = 4,
+    min_h::Union{Length, Nothing} = nothing,
+    objective::AbstractObjective = MinVolume(),
+    col_I_factor::Float64 = 0.70,
+)
+    # Call the positional (inner) constructor — field order must match struct definition
+    FlatPlateOptions(material, cover, bar_size, has_edge_beam, edge_beam_βt,
+                     method, grouping, φ_flexure, φ_shear, λ, deflection_limit,
+                     punching_strategy, punching_reinforcement, max_column_size,
+                     stud_material, stud_diameter, stirrup_bar_size,
+                     min_h, objective, col_I_factor)
+end
+
+"""
+    FlatPlateOptions(; shear_studs=nothing, kwargs...)
+
+Backward-compatible constructor that accepts the deprecated `shear_studs` keyword
+and maps it to `punching_strategy`.
+
+- `:never`     → `punching_strategy = :grow_columns`
+- `:if_needed` → `punching_strategy = :reinforce_last`
+- `:always`    → `punching_strategy = :reinforce_first`
+
+If both `shear_studs` and `punching_strategy` are provided, `punching_strategy` wins.
+"""
+function FlatPlateOptions(;
+    shear_studs::Union{Symbol, Nothing} = nothing,
+    punching_strategy::Symbol = isnothing(shear_studs) ? :grow_columns : _shear_studs_to_strategy(shear_studs),
+    kw...
+)
+    _build_flat_plate_options(; punching_strategy=punching_strategy, kw...)
+end
+
+# Backward-compat: .analysis_method and .shear_studs virtual properties
 function Base.getproperty(opts::FlatPlateOptions, name::Symbol)
     if name === :analysis_method
         m = getfield(opts, :method)
         return _method_to_symbol(m)
+    elseif name === :shear_studs
+        # Map new punching_strategy back to legacy :never / :if_needed / :always
+        strat = getfield(opts, :punching_strategy)
+        strat === :grow_columns    && return :never
+        strat === :reinforce_last  && return :if_needed
+        strat === :reinforce_first && return :always
+        return :never
     end
     return getfield(opts, name)
 end
@@ -241,7 +348,8 @@ opts = FlatSlabOptions(base = FlatPlateOptions(method = EFM()))
 # Convenience Constructor
 Pass flat plate keyword arguments directly — they forward to `base`:
 ```julia
-flat_slab(method = EFM(:asap), shear_studs = :if_needed)
+flat_slab(method = EFM(:asap), punching_strategy = :reinforce_last)
+flat_slab(method = EFM(:asap), shear_studs = :if_needed)  # backward compat
 ```
 
 # Reference
@@ -278,7 +386,8 @@ Convenience constructor: forward flat plate kwargs through `base`.
 
 # Example
 ```julia
-flat_slab(method = EFM(:asap), shear_studs = :if_needed)
+flat_slab(method = EFM(:asap), punching_strategy = :reinforce_last)
+flat_slab(method = EFM(:asap), shear_studs = :if_needed)  # backward compat
 ```
 """
 function flat_slab(; h_drop = nothing, a_drop_ratio = nothing, base_kw...)

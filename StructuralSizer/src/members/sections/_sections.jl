@@ -5,6 +5,9 @@
 """Weight per unit length. Default: section_area(s) * mat.ρ"""
 weight_per_length(s::AbstractSection, mat::AbstractMaterial) = section_area(s) * mat.ρ
 
+# Asap CompoundSection — bare Float64 in mm², return with units
+section_area(s::CompoundSection) = s.area * u"mm^2"
+
 # ==============================================================================
 # Material-Organized Sections
 # ==============================================================================

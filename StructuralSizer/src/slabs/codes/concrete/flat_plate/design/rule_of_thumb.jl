@@ -222,7 +222,9 @@ function check_flat_plate_at_thickness!(
 
     check_pattern_loading_requirement(moment_results; verbose=verbose)
 
-    Mu = [ustrip(kip * u"ft", moment_results.column_moments[i]) for i in 1:n_cols]
+    # Column design moments = unbalanced × distribution (§13.5.3.2 + §8.10.4)
+    _dist_factors = column_moment_distribution_factors(struc, columns, column_opts)
+    Mu = [ustrip(kip * u"ft", moment_results.unbalanced_moments[i]) * _dist_factors[i] for i in 1:n_cols]
 
     # 5b. Column P-M design
     geometries = [
@@ -457,7 +459,7 @@ function check_flat_plate_at_thickness!(
     end
 
     column_results_out = build_column_results(
-        struc, columns, column_result, Pu, moment_results.column_moments, punching_results
+        struc, columns, column_result, Pu, moment_results.unbalanced_moments, punching_results
     )
 
     return (

@@ -68,10 +68,12 @@ function size_slabs!(
     return struc
 end
 
-"""Pre-build the column P-M capacity cache for flat plate design (shared across all slabs)."""
+"""Pre-build the column P-M capacity cache for flat plate design (shared across all slabs).
+Returns `nothing` for NLP strategy (no catalog to cache)."""
 function _precompute_flat_plate_col_cache(column_opts)
     col_opts = isnothing(column_opts) ? ConcreteColumnOptions() : column_opts
     col_opts isa ConcreteColumnOptions || return nothing
+    col_opts.sizing_strategy == :nlp && return nothing
 
     cat = isnothing(col_opts.custom_catalog) ?
         rc_column_catalog(col_opts.section_shape, col_opts.catalog) :

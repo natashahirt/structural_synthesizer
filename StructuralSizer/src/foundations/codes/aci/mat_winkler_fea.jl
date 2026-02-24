@@ -205,10 +205,10 @@ function _design_mat_winkler_fea(
     db_y  = bar_diameter(opts.bar_size_y)
     ϕf    = opts.ϕ_flexure
     ϕv    = opts.ϕ_shear
-    ν_c   = 0.2  # concrete Poisson's ratio
+    ν_c   = Float64(opts.material.concrete.ν)  # Poisson's ratio from material
 
     # Concrete modulus — ACI 318 §19.2.2.1
-    Ec = 57000.0u"psi" * sqrt(ustrip(u"psi", fc))
+    Ec_c = Ec(fc)
 
     # ── Step 1: Plan Sizing (first-principles overhang) ──
     plan = _mat_plan_sizing(positions, opts; demands = demands, soil = soil)
@@ -277,7 +277,7 @@ function _design_mat_winkler_fea(
     h = opts.min_depth
     h_incr = opts.depth_increment
 
-    Ec_Pa = ustrip(u"Pa", uconvert(u"Pa", Ec))
+    Ec_Pa = ustrip(u"Pa", uconvert(u"Pa", Ec_c))
     local gov_Mx_total_pos, gov_Mx_total_neg, gov_My_total_pos, gov_My_total_neg
     local loads, springs  # saved for equilibrium check
 

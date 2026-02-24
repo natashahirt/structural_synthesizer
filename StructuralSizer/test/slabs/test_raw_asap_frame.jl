@@ -66,9 +66,9 @@ using Asap
     A_slab = l2 * h
     Is_gross = l2 * h^3 / 12
     
-    # For non-prismatic effect: k_slab/4 = 4.127/4 = 1.032
-    # (slab is ~3% stiffer due to column region enhancement)
-    k_slab = 4.127  # From PCA Table A1
+    # PCA Table A1 lookup for non-prismatic slab stiffness factor
+    sf_slab = pca_slab_beam_factors(c1, l1, c2, l2)
+    k_slab = sf_slab.k
     Is_eff = (k_slab / 4.0) * Is_gross
     
     J_slab = torsional_C(l2, h)
@@ -111,7 +111,7 @@ using Asap
         
         println("\n=== EFM-Equivalent Section Properties ===")
         println("Is_gross = $(round(ustrip(u"inch^4", Is_gross), digits=0)) in⁴")
-        println("Is_eff   = $(round(ustrip(u"inch^4", Is_eff), digits=0)) in⁴ (k_slab/4 × Is)")
+        println("Is_eff   = $(round(ustrip(u"inch^4", Is_eff), digits=0)) in⁴ (k_slab/4 × Is, k=$(round(k_slab, digits=3)))")
         println("Ic_gross = $(round(ustrip(u"inch^4", Ic_gross), digits=0)) in⁴")
         println("C        = $(round(ustrip(u"inch^4", C), digits=0)) in⁴ (torsional constant)")
         println("Kt       = $(round(ustrip(u"lbf*inch", Kt)/1e6, digits=2)) × 10⁶ in-lb")
@@ -146,7 +146,8 @@ using Asap
         
         # ------- Compute Kec from geometry -------
         # Column stiffness: Kc = k_col × E_col × Ic / H
-        k_col = 4.74  # From PCA Table A7 (accounts for infinite I in joint)
+        cf = pca_column_factors(H, h)
+        k_col = cf.k
         Ecc_psi = ustrip(u"psi", Ecc)
         Kc = k_col * Ecc_psi * ustrip(u"inch^4", Ic_gross) / ustrip(u"inch", H) * u"lbf*inch"
         
@@ -294,11 +295,11 @@ using Asap
         
         1. SLAB STRIPS (main spans):
            - Is_eff = (k_slab/4) × Is_gross  
-           - k_slab ≈ 4.127 for typical flat plate
+           - k_slab from PCA Table A1 (varies with c₁/l₁)
            - This captures non-prismatic stiffening at columns
         
         2. COLUMNS (with Kec-derived stiffness):
-           - Compute Kc = k_col × E × Ic / H  (k_col ≈ 4.74)
+           - Compute Kc = k_col × E × Ic / H  (k_col from PCA Table A7)
            - Compute Kt = 9EC / (l2(1-c2/l2)³) from geometry
            - Compute Kec = (ΣKc × ΣKt) / (ΣKc + ΣKt)
            - Derive Ic_eff = Kec × H / (8E) for column stub
@@ -312,7 +313,7 @@ using Asap
         - Compute C from actual transverse slab geometry (h × c2)
         - Compute l2 from tributary polygon (l2_stiff via cubic mean)
         - Use same Kec derivation
-        - k_slab ≈ 4.0-4.2, k_col ≈ 4.5-5.0 reasonable defaults
+        - k_slab, k_col from PCA table interpolation (pca_tables.jl)
         
         This approach:
         ✓ Reduces exactly to EFM for rectangular grids

@@ -473,7 +473,7 @@ end
 """Check whether pattern loading should actually run (`:auto` skips if L/D ≤ 0.75)."""
 function _should_run_patterns(struc::BuildingStructure, params::DesignParameters)
     params.pattern_loading == :checkerboard && return true
-    # :auto — skip if L/D ≤ 0.75 for ALL non-grade cells (ACI 318-19 §6.4.3.3)
+    # :auto — skip if L/D ≤ 0.75 for ALL non-grade cells (ACI 318-11 §13.7.6.2)
     for cell in struc.cells
         cell.floor_type == :grade && continue
         D = ustrip(u"Pa", cell.sdl + cell.self_weight)
@@ -512,8 +512,8 @@ function _generate_pattern_cases(struc::BuildingStructure)
     
     # Checkerboard partition — cached (geometry never changes for a given skeleton)
     skel_id = objectid(struc.skeleton)
-    if _CHECKERBOARD_CACHE[].first == skel_id
-        set_a, set_b = _CHECKERBOARD_CACHE[].second
+    if _CHECKERBOARD_CACHE[][1] == skel_id
+        set_a, set_b = _CHECKERBOARD_CACHE[][2]
     else
         set_a, set_b = _checkerboard_partition(struc)
         _CHECKERBOARD_CACHE[] = (skel_id, (set_a, set_b))

@@ -573,7 +573,7 @@ function torsional_constant_C(x::Length, y::Length)
 end
 
 """
-    slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=PCA_K_SLAB)
+    slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor)
 
 Flexural stiffness of slab-beam at both ends per ACI 318-11 §13.7.3.
 
@@ -581,15 +581,15 @@ Flexural stiffness of slab-beam at both ends per ACI 318-11 §13.7.3.
 
 The stiffness factor k accounts for the non-prismatic section:
 - Enhanced moment of inertia at column region: Is / (1 - c2/l2)²
-- Default k = 4.127 from PCA Notes Table A1 for typical flat plate geometry
+- Obtain k from `pca_slab_beam_factors(c1, l1, c2, l2).k`
 
 # Arguments
 - `Ecs`: Modulus of elasticity of slab concrete
 - `Is`: Gross moment of inertia of slab (from slab_moment_of_inertia)
 - `l1`: Span length center-to-center of columns
-- `c1`: Column dimension in span direction (for N1 = c1/l1)
-- `c2`: Column dimension perpendicular to span (for N2 = c2/l2)
-- `k_factor`: Stiffness factor from PCA tables (default `PCA_K_SLAB` = 4.127 for c/l ≈ 0.08-0.10)
+- `c1`: Column dimension in span direction
+- `c2`: Column dimension perpendicular to span
+- `k_factor`: Stiffness factor from PCA Table A1 (via `pca_slab_beam_factors`)
 
 # Returns
 Slab-beam stiffness Ksb (Moment units, e.g., in-lb)
@@ -597,14 +597,6 @@ Slab-beam stiffness Ksb (Moment units, e.g., in-lb)
 # Reference
 - ACI 318-11 §13.7.3
 - PCA Notes on ACI 318-11 Table A1
-- StructurePoint Example: Ecs=3,834×10³ psi, Is=4,802 in⁴, l1=18 ft=216 in
-  → Ksb = 4.127 × 3,834×10³ × 4,802 / 216 = 351,766,909 in-lb
-
-# Note
-For precise results, k_factor should be interpolated from PCA Table A1 based on:
-- N1 = c1/l1 (typically 0.05-0.15)
-- N2 = c2/l2 (typically 0.05-0.15)
-For most flat plates with c/l ≈ 0.07-0.10, k ≈ 4.0-4.2.
 """
 function slab_beam_stiffness_Ksb(
     Ecs::Pressure,
@@ -612,10 +604,9 @@ function slab_beam_stiffness_Ksb(
     l1::Length,
     c1::Length,
     c2::Length;
-    k_factor::Float64 = PCA_K_SLAB
+    k_factor::Float64
 )
     # Ksb = k × Ec × Is / l1 — units: (lbf/in²) × in⁴ / in = lbf*in = Moment
-    # Convert to consistent units to avoid Unitful overflow
     Ec = ustrip(u"psi", Ecs)
     I = ustrip(u"inch^4", Is)
     l1val = ustrip(u"inch", l1)
@@ -623,7 +614,7 @@ function slab_beam_stiffness_Ksb(
 end
 
 """
-    column_stiffness_Kc(Ecc, Ic, H, h; k_factor=PCA_K_COL)
+    column_stiffness_Kc(Ecc, Ic, H, h; k_factor)
 
 Flexural stiffness of column at slab-beam joint per ACI 318-11 §13.7.4.
 
@@ -632,15 +623,14 @@ Flexural stiffness of column at slab-beam joint per ACI 318-11 §13.7.4.
 The stiffness factor k accounts for:
 - Infinite moment of inertia within the slab depth (joint region)
 - Column clear height Hc = H - h
-
-Default k = `PCA_K_COL` (4.74) from PCA Notes Table A7 for ta/tb = 1, H/Hc ≈ 1.07.
+- Obtain k from `pca_column_factors(H, h).k`
 
 # Arguments
 - `Ecc`: Modulus of elasticity of column concrete
 - `Ic`: Gross moment of inertia of column (from column_moment_of_inertia)
 - `H`: Story height (floor-to-floor)
 - `h`: Slab thickness
-- `k_factor`: Stiffness factor from PCA tables (default `PCA_K_COL` = 4.74)
+- `k_factor`: Stiffness factor from PCA Table A7 (via `pca_column_factors`)
 
 # Returns
 Column stiffness Kc (Moment units, e.g., in-lb)
@@ -648,23 +638,15 @@ Column stiffness Kc (Moment units, e.g., in-lb)
 # Reference
 - ACI 318-11 §13.7.4
 - PCA Notes on ACI 318-11 Table A7
-- StructurePoint Example: Ecc=4,696×10³ psi, Ic=5,461 in⁴, H=108 in
-  → Kc = 4.74 × 4,696×10³ × 5,461 / 108 = 1,125,592,936 in-lb
-
-# Note
-For precise results, k_factor should be interpolated from PCA Table A7 based on:
-- ta/tb = ratio of slab depth above/below (typically 1.0 for intermediate floors)
-- H/Hc = story height / clear column height
 """
 function column_stiffness_Kc(
     Ecc::Pressure,
     Ic::SecondMomentOfArea,
     H::Length,
     h::Length;
-    k_factor::Float64 = PCA_K_COL
+    k_factor::Float64
 )
     # Kc = k × Ec × Ic / H — units: (lbf/in²) × in⁴ / in = lbf*in = Moment
-    # Convert to consistent units to avoid Unitful overflow
     Ec = ustrip(u"psi", Ecc)
     I = ustrip(u"inch^4", Ic)
     Hval = ustrip(u"inch", H)
@@ -781,34 +763,11 @@ function distribution_factor_DF(Ksb, Kec; is_exterior::Bool=false, Ksb_adjacent=
     return ustrip(Ksb) / ustrip(total_K)
 end
 
-"""
-    carryover_factor_COF(; k_factor=PCA_K_SLAB)
-
-Carryover factor for non-prismatic slab-beam.
-
-For flat plates with enhanced stiffness at columns, COF ≈ `PCA_COF` (0.507).
-This is larger than the prismatic beam value of 0.5 due to the
-increased stiffness at column regions.
-
-# Arguments
-- `k_factor`: Stiffness factor (same as used for Ksb)
-
-# Returns
-Carryover factor COF (dimensionless)
-
-# Reference
-- PCA Notes on ACI 318-11 Table A1
-- StructurePoint Example: COF = 0.507
-"""
-function carryover_factor_COF(; k_factor::Float64=PCA_K_SLAB)
-    # For k ≈ PCA_K_SLAB, COF ≈ PCA_COF
-    # This relationship is from PCA Notes Table A1
-    # For a more accurate value, interpolate from the table
-    return PCA_COF
-end
+# carryover_factor_COF removed — COF is now returned by pca_slab_beam_factors()
+# and stored per-span in EFMSpanProperties.COF.
 
 """
-    fixed_end_moment_FEM(qu, l2, l1; m_factor=0.08429)
+    fixed_end_moment_FEM(qu, l2, l1; m_factor)
 
 Fixed-end moment for uniformly loaded non-prismatic slab-beam.
 
@@ -818,17 +777,15 @@ Fixed-end moment for uniformly loaded non-prismatic slab-beam.
 - `qu`: Factored uniform load (pressure)
 - `l2`: Panel width perpendicular to span
 - `l1`: Span length center-to-center
-- `m_factor`: FEM factor from PCA tables (default 0.08429)
+- `m_factor`: FEM factor from PCA Table A1 (via `pca_slab_beam_factors`)
 
 # Returns
 Fixed-end moment FEM (moment units)
 
 # Reference
 - PCA Notes on ACI 318-11 Table A1
-- StructurePoint Example: m=0.08429, qu=0.193 ksf, l2=14 ft, l1=18 ft
-  → FEM = 0.08429 × 0.193 × 14 × 18² = 73.79 ft-kip
 """
-function fixed_end_moment_FEM(qu::Pressure, l2::Length, l1::Length; m_factor::Float64=0.08429)
+function fixed_end_moment_FEM(qu::Pressure, l2::Length, l1::Length; m_factor::Float64)
     return m_factor * qu * l2 * l1^2
 end
 
@@ -1111,11 +1068,11 @@ function stud_area(diameter::Length)
 end
 
 """
-    design_shear_studs(vu, fc, β, αs, b0, d, position, fyt, stud_diameter; λ, φ, c1, c2, qu)
+    design_shear_studs(vu, fc, β, αs, b0, d, position, fyt, stud_diameter; λ, φ, c1, c2, qu, catalog)
 
 Design headed shear stud reinforcement for a punching shear failure.
 
-# Design Steps (ACI 318-11 §11.11.5 / Ancon Shearfix):
+# Design Steps (ACI 318-11 §11.11.5 / INCON ISS):
 1. Compute required vs = vu/φ − vcs
 2. Select number of rails based on position (8 interior, 6 edge, 4 corner)
 3. Determine Av per line from n_rails × stud_area
@@ -1132,9 +1089,12 @@ Design headed shear stud reinforcement for a punching shear failure.
 - `d`: Effective depth
 - `position`: Column position (:interior, :edge, :corner)
 - `fyt`: Stud yield strength
-- `stud_diameter`: Stud diameter
+- `stud_diameter`: Stud diameter (target; snapped to catalog if provided)
 - `c1`, `c2`: Column dimensions (for outer section geometry; optional)
 - `qu`: Factored uniform pressure (for outer section Vu reduction; optional)
+- `catalog`: Stud catalog vector (`Vector{StudSpec}`). When provided, the stud
+  is snapped to the nearest catalog product and its actual shank area is used
+  instead of the generic π d²/4 formula. Pass `nothing` for generic studs.
 
 When `c1`, `c2`, and `qu` are provided, the outer section check uses the
 exact ACI approach: Vu_outer = Vu_total − qu × A_enclosed.
@@ -1160,7 +1120,8 @@ function design_shear_studs(
     φ::Float64 = 0.75,
     c1::Union{Length, Nothing} = nothing,
     c2::Union{Length, Nothing} = nothing,
-    qu::Union{Pressure, Nothing} = nothing
+    qu::Union{Pressure, Nothing} = nothing,
+    catalog::Union{Vector{StudSpec}, Nothing} = nothing
 )
     d_in = ustrip(u"inch", d)
     b0_in = ustrip(u"inch", b0)
@@ -1171,6 +1132,20 @@ function design_shear_studs(
     # Convert fyt to psi for consistent units in ShearStudDesign struct
     fyt_unit = fyt_psi * u"psi"
     
+    # ─── Resolve stud from catalog (or use generic π d²/4) ───
+    if !isnothing(catalog)
+        spec = snap_to_catalog(catalog, stud_diameter)
+        catalog_name = spec.catalog
+        actual_diameter = spec.shank_diameter
+        As_stud = spec.head_area           # shank cross-sectional area from catalog
+    else
+        catalog_name = :generic
+        actual_diameter = stud_diameter
+        As_stud = stud_area(stud_diameter)  # π d²/4
+    end
+    As_stud_in2 = ustrip(u"inch^2", As_stud)
+    actual_diameter_unit = uconvert(u"inch", actual_diameter)
+    
     # Maximum nominal shear strength with headed studs (ACI 318-11 §11.11.3.2)
     # Vn ≤ 8√f'c × b0 × d
     vc_max = 8.0 * λ * sqrt_fc
@@ -1180,7 +1155,8 @@ function design_shear_studs(
         # Demand exceeds maximum capacity with studs
         return ShearStudDesign(
             required = true,
-            stud_diameter = stud_diameter,
+            catalog_name = catalog_name,
+            stud_diameter = actual_diameter_unit,
             fyt = fyt_unit,
             n_rails = 0,
             n_studs_per_rail = 0,
@@ -1204,13 +1180,9 @@ function design_shear_studs(
     # Required steel contribution
     vs_reqd = max(vu_psi / φ - vcs, 0.0)
     
-    # Number of rails based on position (min 2 per face per Ancon)
+    # Number of rails based on position (min 2 per face per ACI 318-11 §11.11.5)
     n_rails = position == :interior ? 8 :
               position == :edge ? 6 : 4
-    
-    # Single stud area
-    As_stud = stud_area(stud_diameter)
-    As_stud_in2 = ustrip(u"inch^2", As_stud)
     
     # Total Av per peripheral line
     Av_per_line = n_rails * As_stud_in2
@@ -1307,7 +1279,8 @@ function design_shear_studs(
     
     return ShearStudDesign(
         required = true,
-        stud_diameter = stud_diameter,
+        catalog_name = catalog_name,
+        stud_diameter = actual_diameter_unit,
         fyt = fyt_unit,
         n_rails = n_rails,
         n_studs_per_rail = n_studs,
@@ -1979,27 +1952,30 @@ function weighted_slab_thickness(h_slab::Length, drop::DropPanelGeometry, l_stri
 end
 
 """
-    fixed_end_moment_FEM(qu_slab, qu_drop, l2, l1, drop::DropPanelGeometry)
+    fixed_end_moment_FEM(qu_slab, qu_drop, l2, l1, c1, c2, h_slab, drop::DropPanelGeometry)
 
 Fixed-end moment for non-prismatic slab-beam with drop panels using
-PCA multi-term FEM coefficients.
+PCA Tables A2–A5 FEM coefficients (geometry-dependent).
 
-    FEM = m_NF1 × w_slab × l₂ × l₁² + m_NF2 × w_drop × b_drop × l₁² + m_NF3 × w_drop × b_drop × l₁²
+    FEM = m_uniform × w_slab × l₂ × l₁²
+        + m_near × w_drop × b_drop × l₁²
+        + m_far  × w_drop × b_drop × l₁²
 
-Where:
-- m_NF1: FEM coefficient for uniform load on full span
-- m_NF2: FEM coefficient for drop panel patch load at near end (a=0, b-a=2a_drop/l1)
-- m_NF3: FEM coefficient for drop panel patch load at far end (a=1-2a_drop/l1, b-a=2a_drop/l1)
+Where the three m coefficients are interpolated from PCA Tables A2–A5
+based on c₁/l₁, c₂/l₂, and h_drop/h_slab.
 
 # Arguments
 - `qu_slab`: Factored uniform slab load (pressure)
 - `qu_drop`: Factored additional drop panel load (pressure) — weight of projection only
 - `l2`: Panel width perpendicular to span
 - `l1`: Span length center-to-center
+- `c1`: Column dimension parallel to span
+- `c2`: Column dimension perpendicular to span
+- `h_slab`: Slab thickness
 - `drop`: Drop panel geometry
 
 # Reference
-- PCA Notes on ACI 318-11, Tables A2 & A3
+- PCA Notes on ACI 318-11, Tables A2–A5
 - StructurePoint DE-Two-Way-Flat-Slab:
     FEM = 0.0915 × 0.270 × 30 × 30² + 0.0163 × 0.064 × 10 × 30² + 0.002 × 0.064 × 10 × 30²
         = 677.53 ft-kips
@@ -2009,23 +1985,25 @@ function fixed_end_moment_FEM(
     qu_drop::Pressure,
     l2::Length,
     l1::Length,
-    drop::DropPanelGeometry;
-    m_uniform::Float64 = PCA_M_NP_UNIFORM,
-    m_near::Float64 = PCA_M_NP_NEAR,
-    m_far::Float64 = PCA_M_NP_FAR,
+    c1::Length,
+    c2::Length,
+    h_slab::Length,
+    drop::DropPanelGeometry,
 )
-    # Drop panel extent (full width in direction 2 for the tributary width,
-    # extent in direction 1 is the patch length for the load)
+    # Look up geometry-dependent FEM coefficients from PCA Tables A2–A5
+    mc = pca_np_fem_coefficients(c1, l1, c2, l2, drop.h_drop, h_slab, drop.a_drop_1)
+
+    # Drop panel extent (full width in direction 1 for the patch load)
     b_drop = drop_extent_1(drop)  # 2 × a_drop_1
 
     # Term 1: Uniform slab load on full span
-    FEM_slab = m_uniform * qu_slab * l2 * l1^2
+    FEM_slab = mc.m_uniform * qu_slab * l2 * l1^2
     
     # Term 2: Drop panel patch load at near column
-    FEM_near = m_near * qu_drop * b_drop * l1^2
+    FEM_near = mc.m_near * qu_drop * b_drop * l1^2
     
     # Term 3: Drop panel patch load at far column
-    FEM_far = m_far * qu_drop * b_drop * l1^2
+    FEM_far = mc.m_far * qu_drop * b_drop * l1^2
     
     return FEM_slab + FEM_near + FEM_far
 end
@@ -2065,10 +2043,23 @@ function column_stiffness_Kc(
     drop::DropPanelGeometry;
     position::Symbol = :bottom,
 )
-    # Select the appropriate k-factor based on column position
-    k_factor = position == :bottom ? PCA_K_COL_NP_BOTTOM : PCA_K_COL_NP_TOP
-    
-    # Use the same formula as prismatic, but with the non-prismatic k
+    # Compute ta and tb from geometry (PCA Notes, Table A7)
+    # Bottom column: top end at slab soffit → ta = h_slab/2 + h_drop
+    # Bottom column: bottom end at floor below → tb = h_slab/2
+    # Top column: reversed (ta = h_slab/2, tb = h_slab/2 + h_drop)
+    if position == :bottom
+        ta = h_slab / 2 + drop.h_drop
+        tb = h_slab / 2
+    else
+        ta = h_slab / 2
+        tb = h_slab / 2 + drop.h_drop
+    end
+
+    # Total joint depth for clear height: Hc = H - (ta + tb) = H - (h_slab + h_drop)
+    h_total = h_slab + drop.h_drop
+    cf = pca_column_factors(H, h_total; ta=ta, tb=tb)
+    k_factor = cf.k
+
     Ec = ustrip(u"psi", Ecc)
     I = ustrip(u"inch^4", Ic)
     Hval = ustrip(u"inch", H)

@@ -182,7 +182,8 @@ function design_tbeam_flexure(Mu::Moment, bw::Length, d::Length,
 
         β1_val = beta1(fc)
         c_in = a_in / β1_val
-        εt_val = c_in > 0 ? 0.003 * (d_in - c_in) / c_in : Inf
+        εcu = 0.003  # ACI 318-11 §10.2.3
+        εt_val = c_in > 0 ? εcu * (d_in - c_in) / c_in : Inf
         φ_actual = flexure_phi(εt_val)
         tc = is_tension_controlled(εt_val)
 

@@ -264,6 +264,60 @@ function to_asap_section(sec::RCTBeamSection, mat::Concrete; I_factor::Real=0.35
 end
 
 # -----------------------------------------------------------------------------
+# PixelFrame sections (FRC + external post-tensioning)
+# -----------------------------------------------------------------------------
+
+"""
+    to_asap_section(sec::PixelFrameSection; I_factor=0.70)
+
+Convert PixelFrame section to Asap.Section for FEA stiffness.
+
+Uses the CompoundSection polygon geometry for area and moments of inertia.
+Material properties come from the embedded FiberReinforcedConcrete (delegates
+to inner Concrete for E, ν, ρ).
+
+The `I_factor` reduces Ig for cracking (default 0.70, same as RC columns,
+since PixelFrame sections are prestressed and have less cracking).
+
+Torsional constant J is approximated as `n_arms × t × L_px³ / 3` (thin
+rectangular strips), which is conservative for open cross-sections.
+"""
+function to_asap_section(sec::PixelFrameSection; I_factor::Real=0.70)
+    cs = sec.section  # CompoundSection (mm units, bare Float64)
+
+    # Section properties from polygon geometry [mm → m]
+    A_m2  = cs.area * 1e-6              # mm² → m²
+    Ix_m4 = I_factor * cs.Ix * 1e-12   # mm⁴ → m⁴
+    Iy_m4 = I_factor * cs.Iy * 1e-12   # mm⁴ → m⁴
+
+    # Torsional constant: sum of thin rectangles J ≈ n × (1/3) × t × L³
+    # For open thin-walled sections this is the standard approximation
+    n = n_arms(sec)
+    t_mm = ustrip(u"mm", sec.t)
+    L_px_mm = ustrip(u"mm", sec.L_px)
+    J_mm4 = n * (t_mm * L_px_mm^3) / 3.0
+    J_m4 = I_factor * J_mm4 * 1e-12    # mm⁴ → m⁴
+
+    # Material from embedded FRC → Concrete delegation
+    mat = sec.material  # FiberReinforcedConcrete
+    E = mat.E           # delegates to Concrete.E (Unitful Pressure)
+    ν = mat.ν           # delegates to Concrete.ν (Float64)
+    G = E / (2 * (1 + ν))
+    ρ = mat.ρ           # delegates to Concrete.ρ (Unitful Density)
+
+    Asap.Section(A_m2 * u"m^2", E, G, Ix_m4 * u"m^4", Iy_m4 * u"m^4", J_m4 * u"m^4", ρ)
+end
+
+# Overload with explicit material argument (for interface consistency)
+function to_asap_section(sec::PixelFrameSection, mat::FiberReinforcedConcrete; I_factor::Real=0.70)
+    to_asap_section(sec; I_factor=I_factor)
+end
+
+function to_asap_section(sec::PixelFrameSection, mat::AbstractMaterial; I_factor::Real=0.70)
+    to_asap_section(sec; I_factor=I_factor)
+end
+
+# -----------------------------------------------------------------------------
 # Timber sections
 # -----------------------------------------------------------------------------
 

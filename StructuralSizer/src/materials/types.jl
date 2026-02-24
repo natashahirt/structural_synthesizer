@@ -170,6 +170,58 @@ function ReinforcedConcreteMaterial(concrete::Concrete, rebar::RebarSteel)
 end
 
 # =============================================================================
+# Fiber Reinforced Concrete (FRC)
+# =============================================================================
+
+"""
+    FiberReinforcedConcrete{C<:Concrete} <: AbstractMaterial
+
+Fiber reinforced concrete for PixelFrame and similar systems without embedded rebar.
+Wraps a base `Concrete` material and adds fiber-specific properties.
+
+# Fields
+- `concrete`: Base concrete material (fc′, E, ρ, εcu, ecc, etc.)
+- `fiber_dosage`: Fiber dosage [kg-fiber / m³ concrete]
+- `fR1`: Residual flexural tensile strength at CMOD=0.5mm [MPa] (fib MC2010 §5.6.3)
+- `fR3`: Residual flexural tensile strength at CMOD=2.5mm [MPa] (fib MC2010 §5.6.3)
+- `fiber_ecc`: Embodied carbon of fiber [kgCO₂e/kg-fiber] (default 1.4, original Pixelframe.jl)
+
+# Notes
+- `fR1` and `fR3` are used in the fib MC2010 linear shear model (Eq. 7.7-5).
+- `fiber_dosage` is used for embodied carbon calculation (thesis Eq. 2.16).
+- Property delegation: `E`, `fc′`, `ρ`, `ν`, `εcu`, `λ`, `ecc`, `cost` delegate
+  to the inner `Concrete`.
+
+# Example
+```julia
+frc = FiberReinforcedConcrete(NWC_6000, 20.0, 3.2, 2.5)  # 20 kg/m³, fR1=3.2, fR3=2.5 MPa
+frc.concrete.fc′  # access concrete strength
+```
+"""
+struct FiberReinforcedConcrete{C<:Concrete} <: AbstractMaterial
+    concrete::C            # base concrete (fc′, E, ecc, etc.)
+    fiber_dosage::Float64  # kg-fiber / m³ concrete
+    fR1::Float64           # residual flexural tensile strength at CMOD=0.5mm (MPa)
+    fR3::Float64           # residual flexural tensile strength at CMOD=2.5mm (MPa)
+    fiber_ecc::Float64     # embodied carbon of fiber [kgCO₂e/kg-fiber]
+end
+
+function FiberReinforcedConcrete(concrete::Concrete, fiber_dosage::Real, fR1::Real, fR3::Real;
+                                  fiber_ecc::Real=1.4)
+    FiberReinforcedConcrete(concrete, Float64(fiber_dosage), Float64(fR1), Float64(fR3),
+                            Float64(fiber_ecc))
+end
+
+# Property delegation to inner Concrete
+Base.getproperty(m::FiberReinforcedConcrete, s::Symbol) = _frc_getproperty(m, Val(s))
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{:concrete}) = getfield(m, :concrete)
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fiber_dosage}) = getfield(m, :fiber_dosage)
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fR1}) = getfield(m, :fR1)
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fR3}) = getfield(m, :fR3)
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fiber_ecc}) = getfield(m, :fiber_ecc)
+_frc_getproperty(m::FiberReinforcedConcrete, ::Val{s}) where {s} = getproperty(getfield(m, :concrete), s)
+
+# =============================================================================
 # Timber
 # =============================================================================
 

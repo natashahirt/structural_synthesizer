@@ -129,6 +129,7 @@ export A992_Steel, S355_Steel, Rebar_40, Rebar_60, Rebar_75, Rebar_80, Stud_51
 export NWC_3000, NWC_4000, NWC_5000, NWC_6000, NWC_GGBS, NWC_PFA
 export RC_3000_60, RC_4000_60, RC_5000_60, RC_6000_60, RC_5000_75, RC_6000_75, RC_GGBS_60
 export Earthen_500, Earthen_1000, Earthen_2000, Earthen_4000, Earthen_8000
+export FiberReinforcedConcrete
 export concrete_fc, concrete_fc_mpa, concrete_E, concrete_wc
 export AggregateType, siliceous, carbonate, sand_lightweight, lightweight
 
@@ -168,6 +169,9 @@ export RCTBeamSection, flange_width, flange_thickness, gross_centroid_from_top
 export standard_rc_tbeams, small_rc_tbeams, large_rc_tbeams
 export RCColumnSection, RebarLocation, scale_column_section
 export RCCircularSection, circular_compression_zone
+export PixelFrameSection, generate_pixelframe_catalog
+export make_pixelframe_section, make_pixelframe_Y_section, make_pixelframe_X2_section, make_pixelframe_X4_section
+export n_arms
 export RCColumnDemand, RCBeamDemand
 export standard_rc_columns, standard_rc_circular_columns
 export square_rc_columns, rectangular_rc_columns, low_capacity_rc_columns, high_capacity_rc_columns, all_rc_rect_columns
@@ -178,11 +182,13 @@ export extreme_tension_depth, get_bar_depths, bar_depth_from_compression
 
 # --- Capacity checkers ---
 export AbstractCapacityChecker, AbstractCapacityCache
-export create_cache, is_feasible, precompute_capacities!, get_objective_coeff
+export create_cache, is_feasible, precompute_capacities!, get_objective_coeff, get_feasibility_error_msg
 export SteelMemberGeometry, TimberMemberGeometry, ConcreteMemberGeometry
 export AISCChecker, AISCCapacityCache
 export ACIBeamChecker, ACIBeamCapacityCache
 export ACIColumnChecker, ACIColumnCapacityCache
+export PixelFrameChecker, PixelFrameCapacityCache
+export PixelFrameBeamOptions, PixelFrameColumnOptions
 
 # --- Capacity interface ---
 export get_Mn, get_Vn, get_Pn, get_Tn
@@ -256,11 +262,30 @@ export bresler_load_contour, pca_load_contour
 export check_biaxial_capacity, check_biaxial_simple
 export check_biaxial_rectangular, check_biaxial_auto
 
+# --- PixelFrame (ACI 318-19 + fib MC2010) ---
+export pf_axial_capacity, pf_flexural_capacity
+export frc_shear_capacity
+export pf_carbon_per_meter, pf_concrete_ecc
+export fc′_dosage2fR1, fc′_dosage2fR3
+export DeflectionRegime, UNCRACKED, CRACKED
+export LINEAR_ELASTIC_UNCRACKED, LINEAR_ELASTIC_CRACKED, NONLINEAR_CRACKED
+export PFDeflectionMethod, PFSimplified, PFThirdPointLoad, PFSinglePointLoad
+export pf_cracking_moment, pf_cracked_moment_of_inertia, pf_effective_Ie
+export pf_deflection, pf_check_deflection
+export pf_element_properties, pf_deflection_curve
+
+# --- PixelFrame per-pixel design ---
+export PixelFrameDesign, pixel_volumes, pixel_carbon
+export validate_pixel_divisibility, assign_pixel_materials, build_pixel_design
+
+# --- PixelFrame tendon deviation ---
+export TendonDeviationResult, pf_tendon_deviation_force
+
 # --- Rebar helpers ---
 export get_rebar_fy, get_transverse_rebar, get_transverse_bar_diameter
 
 # --- Optimization: discrete (MIP) ---
-export optimize_discrete
+export optimize_discrete, expand_catalog_with_materials
 export size_columns, size_beams, size_members
 export to_steel_demands, to_rc_demands
 export to_steel_geometry, to_concrete_geometry, convert_geometries
@@ -323,6 +348,7 @@ export CIPSlabResult, ProfileResult, CompositeDeckResult, JoistDeckResult
 export TimberPanelResult, TimberJoistResult, VaultResult, ShapedSlabResult
 export total_thrust, is_adequate
 export StripReinforcement, FlatPlatePanelResult, ShearStudDesign, PunchingCheckResult
+export ClosedStirrupDesign, ShearCapDesign, ColumnCapitalDesign
 export deflection_ok, punching_ok, max_punching_ratio, deflection_ratio
 
 # --- Floor common interface ---
@@ -376,6 +402,9 @@ export check_drop_panel_aci
 # --- Shear stud design (ACI 318-11 §11.11.5) ---
 export punching_capacity_with_studs, punching_capacity_outer
 export minimum_stud_reinforcement, stud_area, design_shear_studs, check_punching_with_studs
+export design_shear_cap, check_punching_with_shear_cap
+export design_column_capital, check_punching_with_capital
+export design_closed_stirrups, check_punching_with_stirrups
 
 # --- Moment transfer / integrity reinforcement ---
 export transfer_reinforcement, additional_transfer_bars
@@ -403,7 +432,7 @@ export select_bars_for_size, select_bars_candidates
 # --- EFM stiffnesses (ACI 318 Section 8.11) ---
 export slab_moment_of_inertia, column_moment_of_inertia, torsional_constant_C
 export slab_beam_stiffness_Ksb, column_stiffness_Kc, torsional_member_stiffness_Kt
-export equivalent_column_stiffness_Kec, distribution_factor_DF, carryover_factor_COF
+export equivalent_column_stiffness_Kec, distribution_factor_DF
 export fixed_end_moment_FEM
 # --- Flat Slab / Drop Panel ---
 export FlatSlabOptions, as_flat_plate_options

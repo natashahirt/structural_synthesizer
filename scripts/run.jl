@@ -11,68 +11,144 @@ using StructuralSynthesizer  # Geometry & BIM logic
 # =============================================================================
 # Generate building geometry
 # =============================================================================
+# gen_medium_office(Lx, Ly, floor_height, x_bays, y_bays, n_stories)
+#   irregular = :none | :shift_x | :shift_y | :zigzag
+#   offset    = shift amount for irregular grids (default 0.0u"m")
 skel = gen_medium_office(125.0u"ft", 90.0u"ft", 13.0u"ft", 5, 3, 3);
 struc = BuildingStructure(skel);
 
 # =============================================================================
 # Run complete design pipeline via design_building()
 # =============================================================================
-# This single function call handles the entire workflow:
-#   1. Initialize structure with floor type
-#   2. Estimate initial column sizes
-#   3. Convert to Asap analysis model
-#   4. Size slabs (flat plate DDM/EFM with column P-M design)
-#   5. Size foundations (grouped by similar reactions)
-#   6. Populate BuildingDesign with all results
+# Pipeline stages (executed in order):
+#   1. Initialize structure (cells, slabs, members, tributary areas)
+#   2. Estimate initial column sizes → build Asap frame model
+#   3. Size slabs (flat plate DDM/EFM/FEA with column P-M design)
+#   4. Reconcile columns (punching shear, slenderness, biaxial)
+#   5. Size beams (if beam-based floor system)
+#   6. Size foundations (grouped by similar reactions)
+#   7. Capture results → BuildingDesign
 
 design = design_building(struc, DesignParameters(
     name = "3-Story Flat Plate Office",
     max_iterations = 100,
     
-    # Building-level material (cascades to floor + column options)
-    concrete = NWC_4000,
-    rebar = Rebar_60,
+    # ─── Gravity Loads (unfactored service level) ───
+    # loads = GravityLoads(
+    #     floor_LL  = 80.0psf,     # Floor live load (default: 80 psf)
+    #     roof_LL   = 20.0psf,     # Roof live load
+    #     grade_LL  = 100.0psf,    # Grade-level live load
+    #     floor_SDL = 15.0psf,     # Floor superimposed dead load
+    #     roof_SDL  = 15.0psf,     # Roof superimposed dead load
+    #     wall_SDL  = 10.0psf,     # Wall dead load
+    # ),
     
-    # Column sizing options (RC columns)
+    # ─── Load Combinations (ASCE 7) ───
+    # load_combinations = [strength_1_2D_1_6L],   # default
+    # Presets: strength_1_4D, strength_1_2D_1_6L, strength_1_2D_1_6Lr,
+    #          strength_1_2D_1_0W, strength_1_2D_1_0E,
+    #          strength_0_9D_1_0W, strength_0_9D_1_0E, service
+    # Custom:  LoadCombination(name=:custom, D=1.2, L=1.6, S=0.5, ...)
+    
+    # ─── Materials (cascading: building-level → per-member override) ───
+    # Concrete presets: NWC_3000, NWC_4000, NWC_5000, NWC_6000, NWC_GGBS, NWC_PFA
+    # Rebar presets:    Rebar_40, Rebar_60, Rebar_75, Rebar_80
+    # RC composites:    RC_4000_60, RC_5000_60, RC_6000_60, RC_5000_75, RC_6000_75
+    # Steel presets:    A992_Steel, A36_Steel, A500_Gr_B, A500_Gr_C
+    materials = MaterialOptions(concrete = NWC_4000, rebar = Rebar_60),
+    # Per-member override (takes priority):
+    #   materials = MaterialOptions(
+    #       slab   = RC_5000_60,     # 5 ksi slab concrete + Gr 60 rebar
+    #       column = RC_6000_75,     # 6 ksi columns + Gr 75 rebar
+    #   ),
+    
+    # ─── Fire Rating (ACI 216.1 / AISC) ───
+    # fire_rating = 0.0,           # hours: 0, 1, 1.5, 2, 3, 4
+    # fire_protection = SFRM(),    # steel only: SFRM(), IntumescentCoating(),
+    #                               #             NoFireProtection(), CustomCoating(t_in, ρ_pcf)
+    
+    # ─── Column Sizing ───
+    #   ConcreteColumnOptions  → RC columns (ACI 318 P-M interaction)
+    #     section_shape:    :rect | :circular
+    #     sizing_strategy:  :catalog (MIP) | :nlp (Ipopt continuous)
+    #     grade:            NWC_4000, NWC_5000, ... (or grades=[...] for multi-material MIP)
+    #     include_slenderness: true/false  (ACI 318 §6.6)
+    #     include_biaxial:    true/false  (Bresler reciprocal load)
+    #   SteelColumnOptions     → steel W/HSS/pipe columns (AISC 360)
+    #     section_type:     :w | :hss | :pipe | :w_and_hss
+    #     catalog:          :common | :preferred | :all
+    #   PixelFrameColumnOptions → FRC + EPT columns (ACI 318-19 + fib MC2010)
+    #     λ_values:         [:X4] | [:X2] | [:X2, :X4]
     columns = ConcreteColumnOptions(section_shape = :rect),
     
-    # Floor system
-    #   Type:   FlatPlateOptions  → beamless two-way slab (ACI 318 Ch 8)
-    #           FlatSlabOptions   → flat plate + drop panels (ACI 8.2.4)
-    #           OneWayOptions     → one-way CIP slab (ACI Table 7.3.1.1)
-    #           VaultOptions      → unreinforced parabolic vault
-    #           CompositeDeckOptions → steel deck + concrete fill
-    #           TimberOptions     → CLT / DLT / NLT panels
+    # ─── Beam Sizing (for beam-based floor systems) ───
+    #   ConcreteBeamOptions    → RC beams (ACI 318 flexure/shear)
+    #     include_flange: true → auto T-beam from adjacent slabs
+    #   SteelBeamOptions       → steel W/HSS beams (AISC 360)
+    #     deflection_limit: 1/360, 1/480, etc.
+    #   PixelFrameBeamOptions  → FRC + EPT beams (ACI 318-19 + fib MC2010)
+    #     λ_values:         [:Y]  (Y-section for beams)
+    #     objective:        MinCarbon(), MinVolume(), MinWeight(), MinCost()
+    #     deflection_limit: 1/360 (or nothing for no check)
     #
-    #   Method (flat plate/slab only):
-    #           DDM()                    → Direct Design Method (ACI tables)
-    #           DDM(:simplified)         → Modified DDM (0.65/0.35 coefficients)
-    #           EFM()                    → Equivalent Frame Method (ASAP solver)
-    #           EFM(:moment_distribution)→ EFM with Hardy Cross
-    #           FEA()                    → Finite Element Analysis (shell model)
+    # Example — PixelFrame beams with custom catalog:
+    #   beams = PixelFrameBeamOptions(
+    #       L_px_values   = [125.0, 200.0] .* u"mm",
+    #       fc_values     = [40.0, 57.0, 80.0] .* u"MPa",
+    #       dosage_values = [20.0, 40.0] .* u"kg/m^3",
+    #       objective     = MinCarbon(),
+    #       deflection_limit = 1/360,
+    #   )
+    
+    # ─── Floor System ───
+    #   Type:
+    #     FlatPlateOptions       → beamless two-way slab (ACI 318 Ch 8)
+    #     FlatSlabOptions        → flat plate + drop panels (ACI 8.2.4)
+    #     OneWayOptions          → one-way CIP slab (ACI Table 7.3.1.1)
+    #     VaultOptions           → unreinforced parabolic vault
+    #     CompositeDeckOptions   → steel deck + concrete fill
+    #     TimberOptions          → CLT / DLT / NLT panels
     #
-    #   Shear studs: :never     → only grow columns
-    #                :if_needed → columns first, studs if maxed
-    #                :always    → studs first, grow columns only if insufficient
+    #   Analysis method (flat plate/slab only):
+    #     DDM()                    → Direct Design Method (ACI tables)
+    #     DDM(:simplified)         → Modified DDM (0.65/0.35 coefficients)
+    #     EFM()                    → Equivalent Frame Method (ASAP solver)
+    #     EFM(:moment_distribution)→ EFM with Hardy Cross
+    #     FEA()                    → Finite Element Analysis (shell model)
+    #
+    #   Punching shear resolution (ACI 318-11 §11.11):
+    #     punching_strategy — when to apply reinforcement:
+    #       :grow_columns    → only grow columns (default)
+    #       :reinforce_last  → try columns first, reinforce if columns max out
+    #       :reinforce_first → try reinforcement first, grow columns if reinf. fails
+    #     punching_reinforcement — what type of reinforcement:
+    #       :headed_studs_generic → generic headed studs (π d²/4, §11.11.5)
+    #       :headed_studs_incon   → INCON ISS catalog studs (§11.11.5)
+    #       :headed_studs_ancon   → Ancon Shearfix catalog studs (§11.11.5)
+    #       :closed_stirrups      → closed stirrup reinforcement (§11.11.3)
+    #       :shear_caps           → localized slab thickening at columns (§13.2.6)
+    #       :column_capitals      → flared column head enlargement (§13.1.2)
     floor = FlatPlateOptions(
         method = EFM(),
         cover = 0.75u"inch",
         bar_size = 5,
-        shear_studs = :always,
-        min_h = 5.0u"inch",        # Bypass ACI min; let checks drive h
-        # grouping = :by_floor,     # :individual, :by_floor, :building_wide
-        # deflection_limit = :L_360,# :L_240, :L_360, :L_480
-        # objective = MinVolume(),  # or MinWeight(), MinCost(), MinCarbon()
+        punching_strategy = :reinforce_first,
+        punching_reinforcement = :headed_studs_generic,
+        min_h = 5.0u"inch",        # Override ACI min thickness (nothing = use ACI Table 8.3.1.1)
+        # grouping = :by_floor,     # :individual | :by_floor | :building_wide
+        # deflection_limit = :L_360,# :L_240 | :L_360 | :L_480
+        # objective = MinVolume(),  # MinVolume() | MinWeight() | MinCost() | MinCarbon()
     ),
     
-    # Foundation options
-    #   strategy: :auto  → heuristic (spread → strip → mat by coverage ratio)
+    # ─── Foundation Options ───
+    #   strategy: :auto       → heuristic (spread → strip → mat by coverage ratio)
     #             :all_spread → force isolated spread footings
     #             :all_strip  → force strip/combined footings
     #             :mat        → force mat foundation
+    #   Soil presets: loose_sand, medium_sand, dense_sand,
+    #                 soft_clay, stiff_clay, hard_clay
     foundation_options = FoundationParameters(
-        soil = medium_sand,       # Presets: loose_sand, medium_sand, dense_sand,
-                                  #          soft_clay, stiff_clay, hard_clay
+        soil = medium_sand,
         pier_width = 0.35u"m",
         min_depth = 0.4u"m",
         group_tolerance = 0.15,
@@ -87,6 +163,10 @@ design = design_building(struc, DesignParameters(
             # ),
         ),
     ),
+    
+    # ─── Display & Output ───
+    # display_units = imperial,    # imperial | metric (controls summary output units)
+    # optimize_for  = :weight,     # :weight | :carbon | :cost
 ));
 
 # =============================================================================

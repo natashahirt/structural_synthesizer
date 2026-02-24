@@ -403,7 +403,7 @@ function _design_mat_rigid(
 
     # ── Step 5: Relative Stiffness (Kr) — informational ──
     if soil.ks !== nothing
-        Ec_psi = 57000.0 * sqrt(ustrip(u"psi", fc))
+        Ec_psi = ustrip(u"psi", Ec(fc))
         Ig_in4 = ustrip(u"inch", B) * ustrip(u"inch", h)^3 / 12.0
         ks_pci = ustrip(u"lbf/inch^3", uconvert(u"lbf/inch^3", soil.ks))
         Kr = Ec_psi * Ig_in4 / (ks_pci * ustrip(u"inch", B) * ustrip(u"inch", Lm)^3)

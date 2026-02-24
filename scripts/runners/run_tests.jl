@@ -47,16 +47,16 @@ end
 
 function run_slabs()
     @testset "Slab Sizing" begin
-        include(joinpath(test_root, "sizing", "slabs", "test_flat_plate_efm_integration.jl"))
-        include(joinpath(test_root, "sizing", "slabs", "test_flat_plate_methods_comparison.jl"))
+        include(joinpath(test_root, "report_generators", "test_flat_plate_efm_integration.jl"))
+        include(joinpath(test_root, "report_generators", "test_flat_plate_methods_comparison.jl"))
         include(joinpath(test_root, "sizing", "slabs", "test_vault_pipeline.jl"))
     end
 end
 
 function run_members()
     @testset "Member Sizing" begin
-        include(joinpath(test_root, "sizing", "members", "test_beam_sizing_report.jl"))
-        include(joinpath(test_root, "sizing", "members", "test_column_sizing_report.jl"))
+        include(joinpath(test_root, "report_generators", "test_beam_sizing_report.jl"))
+        include(joinpath(test_root, "report_generators", "test_column_sizing_report.jl"))
         include(joinpath(test_root, "sizing", "members", "test_aisc_column_examples.jl"))
     end
 end

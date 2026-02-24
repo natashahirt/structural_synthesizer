@@ -90,6 +90,120 @@ function find_supporting_columns(struc, slab_cell_indices::Set{Int})
 end
 
 # =============================================================================
+# Column Moment Distribution (ACI 318-11 §8.10.4)
+# =============================================================================
+
+"""
+    _col_Ec_ksi(col, Ec_default_ksi) -> Float64
+
+Return Ec in ksi for a column. Uses the column's own `concrete` field when
+available (for mixed-strength buildings); otherwise falls back to the default.
+"""
+function _col_Ec_ksi(col, Ec_default_ksi::Float64)::Float64
+    hasproperty(col, :concrete) || return Ec_default_ksi
+    conc = col.concrete
+    isnothing(conc) && return Ec_default_ksi
+    wc = ustrip(pcf, conc.ρ)
+    return ustrip(ksi, Ec(conc.fc′, wc))
+end
+
+"""
+    _col_flexural_stiffness(col, Ec_default_ksi) -> Float64
+
+Flexural stiffness K = 4·Ec·Ig / L for a single column (kip·in units).
+Handles rectangular (I = b·h³/12) and circular (I = π·D⁴/64) shapes.
+Uses per-column concrete when available; otherwise `Ec_default_ksi`.
+"""
+function _col_flexural_stiffness(col, Ec_default_ksi::Float64)::Float64
+    c1 = ustrip(u"inch", col.c1)
+    c2 = ustrip(u"inch", col.c2)
+    L  = ustrip(u"inch", col.base.L)
+    L > 0 || return 0.0
+
+    Ec_ksi = _col_Ec_ksi(col, Ec_default_ksi)
+
+    shape = col_shape(col)
+    Ig = if shape === :circular
+        D = max(c1, c2)           # c1 = c2 = D for circular
+        π * D^4 / 64
+    else  # :rectangular
+        c1 * c2^3 / 12
+    end
+
+    return 4 * Ec_ksi * Ig / L
+end
+
+"""
+    column_moment_distribution_factors(struc, columns, column_opts) -> Vector{Float64}
+
+Compute the fraction of joint unbalanced moment resisted by each supporting
+column (below the slab), per ACI 318-11 §8.10.4.
+
+The unbalanced moment at a slab–column joint is distributed to the columns
+above and below in proportion to their flexural stiffnesses:
+
+    K = 4·E·I / L    (far-end fixed, standard gravity assumption)
+
+Returns a vector of factors ∈ (0, 1] — one per supporting column.
+Factor = 1.0 when no column exists above (roof level or single-story).
+Factor ≈ 0.5 for equal columns above and below (typical interior floor).
+
+Handles unequal columns (different dimensions, lengths, or shapes) and
+per-column concrete grades (via `col.concrete`). When a column has no
+per-column grade, falls back to `column_opts.grade`.
+
+# Arguments
+- `struc`: BuildingStructure with all columns
+- `columns`: Supporting columns for this slab (below the slab)
+- `column_opts`: ConcreteColumnOptions (provides default concrete grade for Ec)
+"""
+function column_moment_distribution_factors(struc, columns, column_opts)
+    n = length(columns)
+    factors = ones(Float64, n)
+
+    # Vertex coordinates for (x,y) matching across stories
+    vc = struc.skeleton.geometry.vertex_coords
+
+    # Build (x, y, story) → column lookup (rounded to avoid FP issues)
+    col_lookup = Dict{Tuple{Float64, Float64, Int}, Int}()
+    for (i, col) in enumerate(struc.columns)
+        xy_key = (round(vc[col.vertex_idx, 1]; digits=6),
+                  round(vc[col.vertex_idx, 2]; digits=6),
+                  col.story)
+        col_lookup[xy_key] = i
+    end
+
+    # Default column Ec from column_opts (used when col.concrete is nothing)
+    fc_default = column_opts.grade.fc′
+    wc_default = ustrip(pcf, column_opts.grade.ρ)
+    Ec_default = ustrip(ksi, Ec(fc_default, wc_default))  # ksi
+
+    for (i, col_below) in enumerate(columns)
+        # Find column above at same (x,y), next story
+        xy_above = (round(vc[col_below.vertex_idx, 1]; digits=6),
+                    round(vc[col_below.vertex_idx, 2]; digits=6),
+                    col_below.story + 1)
+        above_idx = get(col_lookup, xy_above, nothing)
+        isnothing(above_idx) && continue  # no column above → factor stays 1.0
+
+        col_above = struc.columns[above_idx]
+
+        # Guard: skip if either column lacks cross-section dimensions
+        (isnothing(col_below.c1) || isnothing(col_below.c2)) && continue
+        (isnothing(col_above.c1) || isnothing(col_above.c2)) && continue
+
+        # Stiffness K = 4·Ec·I / L — each column uses its own Ec if available
+        K_below = _col_flexural_stiffness(col_below, Ec_default)
+        K_above = _col_flexural_stiffness(col_above, Ec_default)
+
+        K_total = K_below + K_above
+        K_total > 0 && (factors[i] = K_below / K_total)
+    end
+
+    return factors
+end
+
+# =============================================================================
 # Frame Line Construction
 # =============================================================================
 

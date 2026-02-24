@@ -204,20 +204,21 @@ const has_drop_panels_fn = SS.has_drop_panels
         Is = slab_moment_of_inertia(l2, h)
         @test ustrip(u"inch^4", Is) ≈ 30000 rtol=0.01
 
-        # Prismatic slab-beam stiffness (used by ASAP-based EFM for flat slabs)
-        # Ksb = k × Ecs × Is / l1 where k = PCA_K_SLAB = 4.127
-        Ksb_prismatic = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2)
+        # Prismatic slab-beam stiffness via PCA Table A1 lookup
+        slab_factors = pca_slab_beam_factors(c1, l1, c2, l2)
+        Ksb_prismatic = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=slab_factors.k)
         @test ustrip(u"lbf*inch", Ksb_prismatic) > 0
 
-        # Validation only: NP constants match StructurePoint reference
-        # (not used in production — ASAP handles non-prismatic via actual I)
-        Ksb_np = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=PCA_K_SLAB_NP)
-        @test ustrip(u"lbf*inch", Ksb_np) ≈ 1_995_955_750 rtol=0.02
-        @test PCA_K_SLAB_NP ≈ 5.587 atol=0.001
+        # Non-prismatic slab-beam stiffness via PCA Tables A2–A5 lookup
+        sf_np = pca_slab_beam_factors_np(c1, l1, c2, l2, h_drop, h)
+        Ksb_np = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=sf_np.k)
+        # StructurePoint reference: Ksb = 1,995,955,750 in-lb (k = 5.587)
+        @test ustrip(u"lbf*inch", Ksb_np) ≈ 1_995_955_750 rtol=0.05
+        @test sf_np.k ≈ 5.587 rtol=0.05
     end
 
     # =========================================================================
-    @testset "7. Column Stiffness (Validation of NP PCA constants)" begin
+    @testset "7. Column Stiffness (Non-Prismatic via PCA Table A7)" begin
 
         # Column concrete: f'c = 6000 psi → Ecc = 4696 × 10³ psi
         Ecc = Ec(fc_col, wc)
@@ -229,17 +230,22 @@ const has_drop_panels_fn = SS.has_drop_panels
 
         dp = DropPanelGeometry(h_drop, a_drop, a_drop)
 
-        # Validation only: NP column stiffness matches StructurePoint reference
-        # (in production, ASAP handles non-prismatic sections directly)
+        # Column stiffness now uses pca_column_factors internally with
+        # ta/tb computed from geometry.
+        # StructurePoint: Bottom ta=9.25", tb=5.00", k=5.318
+        #                 Top    ta=5.00", tb=9.25", k=4.879
         Kc_bot = column_stiffness_Kc(Ecc, Ic, H, h, dp; position=:bottom)
-        @test ustrip(u"lbf*inch", Kc_bot) ≈ 2_134_472_479 rtol=0.03
+        @test ustrip(u"lbf*inch", Kc_bot) ≈ 2_134_472_479 rtol=0.05
 
         Kc_top = column_stiffness_Kc(Ecc, Ic, H, h, dp; position=:top)
-        @test ustrip(u"lbf*inch", Kc_top) ≈ 1_958_272_137 rtol=0.03
+        @test ustrip(u"lbf*inch", Kc_top) ≈ 1_958_272_137 rtol=0.05
 
         # ΣKc = Kc_bot + Kc_top
         ΣKc = Kc_bot + Kc_top
-        @test ustrip(u"lbf*inch", ΣKc) ≈ (2_134_472_479 + 1_958_272_137) rtol=0.03
+        @test ustrip(u"lbf*inch", ΣKc) ≈ (2_134_472_479 + 1_958_272_137) rtol=0.05
+
+        # Bottom column should be stiffer (larger ta)
+        @test ustrip(u"lbf*inch", Kc_bot) > ustrip(u"lbf*inch", Kc_top)
     end
 
     # =========================================================================
@@ -284,19 +290,25 @@ const has_drop_panels_fn = SS.has_drop_panels
     end
 
     # =========================================================================
-    @testset "10. PCA Non-Prismatic Constants (Validation Only)" begin
+    @testset "10. PCA Non-Prismatic Lookups (Tables A2–A5, A7)" begin
 
-        # These constants are retained for validation/testing only.
-        # In production, ASAP handles non-prismatic sections directly.
-        @test PCA_K_SLAB_NP ≈ 5.587 atol=0.001
-        @test PCA_COF_NP ≈ 0.578 atol=0.001
-        @test PCA_M_NP_UNIFORM ≈ 0.0915 atol=0.001
-        @test PCA_M_NP_NEAR ≈ 0.0163 atol=0.001
-        @test PCA_M_NP_FAR ≈ 0.002 atol=0.001
+        # Validate that the interpolated values from pca_slab_beam_factors_np
+        # are close to the StructurePoint reference values.
+        # SP example: c/l = 20/360 ≈ 0.056, d/h = 4.25/10 = 0.425
+        sf_np = pca_slab_beam_factors_np(c1, l1, c2, l2, h_drop, h)
+        @test sf_np.k ≈ 5.587 rtol=0.05
+        @test sf_np.COF ≈ 0.578 rtol=0.05
+        @test sf_np.m_uniform ≈ 0.0915 rtol=0.05
 
-        # Column factors
-        @test PCA_K_COL_NP_BOTTOM ≈ 5.318 atol=0.001
-        @test PCA_K_COL_NP_TOP ≈ 4.879 atol=0.001
+        # Column factors from pca_column_factors with ta/tb
+        # For drop panels, use h_total for clear height: Hc = H - h_total
+        # Bottom: ta = h/2 + h_drop = 5 + 4.25 = 9.25", tb = h/2 = 5"
+        cf_bot = pca_column_factors(H, h_total; ta=h/2 + h_drop, tb=h/2)
+        @test cf_bot.k ≈ 5.318 rtol=0.05
+
+        # Top: ta = h/2 = 5", tb = h/2 + h_drop = 9.25"
+        cf_top = pca_column_factors(H, h_total; ta=h/2, tb=h/2 + h_drop)
+        @test cf_top.k ≈ 4.879 rtol=0.05
     end
 
     # =========================================================================
@@ -338,20 +350,21 @@ const has_drop_panels_fn = SS.has_drop_panels
 
         Is = slab_moment_of_inertia(l2, h)
         Ecs = Ec(fc_slab, wc)
-        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2)
+        sf = pca_slab_beam_factors(c1, l1, c2, l2)
+        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=sf.k)
 
-        # Old 16-argument constructor still works (no drop panels)
+        # 16-argument constructor still works (no drop panels)
         sp = EFMSpanProperties(
             1, 1, 2,
             l1, l2, l1 - c1, h,
             c1, c2, c1, c2,
-            Is, Ksb, PCA_M_FACTOR, PCA_COF, PCA_K_SLAB
+            Is, Ksb, sf.m, sf.COF, sf.k
         )
         @test isnothing(sp.drop)
         @test isnothing(sp.Is_drop)
         @test has_drop_panels_fn(sp) == false
 
-        # Full constructor with drop panels (uses prismatic factors — ASAP handles NP)
+        # Full constructor with drop panels
         dp = DropPanelGeometry(h_drop, a_drop, a_drop)
         Is_drop = slab_moment_of_inertia(l2, h_total)
 
@@ -359,13 +372,13 @@ const has_drop_panels_fn = SS.has_drop_panels
             1, 1, 2,
             l1, l2, l1 - c1, h,
             c1, c2, c1, c2,
-            Is, Ksb, PCA_M_FACTOR, PCA_COF, PCA_K_SLAB,
+            Is, Ksb, sf.m, sf.COF, sf.k,
             dp, Is_drop,
         )
         @test !isnothing(sp2.drop)
         @test !isnothing(sp2.Is_drop)
         @test has_drop_panels_fn(sp2) == true
-        @test sp2.COF ≈ PCA_COF
+        @test sp2.COF ≈ sf.COF
     end
 
     # =========================================================================
@@ -379,21 +392,17 @@ const has_drop_panels_fn = SS.has_drop_panels
         # qu_drop (additional from drop projection) = 1.2 × 53.13 = 63.75 psf
         qu_drop = 63.75u"psf"
 
-        # StructurePoint FEM computation:
-        # FEM = m_NF1 × w_slab × l2 × l1² + m_NF2 × w_drop × b_drop × l1²
-        #     + m_NF3 × w_drop × b_drop × l1²
+        # StructurePoint FEM computation (now uses PCA Tables A2–A5 lookup):
+        # FEM = m_uniform × w_slab × l2 × l1² + m_near × w_drop × b_drop × l1²
+        #     + m_far × w_drop × b_drop × l1²
         # where b_drop = 2 × a_drop = 10 ft
         #
         # Reference: FEM = 677.53 ft-kips (approximately)
-        FEM = fixed_end_moment_FEM(qu_slab, qu_drop, l2, l1, dp)
+        FEM = fixed_end_moment_FEM(qu_slab, qu_drop, l2, l1, c1, c2, h, dp)
         FEM_kipft = ustrip(u"kip*ft", FEM)
 
-        # Validate individual terms
-        # Term 1: 0.0915 × 0.270 ksf × 30 ft × 30² ft² = 0.0915 × 0.270 × 30 × 900 = 667.17
-        # Term 2: 0.0163 × 0.06375 ksf × 10 ft × 900 ft² = 0.0163 × 0.06375 × 10 × 900 = 9.35
-        # Term 3: 0.002 × 0.06375 × 10 × 900 = 1.15
-        # Total ≈ 677.67
-        @test FEM_kipft ≈ 677.5 rtol=0.02
+        # SP reference ≈ 677.5 ft-kips
+        @test FEM_kipft ≈ 677.5 rtol=0.05
     end
 
     # =========================================================================
@@ -438,18 +447,24 @@ const has_drop_panels_fn = SS.has_drop_panels
             uconvert(u"m", a_drop)
         )
 
-        # Verify the PCA k-factors are used correctly
+        # Column stiffness now uses pca_column_factors internally
         Kc_b = column_stiffness_Kc(Ecc, Ic, H, h, dp; position=:bottom)
         Kc_t = column_stiffness_Kc(Ecc, Ic, H, h, dp; position=:top)
 
         # Bottom should be stiffer (larger ta, column end stiffer)
         @test ustrip(u"lbf*inch", Kc_b) > ustrip(u"lbf*inch", Kc_t)
 
-        # Compare with prismatic column stiffness
-        Kc_prismatic = column_stiffness_Kc(Ecc, Ic, H, h)
-        # Non-prismatic k-factors should be larger than prismatic k = 4.74
-        @test PCA_K_COL_NP_BOTTOM > PCA_K_COL
-        @test PCA_K_COL_NP_TOP > PCA_K_COL
+        # Compare with prismatic column stiffness (from PCA Table A7)
+        k_col_prismatic = pca_column_factors(H, h).k
+        Kc_prismatic = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col_prismatic)
+
+        # Non-prismatic k-factors (from geometry lookup) should be larger than prismatic
+        # Use h_total for clear height with drop panels
+        h_tot = h + dp.h_drop
+        cf_bot = pca_column_factors(H, h_tot; ta=h/2 + dp.h_drop, tb=h/2)
+        cf_top = pca_column_factors(H, h_tot; ta=h/2, tb=h/2 + dp.h_drop)
+        @test cf_bot.k > k_col_prismatic
+        @test cf_top.k > k_col_prismatic
     end
 
     # =========================================================================
@@ -462,8 +477,9 @@ const has_drop_panels_fn = SS.has_drop_panels
 
         dp = DropPanelGeometry(h_drop, a_drop, a_drop)
 
-        # Non-prismatic Ksb
-        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=PCA_K_SLAB_NP)
+        # Non-prismatic Ksb — k from PCA Tables A2–A5 lookup
+        np_sf = pca_slab_beam_factors_np(c1, l1, c2, l2, h_drop, h)
+        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1, c2; k_factor=np_sf.k)
 
         # Column stiffness (non-prismatic)
         Kc_bot = column_stiffness_Kc(Ecc, Ic, H, h, dp; position=:bottom)

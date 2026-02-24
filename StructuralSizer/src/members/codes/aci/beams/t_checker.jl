@@ -39,12 +39,13 @@ function _compute_φMn(section::RCTBeamSection, fc_psi::Float64, fy_psi::Float64
     # Trial: rectangular with flange width
     a_trial = As_in * fy_psi / (0.85 * fc_psi * bf_in)
 
+    εcu = 0.003  # ACI 318-11 §10.2.3
     if a_trial ≤ hf_in
         # Case 1: stress block in flange
         a_in = a_trial
         β1 = _beta1_from_fc_psi(fc_psi)
         c_in = a_in / β1
-        εt = c_in > 0 ? 0.003 * (d_in - c_in) / c_in : 0.0
+        εt = c_in > 0 ? εcu * (d_in - c_in) / c_in : 0.0
         φ = flexure_phi(εt)
 
         Mn_lbin = As_in * fy_psi * (d_in - a_in / 2)
@@ -57,7 +58,7 @@ function _compute_φMn(section::RCTBeamSection, fc_psi::Float64, fy_psi::Float64
 
         β1 = _beta1_from_fc_psi(fc_psi)
         c_in = a_in / β1
-        εt = c_in > 0 ? 0.003 * (d_in - c_in) / c_in : 0.0
+        εt = c_in > 0 ? εcu * (d_in - c_in) / c_in : 0.0
         φ = flexure_phi(εt)
 
         Mn_lbin = Cf_lb * (d_in - hf_in / 2) + Cw_lb * (d_in - a_in / 2)
@@ -111,9 +112,10 @@ function _compute_εt(section::RCTBeamSection, fc_psi::Float64, fy_psi::Float64)
         a_in  = Cw_lb / (0.85 * fc_psi * bw_in)
     end
 
+    εcu = 0.003  # ACI 318-11 §10.2.3
     β1 = _beta1_from_fc_psi(fc_psi)
     c_in = a_in / β1
-    return c_in > 0 ? 0.003 * (d_in - c_in) / c_in : Inf
+    return c_in > 0 ? εcu * (d_in - c_in) / c_in : Inf
 end
 
 # ==============================================================================

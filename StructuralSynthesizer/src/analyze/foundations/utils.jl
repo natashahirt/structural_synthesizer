@@ -226,7 +226,7 @@ function _size_foundation!(
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ACI 318-14 dispatch
+# ACI 318-11 dispatch
 # ─────────────────────────────────────────────────────────────────────────────
 
 function _size_fnd_aci!(struc, f_idx, fnd, n_supp, demands, soil, opts)

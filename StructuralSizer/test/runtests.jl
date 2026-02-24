@@ -120,6 +120,12 @@ using Asap  # custom units (kip, ksi, ksf, psf, etc.)
         include("optimize/test_w_column_nlp.jl")
     end
 
+    # ─── PixelFrame ──────────────────────────────────────────────────────
+    @testset "PixelFrame" begin
+        include("pixelframe/test_pixelframe_capacities.jl")
+        include("pixelframe/test_pixelframe_checker.jl")
+    end
+
     # ─── VCmaster Reference ──────────────────────────────────────────────
     @testset "VCmaster Reference" begin
         include("test_vcmaster_reference.jl")

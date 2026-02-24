@@ -350,7 +350,7 @@ Base.@kwdef mutable struct DesignParameters
     # ─── Load Combinations (factored) ───
     load_combinations::Vector{LoadCombination} = [default_combo]
     
-    # ─── Pattern Loading (ACI 318-19 §6.4.3) ───
+    # ─── Pattern Loading (ACI 318-11 §13.7.6) ───
     pattern_loading::Symbol = :none
     
     # Diaphragm modeling for lateral analysis

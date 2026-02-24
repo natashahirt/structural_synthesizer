@@ -2,10 +2,11 @@
 external/
 
 # Ignore reference documents (e.g., PDFs) anywhere in the repo
-**/reference/
+# **/reference/
 
 # Ignore plain text files
 *.txt
+*.pdf
 
 # Ignore crash dump files
 *.stackdump

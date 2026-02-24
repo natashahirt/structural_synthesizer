@@ -100,15 +100,26 @@ function size_columns(
     # Create checker
     checker = AISCChecker(; max_depth = opts.max_depth)
     
-    # Optimize
-    return optimize_discrete(
-        checker, demands, steel_geoms, cat, opts.material;
-        objective = opts.objective,
-        n_max_sections = opts.n_max_sections,
-        optimizer = opts.optimizer,
-        mip_gap = mip_gap,
-        output_flag = output_flag,
-    )
+    # Optimize — multi-material if materials vector is provided
+    if !isnothing(opts.materials)
+        return optimize_discrete(
+            checker, demands, steel_geoms, cat, opts.materials;
+            objective = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer = opts.optimizer,
+            mip_gap = mip_gap,
+            output_flag = output_flag,
+        )
+    else
+        return optimize_discrete(
+            checker, demands, steel_geoms, cat, opts.material;
+            objective = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer = opts.optimizer,
+            mip_gap = mip_gap,
+            output_flag = output_flag,
+        )
+    end
 end
 
 # ==============================================================================
@@ -125,6 +136,12 @@ function size_columns(
     output_flag::Integer = 0,
     cache::Union{Nothing, AbstractCapacityCache} = nothing,
 )
+    # ─── NLP path ───
+    if opts.sizing_strategy == :nlp
+        return _size_columns_nlp(Pu, Mux, geometries, opts; Muy=Muy)
+    end
+
+    # ─── MIP catalog path ───
     n = length(Pu)
     n == length(Mux) || throw(ArgumentError("Pu and Mux must have same length"))
     n == length(geometries) || throw(ArgumentError("demands and geometries must have same length"))
@@ -154,15 +171,81 @@ function size_columns(
         max_depth = opts.max_depth,
     )
     
-    # Optimize (reuse external cache if provided)
-    return optimize_discrete(
-        checker, demands, conc_geoms, cat, opts.grade;
-        objective = opts.objective,
-        n_max_sections = opts.n_max_sections,
-        optimizer = opts.optimizer,
-        mip_gap = mip_gap,
-        output_flag = output_flag,
-        cache = cache,
+    # Optimize — multi-material if grades vector is provided
+    if !isnothing(opts.grades)
+        return optimize_discrete(
+            checker, demands, conc_geoms, cat, opts.grades;
+            objective = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer = opts.optimizer,
+            mip_gap = mip_gap,
+            output_flag = output_flag,
+        )
+    else
+        return optimize_discrete(
+            checker, demands, conc_geoms, cat, opts.grade;
+            objective = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer = opts.optimizer,
+            mip_gap = mip_gap,
+            output_flag = output_flag,
+            cache = cache,
+        )
+    end
+end
+
+"""
+    _size_columns_nlp(Pu, Mux, geometries, opts; Muy) -> NamedTuple
+
+NLP column sizing adapter.  Constructs `NLPColumnOptions` from the shared
+`ConcreteColumnOptions` fields, calls `size_rc_columns_nlp`, and wraps
+the results into the same `(; section_indices, sections, status, objective_value)`
+NamedTuple that the MIP catalog path returns.
+
+This allows the slab-column iteration loop in `size_flat_plate!` to use
+NLP column sizing without any changes to the pipeline code.
+"""
+function _size_columns_nlp(
+    Pu::Vector, Mux::Vector, geometries::Vector,
+    opts::ConcreteColumnOptions;
+    Muy::Vector = zeros_like(Mux),
+)
+    max_dim = isfinite(opts.max_depth) ? opts.max_depth : 48.0u"inch"
+
+    nlp_opts = NLPColumnOptions(
+        grade               = opts.grade,
+        rebar_grade         = opts.rebar_grade,
+        cover               = opts.cover,
+        tie_type            = :tied,
+        min_dim             = 8.0u"inch",
+        max_dim             = max_dim,
+        dim_increment       = opts.nlp_dim_increment,
+        aspect_limit        = opts.nlp_aspect_limit,
+        prefer_square       = opts.nlp_prefer_square,
+        include_slenderness = opts.include_slenderness,
+        βdns                = opts.βdns,
+        bar_size            = 8,
+        ρ_max               = opts.nlp_ρ_max,
+        solver              = opts.nlp_solver,
+        objective           = opts.objective,
+        maxiter             = opts.nlp_maxiter,
+        tol                 = opts.nlp_tol,
+        n_multistart        = opts.nlp_n_multistart,
+    )
+
+    conc_geoms = [to_concrete_geometry(g) for g in geometries]
+    nlp_results = size_rc_columns_nlp(Pu, Mux, conc_geoms, nlp_opts; Muy=Muy)
+
+    # Wrap into MIP-compatible result shape so the slab pipeline can read
+    # column_result.sections[i] without knowing which strategy was used.
+    sections = [r.section for r in nlp_results]
+    obj_val  = sum(r.area for r in nlp_results)
+
+    return (;
+        section_indices = collect(1:length(sections)),
+        sections        = sections,
+        status          = :nlp_complete,
+        objective_value = obj_val,
     )
 end
 
@@ -326,15 +409,26 @@ function size_beams(
         max_depth = opts.max_depth,
     )
 
-    # Optimize
-    return optimize_discrete(
-        checker, demands, conc_geoms, cat, opts.grade;
-        objective      = opts.objective,
-        n_max_sections = opts.n_max_sections,
-        optimizer      = opts.optimizer,
-        mip_gap        = mip_gap,
-        output_flag    = output_flag,
-    )
+    # Optimize — multi-material if grades vector is provided
+    if !isnothing(opts.grades)
+        return optimize_discrete(
+            checker, demands, conc_geoms, cat, opts.grades;
+            objective      = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer      = opts.optimizer,
+            mip_gap        = mip_gap,
+            output_flag    = output_flag,
+        )
+    else
+        return optimize_discrete(
+            checker, demands, conc_geoms, cat, opts.grade;
+            objective      = opts.objective,
+            n_max_sections = opts.n_max_sections,
+            optimizer      = opts.optimizer,
+            mip_gap        = mip_gap,
+            output_flag    = output_flag,
+        )
+    end
 end
 
 # ==============================================================================
@@ -394,6 +488,211 @@ function size_beams(
 end
 
 # ==============================================================================
+# PixelFrame Beam Sizing (MIP Discrete Catalog)
+# ==============================================================================
+
+"""
+    size_beams(Mu, Vu, geometries, opts::PixelFrameBeamOptions; ...)
+
+Size PixelFrame beams using discrete catalog optimization.
+
+Generates a catalog of `PixelFrameSection`s (or uses `opts.custom_catalog`),
+then selects the minimum-objective section satisfying ACI 318-19 flexure/axial
+and fib MC2010 FRC shear requirements via MIP.
+
+Validates that each beam span is an exact multiple of `opts.pixel_length`.
+Raises `ArgumentError` if any span is not divisible.
+
+# Arguments
+- `Mu`: Vector of factored moments — any moment unit (N·m, kN·m, kip·ft, etc.)
+- `Vu`: Vector of factored shears — any force unit (N, kN, kip, etc.)
+- `geometries`: Member geometries (span via `ConcreteMemberGeometry`)
+- `opts`: `PixelFrameBeamOptions`
+
+# Keyword Arguments
+- `Pu`: Vector of factored axial compressions (default: zeros)
+- `mip_gap`: MIP optimality gap (default 1e-4)
+- `output_flag`: Solver verbosity (default 0)
+
+# Returns
+Named tuple with:
+- `sections`: Optimal `PixelFrameSection` per member (governing section)
+- `section_indices`: Indices into catalog
+- `n_pixels`: Vector{Int} — number of pixels per member
+- `status`: Solver status
+- `objective_value`: Final objective value
+
+# Example
+```julia
+Mu = [5.0, 10.0] .* u"kN*m"
+Vu = [15.0, 25.0] .* u"kN"
+geoms = [ConcreteMemberGeometry(6.0u"m") for _ in 1:2]
+result = size_beams(Mu, Vu, geoms, PixelFrameBeamOptions())
+```
+"""
+function size_beams(
+    Mu::Vector,
+    Vu::Vector,
+    geometries::Vector,
+    opts::PixelFrameBeamOptions;
+    Pu::Vector = zeros_like(Vu),
+    mip_gap::Real = 1e-4,
+    output_flag::Integer = 0,
+)
+    n = length(Mu)
+    n == length(Vu)         || throw(ArgumentError("Mu and Vu must have same length"))
+    n == length(geometries) || throw(ArgumentError("demands and geometries must have same length"))
+
+    # Convert geometries
+    conc_geoms = [to_concrete_geometry(g) for g in geometries]
+
+    # Strip pixel length to mm at the boundary
+    px_mm = _pf_pixel_mm(opts)
+
+    # Validate pixel divisibility for each member span
+    n_pixels_vec = Vector{Int}(undef, n)
+    for i in 1:n
+        L_mm = ustrip(u"mm", conc_geoms[i].L)
+        n_pixels_vec[i] = validate_pixel_divisibility(L_mm, px_mm; label="Beam $i")
+    end
+
+    # Build catalog — strip Unitful at the boundary via _pf_catalog_kwargs
+    cat = if !isnothing(opts.custom_catalog)
+        opts.custom_catalog
+    else
+        generate_pixelframe_catalog(; _pf_catalog_kwargs(opts)...)
+    end
+
+    # Convert forces / moments to SI (N, N·m) for PixelFrame checker
+    Pu_N   = [to_newtons(p) for p in Pu]
+    Mu_Nm  = [to_newton_meters(m) for m in Mu]
+    Vu_N   = [to_newtons(v) for v in Vu]
+
+    # Build demands (SI units — PixelFrame checker uses N / N·m)
+    demands = [MemberDemand(i; Pu_c=Pu_N[i], Mux=Mu_Nm[i], Vu_strong=Vu_N[i]) for i in 1:n]
+
+    # Create checker — strip Unitful at the boundary via _pf_checker_kwargs
+    checker = PixelFrameChecker(; _pf_checker_kwargs(opts)...)
+
+    # Material placeholder — PixelFrame material is embedded in sections
+    # Use the first section's material for the interface requirement
+    mat = isempty(cat) ? FiberReinforcedConcrete(NWC_4000, 20.0, 1.0, 1.0) : cat[1].material
+
+    mip_result = optimize_discrete(
+        checker, demands, conc_geoms, cat, mat;
+        objective      = opts.objective,
+        n_max_sections = opts.n_max_sections,
+        optimizer      = opts.optimizer,
+        mip_gap        = mip_gap,
+        output_flag    = output_flag,
+    )
+
+    return (; mip_result..., n_pixels=n_pixels_vec)
+end
+
+# ==============================================================================
+# PixelFrame Column Sizing (MIP Discrete Catalog)
+# ==============================================================================
+
+"""
+    size_columns(Pu, Mux, geometries, opts::PixelFrameColumnOptions; Muy=...)
+
+Size PixelFrame columns using discrete catalog optimization.
+
+Generates a catalog of `PixelFrameSection`s (or uses `opts.custom_catalog`),
+then selects the minimum-objective section satisfying ACI 318-19 axial/flexural
+and fib MC2010 FRC shear requirements via MIP.
+
+Validates that each column height is an exact multiple of `opts.pixel_length`.
+Raises `ArgumentError` if any height is not divisible.
+
+# Arguments
+- `Pu`: Vector of factored axial loads — any force unit (N, kN, kip, etc.)
+- `Mux`: Vector of factored moments about x-axis — any moment unit
+- `geometries`: Member geometries (via `ConcreteMemberGeometry`)
+- `opts`: `PixelFrameColumnOptions`
+
+# Keyword Arguments
+- `Muy`: Vector of factored moments about y-axis (default: zeros)
+- `mip_gap`: MIP optimality gap (default 1e-4)
+- `output_flag`: Solver verbosity (default 0)
+
+# Returns
+Named tuple with:
+- `sections`: Optimal `PixelFrameSection` per member (governing section)
+- `section_indices`: Indices into catalog
+- `n_pixels`: Vector{Int} — number of pixels per member
+- `status`: Solver status
+- `objective_value`: Final objective value
+
+# Example
+```julia
+Pu  = [50.0, 100.0] .* u"kN"
+Mux = [5.0, 10.0] .* u"kN*m"
+geoms = [ConcreteMemberGeometry(4.0u"m") for _ in 1:2]
+result = size_columns(Pu, Mux, geoms, PixelFrameColumnOptions())
+```
+"""
+function size_columns(
+    Pu::Vector,
+    Mux::Vector,
+    geometries::Vector,
+    opts::PixelFrameColumnOptions;
+    Muy::Vector = zeros_like(Mux),
+    mip_gap::Real = 1e-4,
+    output_flag::Integer = 0,
+)
+    n = length(Pu)
+    n == length(Mux)        || throw(ArgumentError("Pu and Mux must have same length"))
+    n == length(geometries) || throw(ArgumentError("demands and geometries must have same length"))
+
+    # Convert geometries
+    conc_geoms = [to_concrete_geometry(g) for g in geometries]
+
+    # Strip pixel length to mm at the boundary
+    px_mm = _pf_pixel_mm(opts)
+
+    # Validate pixel divisibility for each column height
+    n_pixels_vec = Vector{Int}(undef, n)
+    for i in 1:n
+        L_mm = ustrip(u"mm", conc_geoms[i].L)
+        n_pixels_vec[i] = validate_pixel_divisibility(L_mm, px_mm; label="Column $i")
+    end
+
+    # Build catalog — strip Unitful at the boundary via _pf_catalog_kwargs
+    cat = if !isnothing(opts.custom_catalog)
+        opts.custom_catalog
+    else
+        generate_pixelframe_catalog(; _pf_catalog_kwargs(opts)...)
+    end
+
+    # Convert forces / moments to SI (N, N·m) for PixelFrame checker
+    Pu_N   = [to_newtons(p) for p in Pu]
+    Mux_Nm = [to_newton_meters(m) for m in Mux]
+    Vu_N   = zeros(n)  # Columns: shear from moment demand (conservative: 0)
+
+    # Build demands (SI units — PixelFrame checker uses N / N·m)
+    demands = [MemberDemand(i; Pu_c=Pu_N[i], Mux=Mux_Nm[i], Vu_strong=Vu_N[i]) for i in 1:n]
+
+    # Create checker — strip Unitful at the boundary via _pf_checker_kwargs
+    checker = PixelFrameChecker(; _pf_checker_kwargs(opts)...)
+
+    # Material placeholder — PixelFrame material is embedded in sections
+    mat = isempty(cat) ? FiberReinforcedConcrete(NWC_4000, 20.0, 1.0, 1.0) : cat[1].material
+
+    mip_result = optimize_discrete(
+        checker, demands, conc_geoms, cat, mat;
+        objective      = opts.objective,
+        n_max_sections = opts.n_max_sections,
+        optimizer      = opts.optimizer,
+        mip_gap        = mip_gap,
+        output_flag    = output_flag,
+    )
+
+    return (; mip_result..., n_pixels=n_pixels_vec)
+end
+
+# ==============================================================================
 # Unified Entry Point: size_members
 # ==============================================================================
 
@@ -403,10 +702,12 @@ end
 Unified member sizing dispatcher. Routes to `size_columns` or `size_beams`
 based on the options type:
 
-| Options type             | Interpretation       | Delegates to     |
-|:------------------------ |:-------------------- |:---------------- |
-| `ConcreteColumnOptions`  | arg1=Pu, arg2=Mux    | `size_columns`   |
-| `ConcreteBeamOptions`    | arg1=Mu, arg2=Vu     | `size_beams`     |
+| Options type               | Interpretation       | Delegates to     |
+|:-------------------------- |:-------------------- |:---------------- |
+| `ConcreteColumnOptions`    | arg1=Pu, arg2=Mux    | `size_columns`   |
+| `ConcreteBeamOptions`      | arg1=Mu, arg2=Vu     | `size_beams`     |
+| `PixelFrameColumnOptions`  | arg1=Pu, arg2=Mux    | `size_columns`   |
+| `PixelFrameBeamOptions`    | arg1=Mu, arg2=Vu     | `size_beams`     |
 
 For `SteelMemberOptions` (where `SteelColumnOptions === SteelBeamOptions`),
 call `size_columns` or `size_beams` directly since the type system cannot
@@ -419,6 +720,12 @@ result = size_members(Pu, Mux, geoms, ConcreteColumnOptions())
 
 # Concrete beams
 result = size_members(Mu, Vu, geoms, ConcreteBeamOptions())
+
+# PixelFrame beams
+result = size_members(Mu, Vu, geoms, PixelFrameBeamOptions())
+
+# PixelFrame columns
+result = size_members(Pu, Mux, geoms, PixelFrameColumnOptions())
 
 # Steel — use size_beams / size_columns directly
 result = size_beams(Mu, Vu, geoms, SteelBeamOptions())
@@ -439,6 +746,20 @@ function size_members(
     opts::ConcreteBeamOptions; kwargs...
 )
     size_beams(Mu, Vu, geometries, opts; kwargs...)
+end
+
+function size_members(
+    Mu::Vector, Vu::Vector, geometries::Vector,
+    opts::PixelFrameBeamOptions; kwargs...
+)
+    size_beams(Mu, Vu, geometries, opts; kwargs...)
+end
+
+function size_members(
+    Pu::Vector, Mux::Vector, geometries::Vector,
+    opts::PixelFrameColumnOptions; kwargs...
+)
+    size_columns(Pu, Mux, geometries, opts; kwargs...)
 end
 
 # ==============================================================================

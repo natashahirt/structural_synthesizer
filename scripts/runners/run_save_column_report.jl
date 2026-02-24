@@ -1,4 +1,5 @@
 # Save column sizing report to text file (strips ANSI + solver noise)
+# Julia strings are UTF-8 by default; output file is UTF-8.
 
 using Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
@@ -15,7 +16,7 @@ end
 
 outfile = joinpath(REPORT_DIR, "column_sizing_report.txt")
 script  = joinpath(@__DIR__, "..", "..", "StructuralSynthesizer", "test",
-                   "sizing", "members", "test_column_sizing_report.jl")
+                   "report_generators", "test_column_sizing_report.jl")
 
 open(outfile, "w") do io
     redirect_stdout(io) do

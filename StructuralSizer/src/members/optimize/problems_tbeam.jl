@@ -255,12 +255,13 @@ function constraint_fns(p::RCTBeamNLPProblem, x::Vector{Float64})
     # Trial: assume stress block entirely in flange (rectangular with bf)
     a_trial = As * p.fy_psi / (0.85 * p.fc_psi * bf)
     β1 = _beta1_from_fc_psi(p.fc_psi)
+    εcu = 0.003  # ACI 318-11 §10.2.3
 
     if a_trial ≤ hf
         # Case 1: stress block in flange — rectangular with bf
         a = a_trial
         c = a / max(β1, 0.5)
-        εt = c > 0 ? 0.003 * (d - c) / max(c, 0.01) : 0.0
+        εt = c > 0 ? εcu * (d - c) / max(c, 0.01) : 0.0
         Mn_lbin = As * p.fy_psi * (d - a / 2)
     else
         # Case 2: stress block extends into web — T-beam decomposition
@@ -273,12 +274,12 @@ function constraint_fns(p::RCTBeamNLPProblem, x::Vector{Float64})
         if Cw_lb ≤ 0
             a = hf
             c = a / max(β1, 0.5)
-            εt = c > 0 ? 0.003 * (d - c) / max(c, 0.01) : 0.0
+            εt = c > 0 ? εcu * (d - c) / max(c, 0.01) : 0.0
             Mn_lbin = As * p.fy_psi * (d - a / 2)
         else
             aw = Cw_lb / (0.85 * p.fc_psi * bw)
             c = aw / max(β1, 0.5)
-            εt = c > 0 ? 0.003 * (d - c) / max(c, 0.01) : 0.0
+            εt = c > 0 ? εcu * (d - c) / max(c, 0.01) : 0.0
             Mn_lbin = Cf_lb * (d - hf / 2) + Cw_lb * (d - aw / 2)
         end
     end

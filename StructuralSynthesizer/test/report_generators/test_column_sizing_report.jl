@@ -1,11 +1,12 @@
 # ==============================================================================
 # Column Sizing Validation Report
 # ==============================================================================
-# This report validates column sizing across four section types:
+# This report validates column sizing across five section types:
 #   1. RC Rectangular  (ACI 318-19)   — MIP catalog + NLP continuous
 #   2. RC Circular     (ACI 318-19)   — MIP catalog + NLP continuous
 #   3. Steel W-Shape   (AISC 360-16)  — MIP catalog + NLP continuous
 #   4. Steel HSS Rect  (AISC 360-16)  — MIP catalog + NLP continuous
+#   5. PixelFrame      (ACI 318-19 + fib MC2010) — MIP catalog
 #
 # For each section the report:
 #   a. Sizes via discrete MIP (optimize_discrete → catalog selection)
@@ -19,6 +20,7 @@
 # Reference data:
 #   - StructurePoint spColumn examples for RC columns
 #   - AISC Design Examples for steel columns
+#   - Wongsittikan (2024) for PixelFrame
 # ==============================================================================
 
 using Test
@@ -29,6 +31,7 @@ using Unitful: @u_str
 using Asap
 
 using StructuralSizer
+import JuMP
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Report helpers (same style as EFM slab report)
@@ -144,7 +147,7 @@ end
 # ==============================================================================
 
 col_section_header("COLUMN SIZING VALIDATION REPORT")
-println("  Generated: $(Dates.format(now(), "yyyy-mm-dd HH:MM"))  |  RC + Steel column MIP vs NLP validation")
+println("  Generated: $(Dates.format(now(), "yyyy-mm-dd HH:MM"))  |  RC + Steel + PixelFrame column MIP vs NLP validation")
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║  1.  INPUT SUMMARY                                                        ║
@@ -152,8 +155,11 @@ println("  Generated: $(Dates.format(now(), "yyyy-mm-dd HH:MM"))  |  RC + Steel 
 col_sub_header("1.0  Input Summary")
 
 println("    Materials: f'c=4000psi (NWC_4000), fy=60ksi (Rebar_60), Fy=50ksi (A992_Steel)")
+println("              PixelFrame: fc′ ∈ {30,40,50,55}MPa, dosage ∈ {20,30,40}kg/m³ (FRC + external PT)")
 println("    Geometry: L=4.0m (13.12ft), K=1.0 (braced)")
+println("              PF: L_px ∈ {125,150,200,250,300}mm, t = 30mm (X4 layup)")
 println("    Demands: RC Rect 180k/74k·ft | RC Circ 250k/90k·ft | W 500kN/30kN·m | HSS 300kN/20kN·m")
+println("             PF Mod 50kN/5kN·m | PF Hvy 500kN/30kN·m")
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║  2.  RC RECTANGULAR COLUMN  (ACI 318-19)                                  ║
@@ -547,11 +553,510 @@ end
 _col_step_status["Steel HSS"] = hss_mip_chk.adequate ? "✓" : "✗"
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  6.  PARAMETRIC SENSITIVITY: Demand Scaling                               ║
+# ║  6.  PIXELFRAME COLUMN (ACI 318-19 + fib MC2010)                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+col_sub_header("6.0  PixelFrame Column — FRC + External PT (ACI 318-19 / fib MC2010)")
+col_note("PixelFrame: X4-shaped FRC section (4-arm biaxial) with external post-tensioning. MIP catalog only (no NLP).")
+col_note("Capacity: ACI 318-19 §22.4 (axial/flexure), fib MC2010 §7.7-5 (FRC shear).")
+col_note("Catalog sweeps geometry (L_px), material grade (fc′, dosage), and tendon config (A_s, f_pe).")
+col_note("Ranges aligned with original Pixelframe.jl: L_px 125–300mm, fc′ 30–55MPa, dosage 20–40 kg/m³.")
+
+# Shared catalog: sweeps both section sizes and material grades
+# The optimizer selects the lightest (min-carbon) feasible (geometry, material) pair.
+pf_col_catalog_opts = PixelFrameColumnOptions(
+    λ_values      = [:X4],                                                # columns use X4 (4-arm biaxial)
+    L_px_values   = [125.0, 150.0, 200.0, 250.0, 300.0] .* u"mm",       # pixel arm lengths (original: 125:25:400)
+    t_values      = [30.0u"mm"],                                          # wall thickness (original: fixed 30)
+    L_c_values    = [30.0u"mm"],                                          # connector (original: fixed 30)
+    fc_values     = [30.0, 40.0, 50.0, 55.0] .* u"MPa",                  # concrete grades (original: 30–55 MPa)
+    dosage_values = [20.0, 30.0, 40.0] .* u"kg/m^3",                     # fiber dosages (original: 20–40 kg/m³)
+    A_s_values    = [157.0, 226.0, 402.0, 628.0] .* u"mm^2",             # tendon areas (original: 10–20mm dia wires)
+    f_pe_values   = [186.0, 558.0, 930.0] .* u"MPa",                     # PT stress (original: 0.1–0.5 × 1860 MPa)
+    d_ps_values   = [0.0u"mm"],                                           # columns: no tendon eccentricity (original)
+    objective     = MinCarbon(),
+)
+
+# ── 6.1  Moderate load ──
+println("\n  6.1  PixelFrame Column — Moderate Load")
+
+pf_Pu_mod = 50.0u"kN"
+pf_Mu_mod = 5.0u"kN*m"
+pf_col_L  = 4.0  # m
+
+println("    Pu = 50.0 kN, Mu = 5.0 kN·m, L = 4.0 m")
+
+pf_col_mod = size_columns(
+    [pf_Pu_mod], [pf_Mu_mod],
+    [ConcreteMemberGeometry(pf_col_L)],
+    pf_col_catalog_opts,
+)
+
+pf_col_mod_sec  = pf_col_mod.sections[1]
+pf_col_mod_area = ustrip(u"mm^2", section_area(pf_col_mod_sec))
+
+println("    Section  : $(pf_col_mod_sec)")
+println("    Layup    : $(pf_col_mod_sec.λ), L_px=$(ustrip(u"mm", pf_col_mod_sec.L_px))mm, t=$(ustrip(u"mm", pf_col_mod_sec.t))mm")
+println("    Material : fc′=$(ustrip(u"MPa", pf_col_mod_sec.material.fc′))MPa, dosage=$(pf_col_mod_sec.material.fiber_dosage)kg/m³")
+println("    Area     : $(round(pf_col_mod_area, digits=1)) mm²")
+println("    Status   : $(pf_col_mod.status)")
+
+# Analytical capacity check
+pf_col_mod_ax = pf_axial_capacity(pf_col_mod_sec)
+pf_col_mod_fl = pf_flexural_capacity(pf_col_mod_sec)
+pf_col_mod_sh = frc_shear_capacity(pf_col_mod_sec)
+
+pf_col_mod_Pu_kN  = ustrip(u"kN", pf_col_mod_ax.Pu)
+pf_col_mod_Mu_kNm = ustrip(u"kN*m", pf_col_mod_fl.Mu)
+pf_col_mod_Vu_kN  = ustrip(u"kN", pf_col_mod_sh)
+
+println("    φPu      : $(round(pf_col_mod_Pu_kN, digits=2)) kN")
+println("    φMu      : $(round(pf_col_mod_Mu_kNm, digits=2)) kN·m")
+println("    φVu      : $(round(pf_col_mod_Vu_kN, digits=2)) kN")
+println("    Axial util: $(round(ustrip(u"kN", pf_Pu_mod) / abs(pf_col_mod_Pu_kN), digits=3))")
+println("    Flex util : $(round(ustrip(u"kN*m", pf_Mu_mod) / pf_col_mod_Mu_kNm, digits=3))")
+
+pf_col_mod_axial_ok = ustrip(u"kN", pf_Pu_mod) ≤ abs(pf_col_mod_Pu_kN)
+pf_col_mod_flex_ok  = ustrip(u"kN*m", pf_Mu_mod) ≤ pf_col_mod_Mu_kNm
+
+# ── 6.2  Heavy load ──
+println("\n  6.2  PixelFrame Column — Heavy Load")
+
+pf_Pu_hvy = 500.0u"kN"
+pf_Mu_hvy = 30.0u"kN*m"
+pf_col_L_hvy = 4.0  # m
+
+println("    Pu = 500.0 kN, Mu = 30.0 kN·m, L = 4.0 m")
+
+pf_col_hvy = size_columns(
+    [pf_Pu_hvy], [pf_Mu_hvy],
+    [ConcreteMemberGeometry(pf_col_L_hvy)],
+    pf_col_catalog_opts,
+)
+
+pf_col_hvy_sec  = pf_col_hvy.sections[1]
+pf_col_hvy_area = ustrip(u"mm^2", section_area(pf_col_hvy_sec))
+
+println("    Section  : $(pf_col_hvy_sec)")
+println("    Layup    : $(pf_col_hvy_sec.λ), L_px=$(ustrip(u"mm", pf_col_hvy_sec.L_px))mm, t=$(ustrip(u"mm", pf_col_hvy_sec.t))mm")
+println("    Material : fc′=$(ustrip(u"MPa", pf_col_hvy_sec.material.fc′))MPa, dosage=$(pf_col_hvy_sec.material.fiber_dosage)kg/m³")
+println("    Area     : $(round(pf_col_hvy_area, digits=1)) mm²")
+println("    Status   : $(pf_col_hvy.status)")
+
+pf_col_hvy_ax = pf_axial_capacity(pf_col_hvy_sec)
+pf_col_hvy_fl = pf_flexural_capacity(pf_col_hvy_sec)
+pf_col_hvy_sh = frc_shear_capacity(pf_col_hvy_sec)
+
+pf_col_hvy_Pu_kN  = ustrip(u"kN", pf_col_hvy_ax.Pu)
+pf_col_hvy_Mu_kNm = ustrip(u"kN*m", pf_col_hvy_fl.Mu)
+pf_col_hvy_Vu_kN  = ustrip(u"kN", pf_col_hvy_sh)
+
+println("    φPu      : $(round(pf_col_hvy_Pu_kN, digits=2)) kN")
+println("    φMu      : $(round(pf_col_hvy_Mu_kNm, digits=2)) kN·m")
+println("    φVu      : $(round(pf_col_hvy_Vu_kN, digits=2)) kN")
+println("    Axial util: $(round(ustrip(u"kN", pf_Pu_hvy) / abs(pf_col_hvy_Pu_kN), digits=3))")
+println("    Flex util : $(round(ustrip(u"kN*m", pf_Mu_hvy) / pf_col_hvy_Mu_kNm, digits=3))")
+
+pf_col_hvy_axial_ok = ustrip(u"kN", pf_Pu_hvy) ≤ abs(pf_col_hvy_Pu_kN)
+pf_col_hvy_flex_ok  = ustrip(u"kN*m", pf_Mu_hvy) ≤ pf_col_hvy_Mu_kNm
+
+# ── 6.3  Growth check — heavier load should select larger or stronger section ──
+println("\n  6.3  Section Growth Check")
+col_note("Heavier demands should select a larger section geometry and/or higher material grade.")
+
+pf_col_mod_Lpx = ustrip(u"mm", pf_col_mod_sec.L_px)
+pf_col_hvy_Lpx = ustrip(u"mm", pf_col_hvy_sec.L_px)
+pf_col_mod_t   = ustrip(u"mm", pf_col_mod_sec.t)
+pf_col_hvy_t   = ustrip(u"mm", pf_col_hvy_sec.t)
+pf_col_mod_fc  = ustrip(u"MPa", pf_col_mod_sec.material.fc′)
+pf_col_hvy_fc  = ustrip(u"MPa", pf_col_hvy_sec.material.fc′)
+pf_col_mod_dps = ustrip(u"mm", pf_col_mod_sec.d_ps)
+pf_col_hvy_dps = ustrip(u"mm", pf_col_hvy_sec.d_ps)
+
+@printf("    %-20s %10s %10s\n", "Parameter", "Moderate", "Heavy")
+@printf("    %-20s %10s %10s\n", "─"^20, "─"^10, "─"^10)
+@printf("    %-20s %10.0f %10.0f\n", "L_px (mm)", pf_col_mod_Lpx, pf_col_hvy_Lpx)
+@printf("    %-20s %10.0f %10.0f\n", "t (mm)", pf_col_mod_t, pf_col_hvy_t)
+@printf("    %-20s %10.1f %10.1f\n", "fc′ (MPa)", pf_col_mod_fc, pf_col_hvy_fc)
+@printf("    %-20s %10.0f %10.0f\n", "d_ps (mm)", pf_col_mod_dps, pf_col_hvy_dps)
+@printf("    %-20s %10.1f %10.1f\n", "Area (mm²)", pf_col_mod_area, pf_col_hvy_area)
+@printf("    %-20s %10.2f %10.2f\n", "φPu (kN)", pf_col_mod_Pu_kN, pf_col_hvy_Pu_kN)
+@printf("    %-20s %10.2f %10.2f\n", "φMu (kN·m)", pf_col_mod_Mu_kNm, pf_col_hvy_Mu_kNm)
+
+# The heavy section should have more axial capacity (larger geometry and/or stronger material)
+pf_col_growth_ok = abs(pf_col_hvy_Pu_kN) ≥ abs(pf_col_mod_Pu_kN)
+
+# ── 6.4  Batch sizing — different demands get different sections ──
+println("\n  6.4  PixelFrame Column — Batch Sizing (3 members, increasing demand)")
+col_note("Same catalog for all members; optimizer selects per-member section + material.")
+
+pf_col_batch_Pu  = [50.0, 300.0, 800.0] .* u"kN"
+pf_col_batch_Mu  = [5.0, 20.0, 50.0] .* u"kN*m"
+pf_col_batch_geoms = [ConcreteMemberGeometry(4.0), ConcreteMemberGeometry(4.0), ConcreteMemberGeometry(4.0)]
+
+pf_col_batch = size_columns(pf_col_batch_Pu, pf_col_batch_Mu, pf_col_batch_geoms, pf_col_catalog_opts)
+
+for i in 1:3
+    cs = pf_col_batch.sections[i]
+    ca = ustrip(u"mm^2", section_area(cs))
+    println("    Member $i : $(cs)  (A=$(round(ca, digits=0)) mm²)")
+end
+println("    Status   : $(pf_col_batch.status)")
+
+pf_col_batch_ok = pf_col_batch.status == JuMP.MOI.OPTIMAL || pf_col_batch.status == JuMP.MOI.TIME_LIMIT
+
+# ── 6.5  PixelFrame Design Workflow — Per-Pixel Material Assignment ──
+println("\n  6.5  PixelFrame Design Workflow — Per-Pixel Material Assignment")
+col_note("Demonstrates the full PixelFrame column sizing pipeline:")
+col_note("  1. Generate catalog → 2. MIP selects governing section → 3. Per-pixel material relaxation")
+col_note("  Geometry + tendon constant across all pixels; only concrete material (fc′, dosage) varies.")
+
+begin
+    # ── Step 1: Build catalog and checker from options ──
+    # Use a SINGLE small X4 geometry so the only way to increase capacity is
+    # via material grade (fc′, dosage).  This forces the MIP to pick a high-grade
+    # material for the base (high Pu + Mu), and per-pixel relaxation can then
+    # drop to lower grades near the top where moment demand vanishes.
+    pf_cwf_opts = PixelFrameColumnOptions(
+        λ_values      = [:X4],
+        L_px_values   = [125.0] .* u"mm",                # single small geometry
+        t_values      = [30.0u"mm"],
+        L_c_values    = [30.0u"mm"],
+        fc_values     = [30.0, 40.0, 55.0] .* u"MPa",   # wide fc′ range
+        dosage_values = [20.0, 30.0, 40.0] .* u"kg/m^3", # wide dosage range
+        A_s_values    = [402.0] .* u"mm^2",
+        f_pe_values   = [930.0] .* u"MPa",               # high PT
+        d_ps_values   = [0.0u"mm"],                       # columns: no eccentricity
+        pixel_length  = 500.0u"mm",
+        objective     = MinCarbon(),
+    )
+
+    col_cat = StructuralSizer.generate_pixelframe_catalog(;
+        StructuralSizer._pf_catalog_kwargs(pf_cwf_opts)...)
+    col_checker = StructuralSizer.PixelFrameChecker(;
+        StructuralSizer._pf_checker_kwargs(pf_cwf_opts)...)
+    col_px_mm = StructuralSizer._pf_pixel_mm(pf_cwf_opts)
+
+    println("    Catalog size : $(length(col_cat)) sections")
+    println("    Pixel length : $(col_px_mm) mm")
+
+    # ── Step 2: MIP selects governing section for a 4 m column ──
+    # fc′=30 → φPu≈349 kN, φMu≈14.3 kN·m;  fc′=40 → φPu≈488 kN, φMu≈14.85 kN·m
+    # (X4-125, 402mm², 930MPa, d_ps=0)
+    #
+    # Governing demand: Pu=400 kN (> fc′=30 capacity 349 kN) → MIP picks fc′≥40.
+    # Per-pixel: axial demand decreases from base (400 kN) to top (200 kN),
+    # simulating accumulated floor loads in a multi-story column.
+    # Top pixels (Pu≈200 kN < 349 kN) can relax to fc′=30.
+    cwf_Pu = 400.0u"kN"
+    cwf_Mu = 10.0u"kN*m"
+    cwf_L  = 4.0  # m  (4000 mm / 500 mm = 8 pixels)
+
+    cwf_result = size_columns([cwf_Pu], [cwf_Mu],
+        [ConcreteMemberGeometry(cwf_L)], pf_cwf_opts)
+    cwf_sec = cwf_result.sections[1]
+
+    println("\n    ── MIP Governing Section (worst-case material) ──")
+    println("    Section  : $(cwf_sec)")
+    println("    Layup    : $(cwf_sec.λ), L_px=$(ustrip(u"mm", cwf_sec.L_px))mm, t=$(ustrip(u"mm", cwf_sec.t))mm")
+    println("    Material : fc′=$(ustrip(u"MPa", cwf_sec.material.fc′))MPa, dosage=$(cwf_sec.material.fiber_dosage)kg/m³")
+    println("    A_s=$(ustrip(u"mm^2", cwf_sec.A_s))mm², f_pe=$(ustrip(u"MPa", cwf_sec.f_pe))MPa, d_ps=$(ustrip(u"mm", cwf_sec.d_ps))mm")
+
+    cwf_ax = pf_axial_capacity(cwf_sec)
+    cwf_fl = pf_flexural_capacity(cwf_sec)
+    cwf_sh = frc_shear_capacity(cwf_sec)
+    @printf("    φPu = %.1f kN,  φMu = %.2f kN·m,  φVu = %.1f kN\n",
+            ustrip(u"kN", cwf_ax.Pu), ustrip(u"kN*m", cwf_fl.Mu), ustrip(u"kN", cwf_sh))
+
+    # ── Step 3: Build per-pixel design ──
+    col_L_mm = cwf_L * 1000.0
+    col_n_px = StructuralSizer.validate_pixel_divisibility(col_L_mm, col_px_mm)
+
+    # For columns: model accumulated floor loads → axial demand decreases
+    # from base (full Pu) to top (half Pu), simulating a multi-story column.
+    # Moment varies linearly: max at base, zero at top.
+    col_pixel_demands = map(1:col_n_px) do i
+        x_frac = (i - 0.5) / col_n_px  # midpoint of pixel i, fraction from base
+        m_frac = max(0.0, 1.0 - x_frac)   # linear moment: max at base, zero at top
+        p_frac = 1.0 - 0.5 * x_frac       # axial: 100% at base, 50% at top
+        MemberDemand(i;
+            Pu_c      = cwf_Pu * p_frac,
+            Mux       = cwf_Mu * m_frac,
+            Vu_strong = 0.0u"kN",
+        )
+    end
+
+    # Build material pool from catalog (unique materials sorted by carbon)
+    col_all_mats = unique([s.material for s in col_cat])
+    sort!(col_all_mats; by = m -> StructuralSizer.pf_concrete_ecc(m.fc′) + m.fiber_ecc * m.fiber_dosage)
+
+    println("\n    ── Material Pool ($(length(col_all_mats)) unique, sorted by carbon) ──")
+    @printf("    %-4s  %8s  %10s  %10s\n", "#", "fc′(MPa)", "dosage", "ecc(kgCO₂e/m³)")
+    @printf("    %-4s  %8s  %10s  %10s\n", "─"^4, "─"^8, "─"^10, "─"^10)
+    for (k, m) in enumerate(col_all_mats)
+        ec = StructuralSizer.pf_concrete_ecc(m.fc′)
+        @printf("    %-4d  %8.1f  %10.1f  %10.1f\n", k, ustrip(u"MPa", m.fc′), m.fiber_dosage, ec)
+    end
+
+    # Build the design
+    col_design = StructuralSizer.build_pixel_design(
+        cwf_sec, cwf_L * u"m", col_px_mm,
+        col_pixel_demands, col_all_mats, col_checker;
+        symmetric=false,  # columns are not symmetric (base ≠ top)
+    )
+
+    println("\n    ── Per-Pixel Material Assignment ($(col_design.n_pixels) pixels × $(Int(col_px_mm))mm) ──")
+    println("    Position: base ──────────────────────────── top")
+    println()
+
+    # Print pixel index header
+    @printf("    Pixel:     ")
+    for i in 1:col_design.n_pixels
+        @printf(" %3d", i)
+    end
+    println()
+
+    # Print fc′ per pixel
+    @printf("    fc′(MPa):  ")
+    for mat in col_design.pixel_materials
+        @printf(" %3.0f", ustrip(u"MPa", mat.fc′))
+    end
+    println()
+
+    # Print dosage per pixel
+    @printf("    dosage:    ")
+    for mat in col_design.pixel_materials
+        @printf(" %3.0f", mat.fiber_dosage)
+    end
+    println()
+
+    # Print demand envelope
+    @printf("    Pu(frac):  ")
+    for i in 1:col_design.n_pixels
+        x_frac = (i - 0.5) / col_design.n_pixels
+        p_frac = 1.0 - 0.5 * x_frac
+        @printf(" %3.0f", p_frac * 100)
+    end
+    println("%")
+    @printf("    Mu(frac):  ")
+    for i in 1:col_design.n_pixels
+        x_frac = (i - 0.5) / col_design.n_pixels
+        m_frac = max(0.0, 1.0 - x_frac)
+        @printf(" %3.0f", m_frac * 100)
+    end
+    println("%")
+
+    # Print a visual bar showing material grade
+    println()
+    print("    Material:  [")
+    col_fc_max = maximum(ustrip(u"MPa", m.fc′) for m in col_design.pixel_materials)
+    col_fc_min = minimum(ustrip(u"MPa", m.fc′) for m in col_design.pixel_materials)
+    for mat in col_design.pixel_materials
+        fc_val = ustrip(u"MPa", mat.fc′)
+        if fc_val == col_fc_max
+            print("███")
+        elseif fc_val == col_fc_min
+            print("░░░")
+        else
+            print("▓▓▓")
+        end
+    end
+    println("]")
+    println("               ░░░=lowest grade  ▓▓▓=mid grade  ███=highest grade")
+    println("               base ←─────────────────────────→ top")
+
+    # ── Step 4: Volume and carbon summary ──
+    col_vols = StructuralSizer.pixel_volumes(col_design)
+    col_total_carbon = StructuralSizer.pixel_carbon(col_design)
+
+    println("\n    ── Material Volumes ──")
+    @printf("    %-12s  %10s  %12s\n", "fc′(MPa)", "dosage", "Volume(m³)")
+    @printf("    %-12s  %10s  %12s\n", "─"^12, "─"^10, "─"^12)
+    for (mat, vol) in sort(collect(col_vols); by=p -> ustrip(u"MPa", p.first.fc′))
+        @printf("    %-12.1f  %10.1f  %12.6f\n",
+                ustrip(u"MPa", mat.fc′), mat.fiber_dosage, ustrip(u"m^3", vol))
+    end
+    @printf("    %-12s  %10s  %12.6f\n", "TOTAL", "", sum(ustrip(u"m^3", v) for v in values(col_vols)))
+    println("    Total carbon: $(round(col_total_carbon, digits=2)) kgCO₂e")
+
+    # ── Step 5: Compare uniform vs relaxed carbon ──
+    col_uniform_carbon = let
+        A_c_m2 = ustrip(u"m^2", section_area(cwf_sec))
+        A_s_m2 = ustrip(u"m^2", cwf_sec.A_s)
+        L_px_m = col_px_mm / 1000.0
+        fc_gov = cwf_sec.material.fc′
+        dosage_gov = cwf_sec.material.fiber_dosage
+        ec_gov = StructuralSizer.pf_concrete_ecc(fc_gov)
+        col_n_px * (ec_gov * A_c_m2 * L_px_m + cwf_sec.material.fiber_ecc * (dosage_gov * A_c_m2 + StructuralSizer._STEEL_DENSITY_KGM3 * A_s_m2) * L_px_m)
+    end
+
+    col_savings = (1 - col_total_carbon / col_uniform_carbon) * 100
+    println()
+    @printf("    Uniform material carbon : %.2f kgCO₂e\n", col_uniform_carbon)
+    @printf("    Per-pixel relaxed carbon: %.2f kgCO₂e\n", col_total_carbon)
+    @printf("    Carbon savings          : %+.1f%%\n", col_savings)
+    println()
+    col_note("Columns with triangular moment envelope benefit from per-pixel relaxation:")
+    col_note("high-grade concrete at the base (high moment), low-grade at the top (low moment).")
+
+    # ── Step 6: Tendon Deviation Axial Force ──
+    # For columns, shear demand is derived from the moment gradient.
+    col_Vu_td = cwf_Mu / (cwf_L * u"m" / 2)  # conservative shear estimate
+    col_td = pf_tendon_deviation_force(col_design, col_Vu_td; d_ps_support=0.0u"mm")
+    col_design.tendon_deviation = col_td
+
+    println("\n    ── Tendon Deviation Axial Force (Connection Design) ──")
+    println("    Shear demand V_max:  $(round(u"kN", col_Vu_td; digits=1))")
+    println("    Friction coeff μ_s:  $(col_td.μ_s)")
+    println("    Tendon angle θ:      $(round(rad2deg(col_td.θ); digits=2))°")
+    @printf("    P_horizontal:        %.1f kN\n", ustrip(u"kN", col_td.P_horizontal))
+    @printf("    N_friction (V/μ):    %.1f kN\n", ustrip(u"kN", col_td.N_friction))
+    @printf("    N_additional:        %.1f kN\n", ustrip(u"kN", col_td.N_additional))
+    println()
+    if col_td.N_additional > 0.0u"kN"
+        col_note("N_additional > 0: PT alone is insufficient for friction shear transfer.")
+        col_note("Additional clamping of $(round(u"kN", col_td.N_additional; digits=1)) needed at deviators.")
+    else
+        col_note("N_additional ≤ 0: PT provides sufficient clamping for friction shear transfer.")
+    end
+end
+
+col_wf_ok = col_design.n_pixels > 0 && col_total_carbon > 0 && col_total_carbon ≤ col_uniform_carbon * 1.01
+
+@testset "PixelFrame Column Design Workflow" begin
+    @test col_design.n_pixels == 8  # 4000mm / 500mm
+    @test length(col_design.pixel_materials) == col_design.n_pixels
+    @test col_total_carbon > 0
+    @test col_total_carbon ≤ col_uniform_carbon * 1.01  # relaxed ≤ uniform
+    # Base pixel (highest moment) should have fc′ ≥ top pixel (lowest moment)
+    @test ustrip(u"MPa", col_design.pixel_materials[1].fc′) ≥
+          ustrip(u"MPa", col_design.pixel_materials[end].fc′)
+    # Tendon deviation was computed and stored
+    @test col_design.tendon_deviation isa TendonDeviationResult
+    @test col_design.tendon_deviation.μ_s ≈ 0.3
+end
+_col_step_status["PF Workflow"] = col_wf_ok ? "✓" : "✗"
+
+# ── 6.6  Tests ──
+@testset "PixelFrame Column" begin
+    @test pf_col_mod_axial_ok
+    @test pf_col_mod_flex_ok
+    @test pf_col_mod_area > 0
+    @test pf_col_mod.status == JuMP.MOI.OPTIMAL || pf_col_mod.status == JuMP.MOI.TIME_LIMIT
+    @test pf_col_hvy_axial_ok
+    @test pf_col_hvy_flex_ok
+    @test pf_col_hvy_area > 0
+    @test pf_col_hvy.status == JuMP.MOI.OPTIMAL || pf_col_hvy.status == JuMP.MOI.TIME_LIMIT
+    @test pf_col_growth_ok   # heavier load → more capacity
+    @test pf_col_batch_ok
+    @test length(pf_col_batch.sections) == 3
+end
+
+pf_col_pass = pf_col_mod_axial_ok && pf_col_mod_flex_ok && pf_col_hvy_axial_ok && pf_col_hvy_flex_ok && pf_col_growth_ok && pf_col_batch_ok
+_col_step_status["PF Column"] = pf_col_pass ? "✓" : "✗"
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  7.  CROSS-TYPE COMPARISON — All Column Types, Same Demand                 ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+col_sub_header("7.0  Cross-Type Comparison — All Column Types, Same Demand")
+col_note("Pu = 200 kN, Mu = 10 kN·m, L = 4 m.  MIP sizing for each section type.")
+col_note("All section types accept Unitful demands — RC converts via Asap.to_kip/to_kipft.")
+col_note("Demand chosen to be feasible for all five column types (RC Rect, RC Circ, W, HSS, PF).")
+
+ccmp_Pu = 200.0u"kN"
+ccmp_Mu = 10.0u"kN*m"
+ccmp_L  = 4.0  # m
+
+# ── 7.1  Size each type ──
+
+# RC Rectangular
+ccmp_rc_rect = size_columns([ccmp_Pu], [ccmp_Mu],
+    [ConcreteMemberGeometry(ccmp_L; k=1.0, braced=true)],
+    ConcreteColumnOptions(grade=NWC_4000, section_shape=:rect, include_slenderness=false))
+ccmp_rc_rect_sec = ccmp_rc_rect.sections[1]
+ccmp_rc_rect_area = ustrip(u"mm^2", section_area(ccmp_rc_rect_sec))
+ccmp_rc_rect_chk = rc_column_utilization(ccmp_rc_rect_sec, NWC_4000, Rebar_60,
+    to_kip(ccmp_Pu), to_kipft(ccmp_Mu))
+ccmp_rc_rect_Pu_kN = abs(ccmp_rc_rect_chk.φPn_at_Mu) * ustrip(u"kN", 1.0kip)
+ccmp_rc_rect_Mu_kNm = ccmp_rc_rect_chk.φMn_at_Pu * ustrip(u"kN*m", 1.0kip * u"ft")
+
+# RC Circular
+ccmp_rc_circ = size_columns([ccmp_Pu], [ccmp_Mu],
+    [ConcreteMemberGeometry(ccmp_L; k=1.0, braced=true)],
+    ConcreteColumnOptions(grade=NWC_4000, section_shape=:circular, include_slenderness=false))
+ccmp_rc_circ_sec = ccmp_rc_circ.sections[1]
+ccmp_rc_circ_area = ustrip(u"mm^2", section_area(ccmp_rc_circ_sec))
+
+# Steel W
+ccmp_sw = size_columns([ccmp_Pu], [ccmp_Mu],
+    [SteelMemberGeometry(ccmp_L; Kx=1.0, Ky=1.0)], SteelMemberOptions(section_type=:w))
+ccmp_sw_sec = ccmp_sw.sections[1]
+ccmp_sw_area = ustrip(u"mm^2", section_area(ccmp_sw_sec))
+
+# Steel HSS
+ccmp_sh = size_columns([ccmp_Pu], [ccmp_Mu],
+    [SteelMemberGeometry(ccmp_L; Kx=1.0, Ky=1.0)], SteelMemberOptions(section_type=:hss))
+ccmp_sh_sec = ccmp_sh.sections[1]
+ccmp_sh_area = ustrip(u"mm^2", section_area(ccmp_sh_sec))
+
+# PixelFrame X4
+ccmp_pf = size_columns([ccmp_Pu], [ccmp_Mu],
+    [ConcreteMemberGeometry(ccmp_L)], pf_col_catalog_opts)
+ccmp_pf_sec = ccmp_pf.sections[1]
+ccmp_pf_area = ustrip(u"mm^2", section_area(ccmp_pf_sec))
+ccmp_pf_ax = pf_axial_capacity(ccmp_pf_sec)
+ccmp_pf_fl = pf_flexural_capacity(ccmp_pf_sec)
+ccmp_pf_Pu_kN  = ustrip(u"kN", ccmp_pf_ax.Pu)
+ccmp_pf_Mu_kNm = ustrip(u"kN*m", ccmp_pf_fl.Mu)
+
+# ── 7.2  Side-by-side table ──
+println("\n  7.2  Side-by-Side Comparison (MIP, Pu = 200 kN, Mu = 10 kN·m)")
+println()
+
+@printf("    %-16s  %12s  %12s  %12s  %12s  %12s\n",
+    "Property", "RC Rect", "RC Circ", "Steel W", "Steel HSS", "PixelFrame")
+@printf("    %-16s  %12s  %12s  %12s  %12s  %12s\n",
+    "─"^16, "─"^12, "─"^12, "─"^12, "─"^12, "─"^12)
+
+@printf("    %-16s  %12s  %12s  %12s  %12s  %12s\n",
+    "Section",
+    string(ccmp_rc_rect_sec.name)[1:min(12,end)],
+    string(ccmp_rc_circ_sec.name)[1:min(12,end)],
+    string(ccmp_sw_sec.name)[1:min(12,end)],
+    string(ccmp_sh_sec.name)[1:min(12,end)],
+    "PF-$(ccmp_pf_sec.λ)")
+
+@printf("    %-16s  %12.0f  %12.0f  %12.0f  %12.0f  %12.0f\n",
+    "Area (mm²)", ccmp_rc_rect_area, ccmp_rc_circ_area, ccmp_sw_area, ccmp_sh_area, ccmp_pf_area)
+
+# PixelFrame-specific details
+println()
+col_note("PixelFrame: λ=$(ccmp_pf_sec.λ), L_px=$(ustrip(u"mm", ccmp_pf_sec.L_px))mm, " *
+    "fc′=$(ustrip(u"MPa", ccmp_pf_sec.material.fc′))MPa, dosage=$(ccmp_pf_sec.material.fiber_dosage)kg/m³")
+col_note("φPu=$(round(ccmp_pf_Pu_kN, digits=1))kN, φMu=$(round(ccmp_pf_Mu_kNm, digits=1))kN·m")
+
+ccmp_all_ok = (ccmp_rc_rect.status == JuMP.MOI.OPTIMAL || ccmp_rc_rect.status == JuMP.MOI.TIME_LIMIT) &&
+              (ccmp_rc_circ.status == JuMP.MOI.OPTIMAL || ccmp_rc_circ.status == JuMP.MOI.TIME_LIMIT) &&
+              (ccmp_sw.status == JuMP.MOI.OPTIMAL || ccmp_sw.status == JuMP.MOI.TIME_LIMIT) &&
+              (ccmp_sh.status == JuMP.MOI.OPTIMAL || ccmp_sh.status == JuMP.MOI.TIME_LIMIT) &&
+              (ccmp_pf.status == JuMP.MOI.OPTIMAL || ccmp_pf.status == JuMP.MOI.TIME_LIMIT)
+
+@testset "Cross-Type Column Comparison" begin
+    @test ccmp_all_ok
+    @test ccmp_rc_rect_area > 0
+    @test ccmp_rc_circ_area > 0
+    @test ccmp_sw_area > 0
+    @test ccmp_sh_area > 0
+    @test ccmp_pf_area > 0
+end
+
+_col_step_status["Cross-Type Cmp"] = ccmp_all_ok ? "✓" : "✗"
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  8.  PARAMETRIC SENSITIVITY: Demand Scaling                               ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
-# ── 6.1  RC Rectangular ──
-col_sub_header("6.1  Parametric Study — Demand Scaling (RC Rectangular)")
+# ── 8.1  RC Rectangular ──
+col_sub_header("8.1  Parametric Study — Demand Scaling (RC Rectangular)")
 col_note("Pu 150–1500 kip, proportional Mu (e≈5\"); forces section growth 12\"→30\"+.")
 
 rc_scale_geom = ConcreteMemberGeometry(4.0; k=1.0, braced=true)
@@ -598,8 +1103,8 @@ end
 println()
 col_note("Monotonicity expected — constant-eccentricity load path avoids balanced-point issues.")
 
-# ── 6.2  RC Circular ──
-col_sub_header("6.2  Parametric Study — Demand Scaling (RC Circular)")
+# ── 7.2  RC Circular ──
+col_sub_header("8.2  Parametric Study — Demand Scaling (RC Circular)")
 col_note("Pu 150–1200 kip, proportional Mu (e≈5\"); forces section growth 12\"→28\"+.")
 
 circ_scale_geom = ConcreteMemberGeometry(4.0; k=1.0, braced=true)
@@ -647,8 +1152,8 @@ end
 println()
 col_note("Monotonicity expected — constant-eccentricity load path avoids balanced-point issues.")
 
-# ── 6.3  Steel W-Shape ──
-col_sub_header("6.3  Parametric Study — Demand Scaling (Steel W-Shape)")
+# ── 7.3  Steel W-Shape ──
+col_sub_header("8.3  Parametric Study — Demand Scaling (Steel W-Shape)")
 col_note("Scales Pu from 200–1500 kN with proportional Mu (e ≈ 50 mm).")
 
 w_scale_geom   = SteelMemberGeometry(4.0; Kx=1.0, Ky=1.0)
@@ -690,8 +1195,8 @@ end
 println()
 col_note("NLP returns a custom built-up I-shape — area is a theoretical lower bound.")
 
-# ── 6.4  Steel HSS ──
-col_sub_header("6.4  Parametric Study — Demand Scaling (Steel HSS)")
+# ── 7.4  Steel HSS ──
+col_sub_header("8.4  Parametric Study — Demand Scaling (Steel HSS)")
 col_note("Scales Pu from 100–800 kN with proportional Mu (e ≈ 50 mm).")
 
 hss_scale_geom   = SteelMemberGeometry(4.0; Kx=1.0, Ky=1.0)
@@ -732,7 +1237,7 @@ end
 println()
 col_note("HSS NLP has 3 design variables (B, H, t) — simpler than the 4-var W problem.")
 
-# ── 6.5  Monotonicity Tests ──
+# ── 7.5  Monotonicity Tests ──
 @testset "Parametric Demand Scaling" begin
     @testset "RC Rectangular monotonicity" begin
         @test rc_mip_areas[end] ≥ rc_mip_areas[1]
@@ -755,9 +1260,9 @@ col_note("HSS NLP has 3 design variables (B, H, t) — simpler than the 4-var W 
 end
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  7.  RECTANGULAR COLUMN EXPANSION (Column Growth Helpers)                  ║
+# ║  9.  RECTANGULAR COLUMN EXPANSION (Column Growth Helpers)                  ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-col_sub_header("7.0  Column Growth — Rectangular Expansion")
+col_sub_header("9.0  Column Growth — Rectangular Expansion")
 col_note("Tests the direct b₀ solve + shape-aware growth infrastructure.")
 col_note("Reference: ACI 318 §22.6.5 (punching geometry), §22.6.5.2 (β factor)")
 
@@ -777,8 +1282,8 @@ _srb  = StructuralSizer._solve_rectangular_b0
 _scfp = StructuralSizer.solve_column_for_punching
 _tar  = StructuralSizer.target_aspect_ratio
 
-# ── 7.1  b₀ Geometry Back-Solve (Square) ──
-println("\n  7.1  b₀ Back-Solve — Square Columns")
+# ── 9.1  b₀ Geometry Back-Solve (Square) ──
+println("\n  9.1  b₀ Back-Solve — Square Columns")
 col_note("For each position, solve c from b₀, then recompute b₀ and check round-trip error.")
 println()
 
@@ -807,8 +1312,8 @@ for (pos, b0_target) in [(:interior, 88.0u"inch"), (:edge, 54.0u"inch"), (:corne
             ustrip(u"inch", b0_check), err, ok ? "✓" : "✗")
 end
 
-# ── 7.2  b₀ Geometry Back-Solve (Rectangular, r=2.0) ──
-println("\n  7.2  b₀ Back-Solve — Rectangular Columns (r = c1/c2 = 2.0)")
+# ── 9.2  b₀ Geometry Back-Solve (Rectangular, r=2.0) ──
+println("\n  9.2  b₀ Back-Solve — Rectangular Columns (r = c1/c2 = 2.0)")
 col_note("Solves c1 from b₀ with aspect ratio r=2.0, then verifies b₀ round-trip.")
 println()
 
@@ -837,8 +1342,8 @@ for (pos, b0_target) in [(:interior, 100.0u"inch"), (:edge, 80.0u"inch"), (:corn
             ustrip(u"inch", c2), ustrip(u"inch", b0_check), err, ok ? "✓" : "✗")
 end
 
-# ── 7.3  Moment-Informed Aspect Ratio ──
-println("\n  7.3  Moment-Informed Aspect Ratio")
+# ── 9.3  Moment-Informed Aspect Ratio ──
+println("\n  9.3  Moment-Informed Aspect Ratio")
 col_note("AR = √(Mx/My) clamped to max_ar. Shows how directional moments drive column shape.")
 println()
 
@@ -866,8 +1371,8 @@ for (mx, my, mar, expected, label) in ar_cases
             "$(mx)", "$(my)", r, expected, ok ? "✓" : "✗", label)
 end
 
-# ── 7.4  Square vs Bounded vs Circular — Punching Expansion ──
-println("\n  7.4  Punching Growth — Square vs Bounded vs Circular")
+# ── 9.4  Square vs Bounded vs Circular — Punching Expansion ──
+println("\n  9.4  Punching Growth — Square vs Bounded vs Circular")
 col_note("Same 40% overstress (ratio=1.4) starting from 16\" square. Bounded uses Mx=200, My=80.")
 col_note("Bounded columns should use less area than square (smarter geometry allocation).")
 println()
@@ -962,8 +1467,8 @@ for pos in [:interior, :edge, :corner]
     growth_pass &= c1_bd ≥ c2_bd
 end
 
-# ── 7.5  Axial Growth — Shape-Aware Scaling ──
-println("  7.5  Axial Growth — Shape-Aware Scaling")
+# ── 9.5  Axial Growth — Shape-Aware Scaling ──
+println("  9.5  Axial Growth — Shape-Aware Scaling")
 col_note("grow_column_for_axial! maintains proportions for :bounded and forces c1=c2 for :square.")
 println()
 
@@ -1017,8 +1522,8 @@ axial_pass &= a4_ok
 
 println()
 
-# ── 7.6  Rounding Increment Verification ──
-println("  7.6  Rounding Increment Verification")
+# ── 9.6  Rounding Increment Verification ──
+println("  9.6  Rounding Increment Verification")
 col_note("_round_up_to snaps to the next multiple of the increment (0.5\", 1.0\", 2.0\").")
 println()
 
@@ -1043,7 +1548,7 @@ end
 
 println()
 
-# ── 7.7  Tests ──
+# ── 9.7  Tests ──
 @testset "Column Growth — Rectangular Expansion" begin
     @testset "b₀ square back-solve round-trips" begin
         @test b0_sq_pass
@@ -1067,22 +1572,25 @@ end
 _col_step_status["Rect. Expansion"] = (b0_sq_pass && b0_rect_pass && ar_pass && growth_pass && axial_pass && round_pass) ? "✓" : "✗"
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  8.  DESIGN CODE FEATURES & LIMITATIONS                                   ║
+# ║  10.  DESIGN CODE FEATURES & LIMITATIONS                                  ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-col_sub_header("8.0  Feature Matrix")
+col_sub_header("10.0  Feature Matrix")
 println("    RC (ACI 318-19): P-M interaction, biaxial Bresler, slenderness δns, ρg 1–8%, spiral/tied, MIP+NLP+snap")
 println("    Steel (AISC 360-16): H1-1 P-M, compression E1/E3/E7, flexure F2/F7+LTB, local buckling, biaxial, MIP+NLP+snap")
+println("    PixelFrame (ACI 318-19 + fib MC2010): axial/flex + FRC shear, X4 layup for columns, MIP catalog, batch")
 
-col_sub_header("8.1  Shared Components")
+col_sub_header("10.1  Shared Components")
 println("    Unified API: size_columns → MIP (optimize_discrete) / NLP (Ipopt optimize_continuous)")
 println("    NLP vars: RC Rect(b,h,ρg) RC Circ(D,ρg) W(d,bf,tf,tw) HSS(B,H,t) — all with P-M or H1-1 constraints")
+println("    PixelFrame: MIP catalog (L_px × t × fc′ × dosage × A_s × d_ps sweep), polygon geometry (CompoundSection).")
 
-col_sub_header("8.2  Current Limitations & Future Work")
+col_sub_header("10.2  Current Limitations & Future Work")
 println("    1. RC biaxial: symmetric Bresler  2. RC circ: no weak-axis  3. Steel NLP: no intermediate bracing")
 println("    4. Timber NDS: type-defined only  5. Composite (encased W): not yet supported")
+println("    6. PixelFrame: NLP continuous sizing not yet supported; slenderness not checked.")
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  9.  FINAL SUMMARY                                                        ║
+# ║  11.  FINAL SUMMARY                                                       ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 col_section_header("COLUMN SIZING REPORT — SUMMARY")
 println("  Step                            Status")

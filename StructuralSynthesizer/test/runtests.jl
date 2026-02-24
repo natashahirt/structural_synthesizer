@@ -33,23 +33,24 @@ using Asap  # ensures `u"kip"`, `u"ksi"`, etc resolve via Asap unit module
         include("visualization/test_voronoi_vis.jl")
     end
 
-    # ─── Member Sizing ───────────────────────────────────────────────────
-    @testset "Member Sizing" begin
-        include("sizing/members/test_beam_sizing_report.jl")
-        include("sizing/members/test_column_sizing_report.jl")
-        include("sizing/members/test_aisc_column_examples.jl")
+    # ─── Report Generators (hybrid: report + @test assertions) ───────────
+    @testset "Report Generators" begin
+        include("report_generators/test_beam_sizing_report.jl")
+        include("report_generators/test_column_sizing_report.jl")
+        include("report_generators/test_flat_plate_efm_integration.jl")
+        include("report_generators/test_flat_plate_methods_comparison.jl")
+        include("report_generators/test_foundation_integration.jl")
+        include("report_generators/test_fire_rating_report.jl")
     end
 
-    # ─── Slab Sizing ─────────────────────────────────────────────────────
+    # ─── Slab Sizing (non-report tests) ──────────────────────────────────
     @testset "Slab Sizing" begin
-        include("sizing/slabs/test_flat_plate_efm_integration.jl")
-        include("sizing/slabs/test_flat_plate_methods_comparison.jl")
         include("sizing/slabs/test_vault_pipeline.jl")
     end
 
-    # ─── Foundation Sizing ───────────────────────────────────────────────
-    @testset "Foundation Sizing" begin
-        include("sizing/foundations/test_foundation_integration.jl")
+    # ─── Member Sizing (non-report tests) ────────────────────────────────
+    @testset "Member Sizing" begin
+        include("sizing/members/test_aisc_column_examples.jl")
     end
 
     # ─── Optimization Convergence ────────────────────────────────────────

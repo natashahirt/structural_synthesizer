@@ -50,20 +50,23 @@ end
 """Populate an EFMModelCache from a freshly built model."""
 function _populate_efm_cache!(cache::EFMModelCache, model, span_elements, spans, jKec)
     n_sp = length(spans)
+    n_slab_elems = length(span_elements)  # 3 per span for sub-element model
     cache.initialized    = true
     cache.model          = model
     cache.span_elements  = collect(Element{FixedFixed}, span_elements)
-    cache.col_elements   = collect(Element{FixedFixed}, model.elements[(n_sp+1):end])
+    cache.col_elements   = collect(Element{FixedFixed}, model.elements[(n_slab_elems+1):end])
     cache.joint_Kec      = collect(jKec)
     cache.n_spans        = n_sp
 end
 
 """
     _update_efm_sections_and_loads!(cache, spans, joint_positions, qu, Ecs, Ecc, H,
-                                    ν_concrete, ρ_concrete; column_shape, k_slab, k_col)
+                                    ν_concrete, ρ_concrete; column_shape)
 
 Update section properties and loads on a cached EFM model to reflect new column
 sizes and/or slab thickness.  Avoids reallocating nodes, elements, and loads.
+
+Handles the 3-sub-element-per-span layout: rigid_L, clear, rigid_R.
 """
 function _update_efm_sections_and_loads!(
     cache::EFMModelCache,
@@ -76,38 +79,75 @@ function _update_efm_sections_and_loads!(
     ν_concrete::Float64,
     ρ_concrete;
     column_shape::Symbol = :rectangular,
-    k_slab::Float64 = PCA_K_SLAB,
-    k_col::Float64 = PCA_K_COL,
 )
     model = cache.model
     span_elements = cache.span_elements
     col_elements  = cache.col_elements
-    n_joints      = cache.n_spans + 1
+    n_spans  = cache.n_spans
+    n_joints = n_spans + 1
 
     h  = spans[1].h
     l2 = spans[1].l2
 
-    # ── Slab section ──
     G_slab  = Ecs / (2 * (1 + ν_concrete))
-    Is_eff  = (k_slab / 4.0) * l2 * h^3 / 12
-    A_slab  = l2 * h
-    J_slab  = _torsional_constant_rect(l2, h)
+    Is_gross = l2 * h^3 / 12
+    A_slab   = l2 * h
+    J_slab   = _torsional_constant_rect(l2, h)
 
-    slab_sec = Section(
-        uconvert(u"m^2", A_slab),
-        uconvert(u"Pa", Ecs),
-        uconvert(u"Pa", G_slab),
-        uconvert(u"m^4", Is_eff),
-        uconvert(u"m^4", Is_eff / 10),
+    Ecs_Pa = uconvert(u"Pa", Ecs)
+    G_slab_Pa = uconvert(u"Pa", G_slab)
+
+    # ── Slab sections (3 per span) ──
+    # Clear-span section: gross I
+    clear_sec = Section(
+        uconvert(u"m^2", A_slab), Ecs_Pa, G_slab_Pa,
+        uconvert(u"m^4", Is_gross),
+        uconvert(u"m^4", Is_gross / 10),
         uconvert(u"m^4", J_slab),
         ρ_concrete
     )
-    for elem in span_elements
-        elem.section = slab_sec
+
+    n_elems_per_span = length(span_elements) ÷ n_spans
+
+    for i in 1:n_spans
+        sp = spans[i]
+
+        # ACI 318-11 §13.7.3.3 rigid-zone I
+        ratio_left  = ustrip(sp.c2_left)  / ustrip(uconvert(unit(sp.c2_left), l2))
+        ratio_right = ustrip(sp.c2_right) / ustrip(uconvert(unit(sp.c2_right), l2))
+        Is_rigid_left  = Is_gross / (1 - ratio_left)^2
+        Is_rigid_right = Is_gross / (1 - ratio_right)^2
+
+        rigid_sec_left = Section(
+            uconvert(u"m^2", A_slab), Ecs_Pa, G_slab_Pa,
+            uconvert(u"m^4", Is_rigid_left),
+            uconvert(u"m^4", Is_rigid_left / 10),
+            uconvert(u"m^4", J_slab),
+            ρ_concrete
+        )
+        rigid_sec_right = Section(
+            uconvert(u"m^2", A_slab), Ecs_Pa, G_slab_Pa,
+            uconvert(u"m^4", Is_rigid_right),
+            uconvert(u"m^4", Is_rigid_right / 10),
+            uconvert(u"m^4", J_slab),
+            ρ_concrete
+        )
+
+        if n_elems_per_span == 3
+            idx_base = 3 * (i - 1)
+            span_elements[idx_base + 1].section = rigid_sec_left
+            span_elements[idx_base + 2].section = clear_sec
+            span_elements[idx_base + 3].section = rigid_sec_right
+        else
+            # Legacy single-element fallback
+            span_elements[i].section = clear_sec
+        end
     end
 
     # ── Column stub sections ──
     G_col   = Ecc / (2 * (1 + ν_concrete))
+    col_factors = pca_column_factors(H, h)
+    k_col = col_factors.k
     new_Kec = Vector{Moment}(undef, n_joints)
 
     for j in 1:n_joints
@@ -275,11 +315,16 @@ function run_moment_analysis(
                     column_shape = col_shape_val,
                 )
                 # Override per-span loads for pattern loading
+                # With 3 sub-elements per span, loads are on all 3*n_spans elements.
+                # Each group of 3 loads corresponds to one span.
                 _is_pattern = qu_arg isa Vector
                 if _is_pattern
+                    n_loads = length(efm_cache.model.loads)
+                    n_per_span = n_loads ÷ n_spans
                     for (i, load) in enumerate(efm_cache.model.loads)
-                        i > n_spans && break
-                        w_N_m = uconvert(u"N/m", qu_arg[i] * l2)
+                        span_idx = (i - 1) ÷ n_per_span + 1
+                        span_idx > n_spans && break
+                        w_N_m = uconvert(u"N/m", qu_arg[span_idx] * l2)
                         load.value = [0.0u"N/m", 0.0u"N/m", -w_N_m]
                     end
                 end
@@ -300,9 +345,12 @@ function run_moment_analysis(
                 )
                 # Override per-span loads for pattern loading
                 if qu_arg isa Vector
+                    n_loads = length(model.loads)
+                    n_per_span = n_loads ÷ n_spans
                     for (i, load) in enumerate(model.loads)
-                        i > n_spans && break
-                        w_N_m = uconvert(u"N/m", qu_arg[i] * l2)
+                        span_idx = (i - 1) ÷ n_per_span + 1
+                        span_idx > n_spans && break
+                        w_N_m = uconvert(u"N/m", qu_arg[span_idx] * l2)
                         load.value = [0.0u"N/m", 0.0u"N/m", -w_N_m]
                     end
                 end
@@ -549,12 +597,15 @@ end
 # =============================================================================
 
 """
-    _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; k_col=PCA_K_COL)
+    _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc; ...)
 
 Compute equivalent column stiffness Kec at each joint.
 
 Kec combines column and torsional stiffness in series:
     1/Kec = 1/ΣKc + 1/ΣKt
+
+Column stiffness factor `k_col` is looked up from PCA Table A7 based on
+actual `H/Hc` ratio (replacing the old hardcoded PCA_K_COL = 4.74).
 
 # Returns
 Vector of Kec values (in Moment units) for each joint.
@@ -570,7 +621,6 @@ function _compute_joint_Kec(
     H::Length,
     Ecs::Pressure,
     Ecc::Pressure;
-    k_col::Float64 = 4.74,
     column_shape::Symbol = :rectangular,
     use_kc_only::Bool = false
 )
@@ -579,6 +629,10 @@ function _compute_joint_Kec(
     h = spans[1].h
     l2 = spans[1].l2
     has_drops = has_drop_panels(spans[1])
+
+    # Column stiffness factor from PCA Table A7 (geometry-dependent)
+    col_factors = pca_column_factors(H, h)
+    k_col = col_factors.k
     
     joint_Kec = Vector{Moment}(undef, n_joints)
     
@@ -598,7 +652,7 @@ function _compute_joint_Kec(
         # For circular columns, use equivalent square for torsional calc
         c2_torsion = column_shape == :circular ? equivalent_square_column(c2) : c2
         
-        # Column stiffness: always prismatic PCA factor — ASAP handles non-prismatic
+        # Column stiffness using geometry-dependent k_col from PCA Table A7
         Ic = column_moment_of_inertia(c1, c2; shape=column_shape)
         Kc = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
         ΣKc = 2 * Kc  # Above and below
@@ -635,34 +689,38 @@ end
 """
     build_efm_asap_model(spans, joint_positions, qu; kwargs...)
 
-Build an ASAP frame model with EFM-compliant stiffnesses using column stubs.
+Build an ASAP frame model for EFM analysis using **3 sub-elements per span**
+(rigid zone – clear span – rigid zone) and column stubs with Kec-derived Ic.
 
-# Methodology (Validated against StructurePoint)
-Models the equivalent column stiffness Kec by using column stub elements with
-effective moment of inertia Ic_eff derived from Kec:
+# Slab-Beam Model (ACI 318-11 §13.7.3.3)
 
-    For a stub of length H/2 with fixed base:
-    K_stub = 4 × E × Ic_eff / (H/2) = 8 × E × Ic_eff / H
-    
-    Setting K_stub = Kec:
-    Ic_eff = Kec × H / (8 × E)
+Each span is modeled with 3 elements:
+1. **Rigid zone (left)**: column center to column face, length = c₁_left/2.
+   Moment of inertia amplified per §13.7.3.3:
+       I_rigid = I_s / (1 - c₂/l₂)²
+2. **Clear span**: face-to-face, length = l_n.
+   Gross moment of inertia: I_s = l₂ × h³ / 12.
+3. **Rigid zone (right)**: column face to column center, length = c₁_right/2.
+   Same amplified I_rigid.
 
-This approach is mathematically equivalent to using rotational springs and
-validated to match StructurePoint EFM results within 5%.
+This eliminates the need for the PCA Table A1 stiffness factor `k_slab`
+in the ASAP path — the solver computes exact stiffness, carry-over, and
+moment distribution from the actual non-prismatic geometry.
 
-# Key EFM Stiffnesses
-- Slab-beam: K_sb = k × E_cs × I_s / l₁ (k ≈ 4.127 from PCA Table A1)
-- Column: K_c = k × E_cc × I_c / H (k ≈ 4.74 from PCA Table A7)
-- Torsional: K_t = 9 × E_cs × C / (l₂ × (1 - c₂/l₂)³)
-- Equivalent column: 1/K_ec = 1/ΣK_c + 1/ΣK_t
+# Column Model
+
+Column stiffness factor `k_col` is interpolated from PCA Table A7 based on
+actual `ta/tb` and `H/Hc` ratios (replacing the old hardcoded PCA_K_COL).
+Column stubs use Ic_eff derived from Kec:
+    Ic_eff = Kec × H / (8 × Ecc)
 
 # Returns
 - `model`: ASAP Model ready to solve
-- `span_elements`: Vector of slab-beam elements
+- `span_elements`: Vector of slab-beam elements (3 per span: [rigid_L, clear, rigid_R, ...])
 - `joint_Kec`: Vector of equivalent column stiffnesses at each joint
 
 # Reference
-- StructurePoint DE-Two-Way-Flat-Plate Table 5 (moment distribution validation)
+- ACI 318-11 §13.7.3.3 — Slab-beam moment of inertia at column regions
 - PCA Notes on ACI 318-11 Tables A1, A7
 """
 function build_efm_asap_model(
@@ -674,194 +732,210 @@ function build_efm_asap_model(
     Ecc::Pressure,
     ν_concrete::Float64,
     ρ_concrete,
-    k_col::Float64 = PCA_K_COL,
-    k_slab::Float64 = PCA_K_SLAB,
     column_shape::Symbol = :rectangular,
     verbose::Bool = false,
     use_kc_only::Bool = false
 )
     n_spans = length(spans)
     n_joints = n_spans + 1
-    
-    # Convert to SI for ASAP
-    l1_m = [uconvert(u"m", sp.l1) for sp in spans]
+
     l2 = spans[1].l2
-    h = spans[1].h
-    H = column_height
-    
+    h  = spans[1].h
+    H  = column_height
+
     Ecs_Pa = uconvert(u"Pa", Ecs)
     Ecc_Pa = uconvert(u"Pa", Ecc)
-    
-    # Shear modulus: G = E / (2(1+ν))
+
     G_slab = Ecs / (2 * (1 + ν_concrete))
-    G_col = Ecc / (2 * (1 + ν_concrete))
+    G_col  = Ecc / (2 * (1 + ν_concrete))
     ρ = ρ_concrete
-    
-    # Compute stiffnesses for each joint
-    joint_Kec = Vector{Moment}()
-    joint_Ic_eff = Vector{typeof(1.0u"inch^4")}()  # Effective column I for each joint
-    
+
+    # ── Column stiffness factor from PCA Table A7 (geometry-dependent) ──
+    col_factors = pca_column_factors(H, h)
+    k_col = col_factors.k
+
+    # ── Compute Kec and Ic_eff at each joint ──
+    joint_Kec    = Vector{Moment}(undef, n_joints)
+    joint_Ic_eff = Vector{typeof(1.0u"inch^4")}(undef, n_joints)
+
     for j in 1:n_joints
-        # Get column dimensions at this joint
         if j == 1
-            c1 = spans[1].c1_left
-            c2 = spans[1].c2_left
+            c1 = spans[1].c1_left;  c2 = spans[1].c2_left
         elseif j == n_joints
-            c1 = spans[end].c1_right
-            c2 = spans[end].c2_right
+            c1 = spans[end].c1_right; c2 = spans[end].c2_right
         else
-            # Average of adjacent spans
             c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
             c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
         end
-        
-        # For circular columns, use equivalent square for torsional calc
-        # but actual circular Ic for column stiffness
+
         c2_torsion = column_shape == :circular ? equivalent_square_column(c2) : c2
-        
-        # Column stiffness
+
         Ic = column_moment_of_inertia(c1, c2; shape=column_shape)
         Kc = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
-        
-        # Torsional stiffness (sum from adjacent spans)
-        # For circular columns, use equivalent square dimension for torsional member width
-        C = torsional_constant_C(h, c2_torsion)
-        Kt_single = torsional_member_stiffness_Kt(Ecs, C, l2, c2_torsion)
-        
-        # Number of torsional members at this joint
+
+        C_t = torsional_constant_C(h, c2_torsion)
+        Kt_single = torsional_member_stiffness_Kt(Ecs, C_t, l2, c2_torsion)
+
         n_torsion = joint_positions[j] == :interior ? 2 : 1
-        n_columns = 2  # Above and below (typical intermediate floor)
-        
-        # Combined stiffnesses
-        ΣKc = n_columns * Kc
+        ΣKc = 2 * Kc
         ΣKt = n_torsion * Kt_single
-        
-        # EFM_Kc: use raw column stiffness (no torsional reduction)
+
         Kec = use_kc_only ? ΣKc : equivalent_column_stiffness_Kec(ΣKc, ΣKt)
-        push!(joint_Kec, Kec)
-        
-        # Derive Ic_eff from Kec for column stub
-        # K_stub = 8 × E × Ic_eff / H → Ic_eff = Kec × H / (8E)
-        Kec_inlb = ustrip(u"lbf*inch", Kec)
-        H_in = ustrip(u"inch", H)
-        Ecc_psi = ustrip(u"psi", Ecc)
-        Ic_eff = Kec_inlb * H_in / (8 * Ecc_psi) * u"inch^4"
-        push!(joint_Ic_eff, Ic_eff)
-        
+        joint_Kec[j] = Kec
+
+        # Ic_eff from Kec: K_stub = 8 × E × Ic_eff / H
+        Ic_eff = ustrip(u"lbf*inch", Kec) * ustrip(u"inch", H) /
+                 (8 * ustrip(u"psi", Ecc)) * u"inch^4"
+        joint_Ic_eff[j] = Ic_eff
+
         if verbose
-            @debug "Joint $j ($(joint_positions[j]))" Kc=uconvert(u"lbf*inch", Kc) Kt=uconvert(u"lbf*inch", Kt_single) Kec=uconvert(u"lbf*inch", Kec) Ic_eff=uconvert(u"inch^4", Ic_eff)
+            @debug "Joint $j ($(joint_positions[j]))" k_col Kc=uconvert(u"lbf*inch", Kc) Kt=uconvert(u"lbf*inch", Kt_single) Kec=uconvert(u"lbf*inch", Kec) Ic_eff=uconvert(u"inch^4", Ic_eff)
         end
     end
-    
-    # Create ASAP model with column stubs
+
+    # ── Build nodes ──
     nodes = Node[]
-    elements = Element[]
-    loads = AbstractLoad[]
-    
-    # Track node indices for slab and column base nodes
+    slab_dofs = [true, false, true, false, true, false]  # XZ plane frame
+
+    # Column-center nodes (one per joint)
     slab_node_indices = Int[]
-    col_base_indices = Int[]
-    
-    # Create slab-level nodes at column locations (free DOFs for 2D plane frame)
     x_pos = 0.0u"m"
     for j in 1:n_joints
-        # XZ plane frame: allow X translation, Z translation, Y rotation
-        dofs = [true, false, true, false, true, false]
-        node = Node([x_pos, 0.0u"m", 0.0u"m"], dofs)
-        push!(nodes, node)
+        push!(nodes, Node([x_pos, 0.0u"m", 0.0u"m"], slab_dofs))
         push!(slab_node_indices, length(nodes))
         if j < n_joints
-            x_pos += l1_m[j]
+            x_pos += uconvert(u"m", spans[j].l1)
         end
     end
-    
-    # Create column base nodes (fixed) at H/2 below slab
-    H_stub = H / 2
-    H_stub_m = uconvert(u"m", H_stub)
+
+    # Face-of-column nodes (2 per span: left face, right face)
+    # These are intermediate nodes within each span.
+    face_node_indices = Vector{NTuple{2, Int}}(undef, n_spans)  # (left_face, right_face)
+    for i in 1:n_spans
+        sp = spans[i]
+        x_left_center = nodes[slab_node_indices[i]].position[1]
+        x_right_center = nodes[slab_node_indices[i+1]].position[1]
+
+        # Half-column widths at each end
+        c1_left_half  = uconvert(u"m", sp.c1_left / 2)
+        c1_right_half = uconvert(u"m", sp.c1_right / 2)
+
+        x_left_face  = x_left_center + c1_left_half
+        x_right_face = x_right_center - c1_right_half
+
+        push!(nodes, Node([x_left_face, 0.0u"m", 0.0u"m"], slab_dofs))
+        idx_lf = length(nodes)
+        push!(nodes, Node([x_right_face, 0.0u"m", 0.0u"m"], slab_dofs))
+        idx_rf = length(nodes)
+        face_node_indices[i] = (idx_lf, idx_rf)
+    end
+
+    # Column base nodes (fixed, H/2 below slab)
+    col_base_indices = Int[]
+    H_stub_m = uconvert(u"m", H / 2)
     for j in 1:n_joints
-        x_pos_j = nodes[slab_node_indices[j]].position[1]
-        base_node = Node([x_pos_j, 0.0u"m", -H_stub_m], :fixed)
-        push!(nodes, base_node)
+        x_j = nodes[slab_node_indices[j]].position[1]
+        push!(nodes, Node([x_j, 0.0u"m", -H_stub_m], :fixed))
         push!(col_base_indices, length(nodes))
     end
-    
-    # Create slab-beam elements with effective stiffness
-    span_elements = Element[]
-    
-    # Slab section properties (with k_slab/4 enhancement for non-prismatic effect)
+
+    # ── Build slab-beam elements (3 per span) ──
+    elements = Element[]
+    span_elements = Element[]  # all slab elements in order: [rigid_L₁, clear₁, rigid_R₁, rigid_L₂, ...]
+
+    # Section properties
     Is_gross = l2 * h^3 / 12
-    Is_eff = (k_slab / 4.0) * Is_gross
-    A_slab = l2 * h
-    J_slab = _torsional_constant_rect(l2, h)
-    
-    # Slab material and section (unitful constructor)
-    slab_sec = Section(
+    A_slab   = l2 * h
+    J_slab   = _torsional_constant_rect(l2, h)
+
+    # Clear-span section: gross I
+    clear_sec = Section(
         uconvert(u"m^2", A_slab),
         Ecs_Pa,
         uconvert(u"Pa", G_slab),
-        uconvert(u"m^4", Is_eff),
-        uconvert(u"m^4", Is_eff/10),  # Iy (minor axis, not critical)
+        uconvert(u"m^4", Is_gross),
+        uconvert(u"m^4", Is_gross / 10),
         uconvert(u"m^4", J_slab),
         ρ
     )
-    
+
     for i in 1:n_spans
-        n1 = nodes[slab_node_indices[i]]
-        n2 = nodes[slab_node_indices[i+1]]
-        elem = Element(n1, n2, slab_sec)
-        push!(elements, elem)
-        push!(span_elements, elem)
+        sp = spans[i]
+        (idx_lf, idx_rf) = face_node_indices[i]
+
+        # Rigid-zone section: ACI 318-11 §13.7.3.3
+        # I_rigid = I_s / (1 - c₂/l₂)²
+        c2_left  = sp.c2_left
+        c2_right = sp.c2_right
+        ratio_left  = ustrip(c2_left) / ustrip(uconvert(unit(c2_left), l2))
+        ratio_right = ustrip(c2_right) / ustrip(uconvert(unit(c2_right), l2))
+        Is_rigid_left  = Is_gross / (1 - ratio_left)^2
+        Is_rigid_right = Is_gross / (1 - ratio_right)^2
+
+        rigid_sec_left = Section(
+            uconvert(u"m^2", A_slab),
+            Ecs_Pa,
+            uconvert(u"Pa", G_slab),
+            uconvert(u"m^4", Is_rigid_left),
+            uconvert(u"m^4", Is_rigid_left / 10),
+            uconvert(u"m^4", J_slab),
+            ρ
+        )
+        rigid_sec_right = Section(
+            uconvert(u"m^2", A_slab),
+            Ecs_Pa,
+            uconvert(u"Pa", G_slab),
+            uconvert(u"m^4", Is_rigid_right),
+            uconvert(u"m^4", Is_rigid_right / 10),
+            uconvert(u"m^4", J_slab),
+            ρ
+        )
+
+        # Element 1: rigid zone left (column center → left face)
+        e_rigid_L = Element(nodes[slab_node_indices[i]], nodes[idx_lf], rigid_sec_left)
+        # Element 2: clear span (left face → right face)
+        e_clear   = Element(nodes[idx_lf], nodes[idx_rf], clear_sec)
+        # Element 3: rigid zone right (right face → column center)
+        e_rigid_R = Element(nodes[idx_rf], nodes[slab_node_indices[i+1]], rigid_sec_right)
+
+        push!(elements, e_rigid_L); push!(span_elements, e_rigid_L)
+        push!(elements, e_clear);   push!(span_elements, e_clear)
+        push!(elements, e_rigid_R); push!(span_elements, e_rigid_R)
     end
-    
-    # Create column stub elements with Ic_eff
+
+    # ── Build column stub elements ──
     for j in 1:n_joints
-        # Get column dimensions at this joint for A and J
         if j == 1
-            c1 = spans[1].c1_left
-            c2 = spans[1].c2_left
+            c1 = spans[1].c1_left;  c2 = spans[1].c2_left
         elseif j == n_joints
-            c1 = spans[end].c1_right
-            c2 = spans[end].c2_right
+            c1 = spans[end].c1_right; c2 = spans[end].c2_right
         else
             c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
             c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
         end
-        
-        A_col = c1 * c2
-        J_col = _torsional_constant_rect(c1, c2)
-        Ic_eff = joint_Ic_eff[j]
-        
-        # Column section (unitful constructor)
+
         col_sec = Section(
-            uconvert(u"m^2", A_col),
+            uconvert(u"m^2", c1 * c2),
             Ecc_Pa,
             uconvert(u"Pa", G_col),
-            uconvert(u"m^4", Ic_eff),  # KEY: Ic_eff from Kec
-            uconvert(u"m^4", Ic_eff),
-            uconvert(u"m^4", J_col),
+            uconvert(u"m^4", joint_Ic_eff[j]),
+            uconvert(u"m^4", joint_Ic_eff[j]),
+            uconvert(u"m^4", _torsional_constant_rect(c1, c2)),
             ρ
         )
-        
-        n_base = nodes[col_base_indices[j]]
-        n_slab = nodes[slab_node_indices[j]]
-        col_elem = Element(n_base, n_slab, col_sec)
-        push!(elements, col_elem)
+
+        push!(elements, Element(nodes[col_base_indices[j]], nodes[slab_node_indices[j]], col_sec))
     end
-    
-    # Apply uniform loads using LineLoad for accurate moment distribution
-    # w = qu × l₂ (load per unit length of frame)
-    w = qu * l2
-    w_N_m = uconvert(u"N/m", w)
-    
+
+    # ── Apply loads to ALL slab elements (rigid + clear) ──
+    loads = AbstractLoad[]
+    w_N_m = uconvert(u"N/m", qu * l2)
     for elem in span_elements
-        # LineLoad in global coordinates: [wx, wy, wz] - gravity is -Z
-        line_load = LineLoad(elem, [0.0u"N/m", 0.0u"N/m", -w_N_m])
-        push!(loads, line_load)
+        push!(loads, LineLoad(elem, [0.0u"N/m", 0.0u"N/m", -w_N_m]))
     end
-    
-    # Build model
+
     model = Model(nodes, elements, loads)
-    
+
     return model, span_elements, joint_Kec
 end
 
@@ -1213,64 +1287,72 @@ end
 
 Extract moments at key locations from solved ASAP model.
 
-For the column stub model (XZ plane frame), moments are extracted from the 
-element forces directly. The midspan moment is computed from statics:
+With the 3-sub-element-per-span layout (rigid_L, clear, rigid_R), end moments
+are taken from the **outer ends** of the rigid zone elements (at column
+centerlines).  The midspan moment is computed from statics:
     M_pos = M0 - (M_neg_left + M_neg_right) / 2
 
 # Arguments
 - `model`: Solved ASAP model
-- `span_elements`: Vector of slab-beam elements
+- `span_elements`: Vector of slab-beam elements (3 per span in order:
+  [rigid_L₁, clear₁, rigid_R₁, rigid_L₂, clear₂, rigid_R₂, ...])
 - `spans`: Vector of EFMSpanProperties
 - `qu`: Optional factored pressure (for midspan moment calculation from statics)
 
 # Returns
 Vector of named tuples with:
-- `M_neg_left`: Negative moment at left support
-- `M_pos`: Positive moment at midspan  
-- `M_neg_right`: Negative moment at right support
+- `M_neg_left`: Negative moment at left column centerline
+- `M_pos`: Positive moment at midspan
+- `M_neg_right`: Negative moment at right column centerline
 
 # Notes
-- elem.forces[6] = Mz at node 1 (in N·m for SI model)
-- elem.forces[12] = Mz at node 2 (in N·m for SI model)
+- elem.forces[6]  = Mz at node 1 (start node, in N·m for SI model)
+- elem.forces[12] = Mz at node 2 (end node, in N·m for SI model)
 """
 function extract_span_moments(model, span_elements, spans; qu::Union{Nothing, Pressure}=nothing)
+    n_spans = length(spans)
+    n_elems_per_span = length(span_elements) ÷ n_spans  # 3 for sub-element model, 1 for legacy
+
     span_moments = NamedTuple{(:span_idx, :M_neg_left, :M_pos, :M_neg_right), Tuple{Int, Moment, Moment, Moment}}[]
-    
-    for (i, elem) in enumerate(span_elements)
+
+    for i in 1:n_spans
         sp = spans[i]
-        
-        # Extract end moments directly from element forces
-        # ASAP stores forces in local element coordinates (N·m for SI model)
-        # For horizontal element in XZ plane: forces[6] and forces[12] are Mz
-        M_neg_left_kipft = to_kipft(abs(elem.forces[6]) * u"N*m")
-        M_neg_right_kipft = to_kipft(abs(elem.forces[12]) * u"N*m")
-        
-        # Compute midspan moment from statics (simple beam formula)
-        # M_pos = M0 - (M_left + M_right)/2
-        # where M0 = w×l²/8 is the simply-supported moment
-        if !isnothing(qu)
-            w_kipft = ustrip(kip/u"ft", qu * sp.l2)  # Load per unit length
+
+        if n_elems_per_span == 3
+            # 3-sub-element layout: rigid_L, clear, rigid_R
+            idx_base = 3 * (i - 1)
+            e_rigid_L = span_elements[idx_base + 1]
+            e_rigid_R = span_elements[idx_base + 3]
+
+            # Left support moment: node 1 of rigid_L (column centerline)
+            M_neg_left_kipft  = to_kipft(abs(e_rigid_L.forces[6]) * u"N*m")
+            # Right support moment: node 2 of rigid_R (column centerline)
+            M_neg_right_kipft = to_kipft(abs(e_rigid_R.forces[12]) * u"N*m")
         else
-            # Estimate from tributary width and typical loading
+            # Legacy single-element layout (backward compatibility)
+            elem = span_elements[i]
+            M_neg_left_kipft  = to_kipft(abs(elem.forces[6]) * u"N*m")
+            M_neg_right_kipft = to_kipft(abs(elem.forces[12]) * u"N*m")
+        end
+
+        # Midspan moment from statics: M_pos = M0 - (M_left + M_right)/2
+        if !isnothing(qu)
+            w_kipft = ustrip(kip/u"ft", qu * sp.l2)
+        else
             w_kipft = 0.0
         end
         l_ft = ustrip(u"ft", sp.l1)
         M0 = w_kipft * l_ft^2 / 8
         M_pos_kipft = M0 - (M_neg_left_kipft + M_neg_right_kipft) / 2
-        
-        # Convert to Unitful quantities
-        M_neg_left = M_neg_left_kipft * kip*u"ft"
-        M_neg_right = M_neg_right_kipft * kip*u"ft"
-        M_pos = M_pos_kipft * kip*u"ft"
-        
+
         push!(span_moments, (
             span_idx = i,
-            M_neg_left = M_neg_left,
-            M_pos = M_pos,
-            M_neg_right = M_neg_right
+            M_neg_left  = M_neg_left_kipft * kip*u"ft",
+            M_pos       = M_pos_kipft * kip*u"ft",
+            M_neg_right = M_neg_right_kipft * kip*u"ft"
         ))
     end
-    
+
     return span_moments
 end
 
@@ -1342,10 +1424,13 @@ end
 
 Build EFM span properties from column/slab data.
 
-For **flat slabs** (drop_panel ≠ nothing), uses the same prismatic PCA factors
-as flat plates.  Non-prismatic section behaviour is handled by the ASAP elastic
-solver which models the actual varying I along the span.  Hardy Cross moment
-distribution is NOT used for flat slabs.
+Slab-beam stiffness factors (k, COF, m) are interpolated from PCA Table A1
+based on actual c₁/l₁ and c₂/l₂ ratios — replacing the old hardcoded
+PCA_K_SLAB, PCA_COF, PCA_M_FACTOR constants.
+
+For **flat slabs** (drop_panel ≠ nothing), the same prismatic PCA factors are
+used.  Non-prismatic section behaviour is handled by the ASAP elastic solver
+which models the actual varying I along the span.
 
 Is_drop (composite I at the drop section) is still computed so the ASAP solver
 can assign a stiffer section to the drop-panel zone.
@@ -1355,16 +1440,17 @@ function _build_efm_spans(columns, l1, l2, ln, h, Ecs;
     n_cols = length(columns)
     n_spans = n_cols - 1
     
-    # Always use prismatic PCA factors — ASAP handles non-prismatic via actual I
-    k_slab   = PCA_K_SLAB
-    m_factor = PCA_M_FACTOR
-    COF      = PCA_COF
-    
     spans = Vector{EFMSpanProperties}(undef, n_spans)
     
     for i in 1:n_spans
         col_left = columns[i]
         col_right = columns[i + 1]
+
+        # Geometry-dependent PCA Table A1 lookup
+        slab_factors = pca_slab_beam_factors(col_left.c1, l1, col_left.c2, l2)
+        k_slab   = slab_factors.k
+        m_factor = slab_factors.m
+        COF      = slab_factors.COF
         
         Is = slab_moment_of_inertia(l2, h)
         Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, col_left.c1, col_left.c2; k_factor=k_slab)
@@ -1674,18 +1760,16 @@ function run_moment_analysis(
         c1_right = col_right.c1
         c2_right = col_right.c2
         
-        # Compute span properties
+        # Compute span properties with geometry-dependent PCA Table A1 lookup
         Is = slab_moment_of_inertia(l2, h)
-        # Use average column dimensions for the span
         c1_avg = (c1_left + c1_right) / 2
         c2_avg = (c2_left + c2_right) / 2
-        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1_avg, c2_avg)
-        
-        # PCA factors — use default constants from PCA Notes on ACI 318-11 Table A1
-        # (for typical flat plate geometry with c/l ≈ 0.08–0.10)
-        m_factor = PCA_M_FACTOR
-        k_slab = PCA_K_SLAB
-        COF = PCA_COF
+
+        slab_factors = pca_slab_beam_factors(c1_avg, l1, c2_avg, l2)
+        k_slab   = slab_factors.k
+        m_factor = slab_factors.m
+        COF      = slab_factors.COF
+        Ksb = slab_beam_stiffness_Ksb(Ecs, Is, l1, c1_avg, c2_avg; k_factor=k_slab)
         
         push!(spans, EFMSpanProperties(
             span_idx, span_idx, span_idx + 1,

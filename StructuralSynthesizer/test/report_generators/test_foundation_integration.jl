@@ -12,7 +12,7 @@ using StructuralSizer: kip, ksf, ksi, psf, pcf, to_kip, to_kipft, to_ksi, to_inc
 # Report helpers (same style as EFM report)
 # ─────────────────────────────────────────────────────────────────────────────
 
-include(joinpath(@__DIR__, "..", "..", "shared", "report_helpers.jl"))
+include(joinpath(@__DIR__, "..", "shared", "report_helpers.jl"))
 const _rpt = ReportHelpers.Printer()
 
 """

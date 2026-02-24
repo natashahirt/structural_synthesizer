@@ -1,6 +1,6 @@
 # Structural Synthesizer — Codebase Directory
 
-> **Last updated:** 2026-02-06 (DisplayUnits system: coherent SI storage + configurable display units)
+> **Last updated:** 2026-02-23 (PixelFrame: FRC material, section, ACI/fib capacities, checker, catalog, multi-material MIP)
 > 
 > Reference document for codebase capabilities, types, and workflows.
 > Update this file when implementing new features or changing APIs.
@@ -68,11 +68,8 @@
 | `DL_FACTOR` | 1.2 | ASCE 7 dead load factor |
 | `LL_FACTOR` | 1.6 | ASCE 7 live load factor |
 | `BIG_M` | 1e9 | Optimizer big-M constant |
-| `ACI_CRACK_CONTROL_FS_PSI` | 40000 | ACI 318-19 §24.3.2 crack control limit |
-| `PCA_K_SLAB` | 4.127 | PCA Table A1: slab-beam stiffness factor |
-| `PCA_K_COL` | 4.74 | PCA Table A7: column stiffness factor |
-| `PCA_M_FACTOR` | 0.08429 | PCA Table A1: fixed-end moment coefficient |
-| `PCA_COF` | 0.507 | PCA Table A1: carry-over factor |
+| `ACI_CRACK_CONTROL_FS_PSI` | 40000 | ACI 318-11 §10.6.4 crack control limit |
+| *(removed)* | — | PCA stiffness factors are now computed per-geometry via `pca_slab_beam_factors()` and `pca_column_factors()` in `codes/aci/pca_tables.jl` |
 
 ### Unitful Best Practices
 
@@ -119,6 +116,7 @@ All material types carry `ecc` (embodied carbon, kgCO₂e/kg) and `cost` ($/kg, 
 | `Concrete` | `E, fc′, ρ, ν, εcu, ecc, cost, λ` | `λ`: lightweight factor (1.0 for NWC, ACI §19.2.4) |
 | `Timber` | `E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, ecc, cost` | NDS reference values |
 | `ReinforcedConcreteMaterial` | `concrete, rebar, transverse` | Composite RC material |
+| `FiberReinforcedConcrete` | `concrete, fiber_dosage, fR3, fiber_ecc` | FRC for PixelFrame (wraps Concrete) |
 
 ### Steel Presets
 | Material | Type | Fy | Status |
@@ -183,6 +181,15 @@ All material types carry `ecc` (embodied carbon, kgCO₂e/kg) and `cost` ($/kg, 
 | Type | Design Code | Status |
 |------|-------------|--------|
 | `RCBeamSection` | ACI 318 | ✅ Full (flexure + shear design pipeline) |
+
+### Concrete — PixelFrame (External PT + FRC)
+| Type | Catalog Functions | Design Code | Status |
+|------|-------------------|-------------|--------|
+| `PixelFrameSection` | `generate_pixelframe_catalog()` | ACI 318-19, fib MC2010 | ✅ Full |
+
+**Key fields:** `L_px` (module width), `t` (top slab), `L_c` (web depth), `material` (FRC), `A_s` (tendon area), `f_pe` (effective prestress), `d_ps` (tendon depth, external)
+
+**Key functions:** `section_area`, `section_width`, `section_depth`, `pf_axial_capacity`, `pf_flexural_capacity`, `frc_shear_capacity`, `pf_carbon_per_meter`, `pf_tendon_deviation_force`
 
 ### Timber — Glulam
 | Type | Design Code | Status |
@@ -258,6 +265,23 @@ All material types carry `ecc` (embodied carbon, kgCO₂e/kg) and `cost` ($/kg, 
 - `test/concrete_beam/test_cantilever_beam.jl` (24 tests — cantilever, StructurePoint validated)
 - `test/concrete_beam/test_doubly_reinforced.jl` (29 tests — doubly reinforced, StructurePoint validated)
 - Total: **106 beam tests**, all passing
+
+### PixelFrame — ACI 318-19 + fib MC2010
+| Check | Functions | Status |
+|-------|-----------|--------|
+| Axial (ACI §22.4.2.3) | `pf_axial_capacity` | ✅ |
+| Flexure (ACI §22.4.1.2, unbonded PT) | `pf_flexural_capacity` (iterative εc loop) | ✅ |
+| FRC Shear (fib MC2010 §7.7-5) | `frc_shear_capacity` (keyword + section convenience) | ✅ |
+| Deflection — Simplified (Branson + EPT) | `pf_cracking_moment`, `pf_cracked_moment_of_inertia`, `pf_effective_Ie`, `pf_deflection`, `pf_check_deflection` | ✅ |
+| Embodied Carbon (thesis Eq. 2.16) | `pf_carbon_per_meter`, `pf_concrete_ecc` | ✅ |
+| MinCarbon override | `objective_value(::MinCarbon, ::PixelFrameSection, ...)` | ✅ |
+| Deflection — Full Iterative Ng & Tan (2006) | `pf_deflection(..., method=PFThirdPointLoad())`, `pf_deflection_curve` | ✅ |
+
+**Checker:** `PixelFrameChecker`, `PixelFrameCapacityCache`
+
+**Cache units:** N, N·m (consistent with AISC checker convention)
+
+> **Note on Deflection:** The full Ng & Tan iterative deflection model is implemented, but the simplified, non-iterative Branson approach remains the default for `pf_deflection` and `pf_check_deflection` for performance in design-level serviceability checks. The full model can be explicitly selected via the `method` keyword argument (e.g., `method=PFThirdPointLoad()` or `method=PFSinglePointLoad()`) for detailed analysis or research validation. See `StructuralSizer/src/members/codes/pixelframe/README.md` for details.
 
 ### NDS — Timber
 | Check | Status |
@@ -389,9 +413,9 @@ Internal dispatch: `_size_slab!(::FloorType, struc, slab, idx; ...)` routes to t
 ### Foundation Type Hierarchy
 | Type | Category | Status |
 |------|----------|--------|
-| `SpreadFooting` | Shallow | ✅ IS 456 + ACI 318-14 |
+| `SpreadFooting` | Shallow | ✅ IS 456 + ACI 318-11 |
 | `CombinedFooting` | Shallow | ⚠️ Type only (subsumed by StripFooting) |
-| `StripFooting` | Shallow | ✅ ACI 318-14 + ACI 336.2R (rigid) |
+| `StripFooting` | Shallow | ✅ ACI 318-11 + ACI 336.2R (rigid) |
 | `MatFoundation` | Shallow | ✅ ACI 336.2R (rigid); 🚧 Hetenyi + FEA stub |
 | `DrivenPile` | Deep | ⚠️ Type only |
 | `DrilledShaft` | Deep | ⚠️ Type only |
@@ -410,19 +434,19 @@ Internal dispatch: `_size_slab!(::FloorType, struc, slab, idx; ...)` routes to t
 |----------|--------|
 | `design_spread_footing` (IS 456) | ✅ Full (bearing, punching, one-way shear, flexure) |
 
-### Design Codes — ACI 318-14 (✅ Implemented)
+### Design Codes — ACI 318-11 (✅ Implemented)
 
 #### Spread Footing (`codes/aci/spread_footing.jl`)
 Full 7-step StructurePoint workflow, Unitful throughout.
 
 | Step | Description | ACI Reference | Status |
 |------|-------------|---------------|--------|
-| 1 | Bearing check (service loads) → footing plan (B × L) | ACI 13.3.1.1 | ✅ |
-| 2 | Two-way (punching) shear → minimum depth | ACI 22.6.5.2 | ✅ |
-| 3 | One-way (beam) shear check | ACI 22.5.5.1 | ✅ |
-| 4 | Flexural reinforcement (both directions) | ACI 22.2, 7.7 | ✅ |
-| 5 | Development length verification | ACI 25.4.2 | ✅ |
-| 6 | Bearing at column-footing joint + dowels | ACI 22.8, 16.3 | ✅ |
+| 1 | Bearing check (service loads) → footing plan (B × L) | ACI 318-11 §15.2 | ✅ |
+| 2 | Two-way (punching) shear → minimum depth | ACI 318-11 §11.11.2.1 | ✅ |
+| 3 | One-way (beam) shear check | ACI 318-11 §11.2.1.1 | ✅ |
+| 4 | Flexural reinforcement (both directions) | ACI 318-11 §10.2, §7.7 | ✅ |
+| 5 | Development length verification | ACI 318-11 §12.2 | ✅ |
+| 6 | Bearing at column-footing joint + dowels | ACI 318-11 §10.14, §15.8 | ✅ |
 | 7 | Volume computation (concrete + steel) | — | ✅ |
 
 **Pier shapes:** `:rect` (includes square when c1==c2), `:circular`
@@ -430,7 +454,7 @@ Full 7-step StructurePoint workflow, Unitful throughout.
 
 **Punching perimeter:** Reuses `punching_perimeter(c1, c2, d; shape)` and `punching_geometry_interior` from flat plate code — already handles both `:rectangular` and `:circular`.
 
-**Validation:** StructurePoint ACI 318-14 Spread Footing reference (18" sq column, fc'=4ksi, fy=60ksi, qa=5ksf, Pu=440kip, Ps=300kip)
+**Validation:** StructurePoint ACI 318-11 Spread Footing reference (18" sq column, fc'=4ksi, fy=60ksi, qa=5ksf, Pu=440kip, Ps=300kip)
 
 #### Strip / Combined Footing (`codes/aci/strip_footing.jl`)
 Rigid-analysis strip supporting N ≥ 2 columns.
@@ -438,15 +462,15 @@ Rigid-analysis strip supporting N ≥ 2 columns.
 | Step | Description | ACI Reference | Status |
 |------|-------------|---------------|--------|
 | 1 | Plan sizing: length from column positions, width from bearing | ACI 336.2R §4.1 | 🚧 |
-| 2 | Two-way (punching) shear at each column | ACI 22.6.5.2 | 🚧 |
-| 3 | One-way (beam) shear check | ACI 22.5.5.1 | 🚧 |
+| 2 | Two-way (punching) shear at each column | ACI 318-11 §11.11.2.1 | 🚧 |
+| 3 | One-way (beam) shear check | ACI 318-11 §11.2.1.1 | 🚧 |
 | 4 | Longitudinal flexure (continuous beam statics) | ACI 336.2R §4.1 | 🚧 |
-| 5 | Transverse flexure (band under each column) | ACI 13.3.3 | 🚧 |
-| 6 | Development length | ACI 25.4.2 | ✅ |
+| 5 | Transverse flexure (band under each column) | ACI 318-11 §13.3.3 | 🚧 |
+| 6 | Development length | ACI 318-11 §12.2 | ✅ |
 
 **Auto-merge from spread:** When `gap < merge_gap_factor × D_max` or `eccentricity > limit`, adjacent spread footings merge into a strip.
 
-**Validation:** StructurePoint ACI 318-14 Combined Footing reference (two columns: 18"×18" ext + 18"×18" int, fc'=4ksi, fy=60ksi, qa=5ksf)
+**Validation:** StructurePoint ACI 318-11 Combined Footing reference (two columns: 18"×18" ext + 18"×18" int, fc'=4ksi, fy=60ksi, qa=5ksf)
 
 #### Mat Foundation (`codes/aci/mat/`)
 Tiered analysis methods (mirrors flat plate DDM → EFM → FEA pattern).
@@ -521,8 +545,8 @@ FoundationParameters.group_tolerance::Float64
 ### Reference Documents
 | Document | Content | Used For |
 |----------|---------|----------|
-| StructurePoint ACI 318-14 Spread Footing | 7-step hand calc: 18" sq column, 4ksi, 60ksi, qa=5ksf | Phase 1 validation |
-| StructurePoint ACI 318-14 Combined Footing | 2-column combined: punching at int/ext, longitudinal flexure | Phase 2 validation |
+| StructurePoint ACI 318-11 Spread Footing | 7-step hand calc: 18" sq column, 4ksi, 60ksi, qa=5ksf | Phase 1 validation |
+| StructurePoint ACI 318-11 Combined Footing | 2-column combined: punching at int/ext, longitudinal flexure | Phase 2 validation |
 | ACI 336.2R-88 Combined Footings and Mats | K_r rigidity, strip procedures, Winkler FEA, mat heuristics | Phases 2–4 theory |
 
 ---
@@ -533,6 +557,8 @@ FoundationParameters.group_tolerance::Float64
 | Function | Description | Status |
 |----------|-------------|--------|
 | `optimize_discrete` | Generic discrete section optimizer | ✅ |
+| `optimize_discrete` (multi-material) | Overload accepting `materials::Vector` for multi-material MIP | ✅ |
+| `expand_catalog_with_materials` | Expand catalog × materials for multi-material solve | ✅ |
 | `size_columns` | Column sizing from demands | ✅ |
 | `to_steel_demands`, `to_rc_demands` | Demand conversion | ✅ |
 | `to_steel_geometry`, `to_concrete_geometry` | Geometry conversion | ✅ |
@@ -801,6 +827,9 @@ Summary functions (`slab_summary`, `foundation_group_summary`, `ec_summary`) acc
 | Foundations (integration) | `test_foundation_integration.jl` | ✅ Report + comparison |
 | Tributaries | `test_tributary_workflow.jl`, `test_voronoi_tributaries.jl`, `test_strip_geometry.jl` | ✅ Good |
 | Optimization | `test_column_optimization.jl`, `test_column_full.jl` | ✅ Basic |
+| Multi-material MIP | `test_multi_material_mip.jl` | ✅ Steel + concrete multi-material |
+| PixelFrame capacities | `test_pixelframe_capacities.jl` (54 tests — axial, flexure, shear, carbon) | ✅ Hand-verified |
+| PixelFrame checker | `test_pixelframe_checker.jl` (168 tests — catalog, feasibility, MIP, objectives) | ✅ Full |
 
 ---
 
@@ -833,6 +862,8 @@ Summary functions (`slab_summary`, `foundation_group_summary`, `ec_summary`) acc
 | RC column (rect) | `StructuralSizer/src/members/sections/concrete/rc_rect_column_section.jl` |
 | RC column (circular) | `StructuralSizer/src/members/sections/concrete/rc_circular_column_section.jl` |
 | RC column catalogs | `StructuralSizer/src/members/sections/concrete/catalogs/rc_columns.jl` |
+| PixelFrame section | `StructuralSizer/src/members/sections/concrete/pixelframe_section.jl` |
+| PixelFrame catalog | `StructuralSizer/src/members/sections/concrete/catalogs/pixelframe_catalog.jl` |
 | **Design codes** | |
 | AISC (all) | `StructuralSizer/src/members/codes/aisc/` |
 | AISC W shapes | `StructuralSizer/src/members/codes/aisc/i_symm/` |
@@ -840,10 +871,13 @@ Summary functions (`slab_summary`, `foundation_group_summary`, `ec_summary`) acc
 | AISC HSS round | `StructuralSizer/src/members/codes/aisc/hss_round/` |
 | ACI columns | `StructuralSizer/src/members/codes/aci/columns/` |
 | ACI beams | `StructuralSizer/src/members/codes/aci/beams/` |
+| PixelFrame (ACI+fib) | `StructuralSizer/src/members/codes/pixelframe/` |
+| fib MC2010 (FRC shear) | `StructuralSizer/src/members/codes/fib/` |
 | NDS (stub) | `StructuralSizer/src/members/codes/nds/` |
 | **Floor systems** | |
 | Types | `StructuralSizer/src/slabs/types.jl` |
 | Flat plate (🚧) | `StructuralSizer/src/slabs/codes/concrete/flat_plate/` |
+| PCA table interpolation | `StructuralSizer/src/codes/aci/pca_tables.jl` (✅) |
 | Vault | `StructuralSizer/src/slabs/codes/vault/haile_unreinforced.jl` |
 | Steel floors (stub) | `StructuralSizer/src/slabs/codes/steel/` |
 | Timber floors (stub) | `StructuralSizer/src/slabs/codes/timber/` |

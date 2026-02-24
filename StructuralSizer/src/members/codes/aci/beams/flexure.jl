@@ -158,17 +158,18 @@ function neutral_axis_depth(a::Length, fc::Pressure)
 end
 
 """
-    tensile_strain(d, c) -> Float64
+    tensile_strain(d, c; εcu=0.003) -> Float64
 
 Net tensile strain in extreme tension steel per ACI 318-11 §9.3.2.
 
-    εt = 0.003 × (dt - c) / c
+    εt = εcu × (dt - c) / c
 
 where dt = d for a single layer of tension steel.
 
 # Arguments
 - `d`: Effective depth (distance to tension steel centroid)
 - `c`: Neutral axis depth from compression face
+- `εcu`: Ultimate concrete compressive strain (default 0.003 per ACI 318-11 §10.2.3)
 
 # Returns
 - εt (dimensionless strain)
@@ -181,10 +182,10 @@ where dt = d for a single layer of tension steel.
 # Reference
 - StructurePoint Example: εt = 0.003 × (17.56 - 4.67) / 4.67 = 0.0083
 """
-function tensile_strain(d::Length, c::Length)
+function tensile_strain(d::Length, c::Length; εcu::Real=0.003)
     d_val = ustrip(u"inch", d)
     c_val = ustrip(u"inch", c)
-    return 0.003 * (d_val - c_val) / c_val
+    return εcu * (d_val - c_val) / c_val
 end
 
 """
@@ -368,8 +369,8 @@ Named tuple: `(c_max, a_max, Cc, As_max, Mn_max, β1)`
 - StructurePoint Doubly Reinforced Example §2.1:
   c = 9.75 in, a = 7.80 in, Cc = 464.10 kips, As = 7.74 in², Mn = 854.72 kip-ft
 """
-function max_singly_reinforced(b::Length, d::Length, fc::Pressure, fy::Pressure)
-    εcu = 0.003
+function max_singly_reinforced(b::Length, d::Length, fc::Pressure, fy::Pressure;
+                               εcu::Real=0.003)
     β = beta1(fc)
 
     # Neutral axis at tension-controlled limit
@@ -422,10 +423,9 @@ Named tuple: `(fs_prime, εs_prime, yields)`
   ε's = 0.003 × (9.75 - 3) / 9.75 = 0.00208 ≥ εy = 0.00207 → yields
 """
 function compression_steel_stress(c::Length, d_prime::Length,
-        fc::Pressure, fy::Pressure, Es::Pressure)
+        fc::Pressure, fy::Pressure, Es::Pressure; εcu::Real=0.003)
     c_in  = ustrip(u"inch", c)
     dp_in = ustrip(u"inch", d_prime)
-    εcu   = 0.003
 
     εs_prime = εcu * (c_in - dp_in) / c_in
     εy       = ustrip(u"psi", fy) / ustrip(u"psi", Es)

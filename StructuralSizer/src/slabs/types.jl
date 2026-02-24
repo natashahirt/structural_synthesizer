@@ -491,6 +491,7 @@ Per-column shear stud design per ACI 318-11 §11.11.5 / Ancon Shearfix.
 """
 Base.@kwdef struct ShearStudDesign{L<:Asap.Length, A<:Asap.Area, P<:Asap.Pressure}
     required::Bool = false
+    catalog_name::Symbol = :generic  # :generic, :incon_iss, :ancon_shearfix
     stud_diameter::L = 0.5u"inch"
     fyt::P = 51000.0u"psi"
     n_rails::Int = 0
@@ -507,25 +508,162 @@ end
 """Check if stud design is adequate."""
 is_adequate(s::ShearStudDesign) = !s.required || (s.n_rails > 0 && s.outer_ok)
 
+# =============================================================================
+# Closed Stirrup Design (for Punching Shear Reinforcement)
+# =============================================================================
+
+"""
+    ClosedStirrupDesign
+
+Per-column closed stirrup design for punching shear per ACI 318-11 §11.11.3.
+
+# Key differences from headed studs (§11.11.5):
+- Vc capped at 2λ√f'c (vs 3λ√f'c for studs)
+- Vn capped at 6√f'c·b0·d (vs 8√f'c for studs)
+- Minimum d ≥ 6 in. and d ≥ 16·d_b
+- Anchorage per §12.13 (difficult in slabs < 10 in.)
+
+# Fields
+- `required`: Whether stirrups are needed
+- `bar_size`: Stirrup bar designation (#3, #4, etc.)
+- `fyt`: Stirrup yield strength
+- `n_legs`: Number of stirrup legs per peripheral line
+- `n_lines`: Number of peripheral lines (determines reinforced zone extent)
+- `s0`: First stirrup spacing from column face (≤ d/2)
+- `s`: Subsequent radial spacing (≤ d/2)
+- `Av_per_line`: Total stirrup area per peripheral line (n_legs × Ab)
+- `vs`: Steel contribution to shear stress (psi)
+- `vcs`: Concrete contribution with stirrups (capped at 2λ√f'c, psi)
+- `vc_max`: Maximum nominal shear stress (6√f'c, psi)
+- `outer_ok`: Whether outer critical section (d/2 beyond last line) passes
+
+# Reference
+- ACI 318-11 §11.11.3
+"""
+Base.@kwdef struct ClosedStirrupDesign{L<:Asap.Length, A<:Asap.Area, P<:Asap.Pressure}
+    required::Bool = false
+    bar_size::Int = 3                   # Stirrup bar designation (#3, #4, etc.)
+    fyt::P = 60000.0u"psi"
+    n_legs::Int = 0                     # Legs per peripheral line
+    n_lines::Int = 0                    # Number of peripheral lines
+    s0::L = 0.0u"inch"                 # First spacing from column face
+    s::L = 0.0u"inch"                  # Radial spacing
+    Av_per_line::A = 0.0u"inch^2"      # Total stirrup area per line
+    vs::P = 0.0u"psi"                  # Steel contribution
+    vcs::P = 0.0u"psi"                 # Reduced concrete contribution
+    vc_max::P = 0.0u"psi"              # 6√f'c limit
+    outer_ok::Bool = true
+end
+
+"""Check if stirrup design is adequate."""
+is_adequate(s::ClosedStirrupDesign) = !s.required || (s.n_legs > 0 && s.outer_ok)
+
+# =============================================================================
+# Shear Cap Design (for Punching Shear Reinforcement)
+# =============================================================================
+
+"""
+    ShearCapDesign
+
+Per-column shear cap design for punching shear per ACI 318-11 §13.2.6.
+
+A shear cap is a localized thickening below the slab at the column.
+It increases the effective depth `d` and the critical perimeter `b0`
+by moving the critical section to `d/2` from the cap edge.
+
+# Geometry Rule (§13.2.6)
+The cap must extend horizontally from the column face at least the
+projection depth: `extent ≥ h_cap`.
+
+# Fields
+- `required`: Whether a shear cap is needed
+- `h_cap`: Projection depth below the slab soffit
+- `extent`: Horizontal extent from column face (≥ h_cap)
+- `d_eff`: Effective depth at the cap (d_slab + h_cap)
+- `b0_cap`: Critical perimeter at d_eff/2 from cap edge
+- `ratio`: vu / φvc at the cap critical section
+- `ok`: Whether the cap resolves punching
+
+# Reference
+- ACI 318-11 §13.2.6, §11.11.1.2(b)
+"""
+Base.@kwdef struct ShearCapDesign{L<:Asap.Length}
+    required::Bool = false
+    h_cap::L = 0.0u"inch"              # Projection below slab
+    extent::L = 0.0u"inch"             # Horizontal extent from column face
+    d_eff::L = 0.0u"inch"              # Effective depth at cap
+    b0_cap::L = 0.0u"inch"             # Critical perimeter at cap edge
+    ratio::Float64 = 0.0               # vu / φvc
+    ok::Bool = true
+end
+
+"""Check if shear cap design is adequate."""
+is_adequate(s::ShearCapDesign) = !s.required || s.ok
+
+# =============================================================================
+# Column Capital Design (for Punching Shear Reinforcement)
+# =============================================================================
+
+"""
+    ColumnCapitalDesign
+
+Per-column capital design for punching shear per ACI 318-11 §13.1.2.
+
+A column capital is a flared enlargement of the column head. The effective
+support area is defined by the 45° cone/pyramid rule: the capital increases
+the effective column dimensions by `2 × h_cap` in each direction.
+
+# 45° Rule (§13.1.2)
+Effective support = intersection of slab soffit with the largest right
+circular cone / right pyramid whose surfaces are within the column and
+capital, oriented ≤ 45° to the column axis.
+
+# Fields
+- `required`: Whether a capital is needed
+- `h_cap`: Capital projection below the slab soffit
+- `c1_eff`: Effective column dimension in direction 1 (c1 + 2·h_cap)
+- `c2_eff`: Effective column dimension in direction 2 (c2 + 2·h_cap)
+- `b0_eff`: Critical perimeter using effective dimensions
+- `ratio`: vu / φvc at the effective critical section
+- `ok`: Whether the capital resolves punching
+
+# Reference
+- ACI 318-11 §13.1.2
+"""
+Base.@kwdef struct ColumnCapitalDesign{L<:Asap.Length}
+    required::Bool = false
+    h_cap::L = 0.0u"inch"              # Capital projection below slab
+    c1_eff::L = 0.0u"inch"             # Effective c1 (c1 + 2·h_cap)
+    c2_eff::L = 0.0u"inch"             # Effective c2 (c2 + 2·h_cap)
+    b0_eff::L = 0.0u"inch"             # Critical perimeter with capital
+    ratio::Float64 = 0.0               # vu / φvc
+    ok::Bool = true
+end
+
+"""Check if column capital design is adequate."""
+is_adequate(s::ColumnCapitalDesign) = !s.required || s.ok
+
 """
     PunchingCheckResult
 
-Per-column punching shear check result with optional stud design.
+Per-column punching shear check result with optional reinforcement design.
 
 # Fields
-- `ok`: Whether check passes (with or without studs)
-- `ratio`: vu / φvc (or vu / φ(vcs+vs) with studs)
+- `ok`: Whether check passes (with or without reinforcement)
+- `ratio`: vu / φvc (or vu / φ(vcs+vs) with reinforcement)
 - `vu`: Factored shear stress
-- `φvc`: Design capacity (concrete only without studs)
+- `φvc`: Design capacity (concrete only without reinforcement)
 - `b0`: Critical perimeter at column
 - `Jc`: Polar moment of inertia
 - `Vu`: Factored shear force
 - `Mub`: Unbalanced moment
-- `studs`: Shear stud design (nothing if no studs needed/used)
+- `studs`: Headed shear stud design (nothing if not used)
+- `stirrups`: Closed stirrup design (nothing if not used)
+- `shear_cap`: Shear cap design (nothing if not used)
+- `capital`: Column capital design (nothing if not used)
 
 # Reference
 - ACI 318-11 §11.11
-- Ancon Shearfix Design Manual
 """
 Base.@kwdef struct PunchingCheckResult{L<:Asap.Length, P<:Asap.Pressure, F<:Asap.Force, M<:Asap.Moment}
     ok::Bool
@@ -537,6 +675,9 @@ Base.@kwdef struct PunchingCheckResult{L<:Asap.Length, P<:Asap.Pressure, F<:Asap
     Vu::F
     Mub::M
     studs::Union{ShearStudDesign, Nothing} = nothing
+    stirrups::Union{ClosedStirrupDesign, Nothing} = nothing
+    shear_cap::Union{ShearCapDesign, Nothing} = nothing
+    capital::Union{ColumnCapitalDesign, Nothing} = nothing
 end
 
 """

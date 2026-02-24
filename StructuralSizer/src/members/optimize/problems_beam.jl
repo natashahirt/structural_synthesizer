@@ -198,7 +198,8 @@ function constraint_fns(p::RCBeamNLPProblem, x::Vector{Float64})
     β1 = _beta1_from_fc_psi(p.fc_psi)
     c = a / max(β1, 0.5)
 
-    εt = c > 0 ? 0.003 * (d - c) / max(c, 0.01) : 0.0
+    εcu = 0.003  # ACI 318-11 §10.2.3
+    εt = c > 0 ? εcu * (d - c) / max(c, 0.01) : 0.0
 
     φ = flexure_phi(εt)
 
@@ -401,6 +402,7 @@ struct SteelWBeamNLPProblem <: AbstractNLPProblem
     
     # Material properties (ksi)
     E_ksi::Float64
+    G_ksi::Float64
     Fy_ksi::Float64
     
     # Demand values (kip, kip-ft)
@@ -439,6 +441,7 @@ function SteelWBeamNLPProblem(
     L_span = nothing,
 )
     E_ksi = to_ksi(opts.material.E)
+    G_ksi = to_ksi(opts.material.G)
     Fy_ksi = to_ksi(opts.material.Fy)
     
     Mu_kipft = to_kipft(Mu)
@@ -479,7 +482,7 @@ function SteelWBeamNLPProblem(
     tw_max = to_inches(opts.max_web_thickness)
     
     SteelWBeamNLPProblem(
-        opts, E_ksi, Fy_ksi,
+        opts, E_ksi, G_ksi, Fy_ksi,
         Mu_kipft, Vu_kip,
         Lb_in, Cb,
         Ix_min_in4,
@@ -652,7 +655,7 @@ function constraint_fns(p::SteelWBeamNLPProblem, x::Vector{Float64})
     # Combined normal + shear stress check at midspan (critical for concentrated load).
     # (f_un / (φ·Fy))² + (f_uv / (φ·0.6·Fy))² ≤ 1.0
     if p.Tu_kipin > 0
-        G_ksi = p.E_ksi / (2 * (1 + 0.3))
+        G_ksi = p.G_ksi
         
         # Warping constant  Cw ≈ Iy × ho² / 4  (DG9 Eq. C.3)
         Cw = Iy * _smooth_max(ho, 0.1; k=k)^2 / 4

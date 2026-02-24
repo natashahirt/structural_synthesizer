@@ -5,9 +5,11 @@
 # Results saved to StructuralStudies/src/flat_plate_methods/results/
 #
 # Usage:
-#   julia scripts/runners/run_heatmap_sweep.jl           # default (ACI only)
-#   julia scripts/runners/run_heatmap_sweep.jl quick      # 3×3 quick smoke test
-#   julia scripts/runners/run_heatmap_sweep.jl full       # ACI + no-minimum
+#   julia scripts/runners/run_heatmap_sweep.jl               # default (ACI, catalog columns)
+#   julia scripts/runners/run_heatmap_sweep.jl quick          # 3×3 quick smoke test
+#   julia scripts/runners/run_heatmap_sweep.jl full           # ACI + no-minimum
+#   julia scripts/runners/run_heatmap_sweep.jl nlp            # default grid, NLP columns only
+#   julia scripts/runners/run_heatmap_sweep.jl both           # default grid, catalog + NLP columns
 # ==============================================================================
 
 # ── Sweep parameters (edit these) ────────────────────────────────────────────
@@ -20,6 +22,11 @@ const SDL        = 20.0                     # psf — superimposed dead load
 const MAX_COL_IN = nothing                  # in — fixed max column size (nothing = use adaptive)
 const COL_RATIO  = 1.1                      # adaptive multiplier: col = span_ft × ratio, clamped 36–60"
 const DEFL_LIMIT = :L_360                   # :L_240, :L_360, or :L_480 (ACI Table 24.2.2)
+
+# Column sizing strategies
+const COL_CATALOG = [:catalog]              # MIP catalog-based (default)
+const COL_NLP     = [:nlp]                  # NLP continuous optimization
+const COL_BOTH    = [:catalog, :nlp]        # compare both
 
 # Quick-test subset (used with `quick` CLI arg)
 const SPANS_QUICK = [20.0, 32.0, 44.0]
@@ -35,45 +42,54 @@ using Unitful
 
 mode = length(ARGS) > 0 ? ARGS[1] : "default"
 
+# Map mode → column strategies
+col_strats = mode == "nlp"  ? COL_NLP  :
+             mode == "both" ? COL_BOTH : COL_CATALOG
+
 df = if mode == "quick"
-    println("\n=== QUICK TEST ($(length(SPANS_QUICK))×$(length(SPANS_QUICK)) grid, $(length(LL_QUICK)) LL, ACI only) ===\n")
+    println("\n=== QUICK TEST ($(length(SPANS_QUICK))×$(length(SPANS_QUICK)) grid, $(length(LL_QUICK)) LL, cols=$(col_strats)) ===\n")
     dual_heatmap_sweep(;
-        spans_x          = SPANS_QUICK,
-        spans_y          = SPANS_QUICK,
-        live_loads       = LL_QUICK,
-        n_bays           = N_BAYS,
-        sdl              = SDL,
-        max_col_in       = MAX_COL_IN,
-        col_ratio        = COL_RATIO,
-        deflection_limit = DEFL_LIMIT,
+        spans_x           = SPANS_QUICK,
+        spans_y           = SPANS_QUICK,
+        live_loads        = LL_QUICK,
+        n_bays            = N_BAYS,
+        sdl               = SDL,
+        max_col_in        = MAX_COL_IN,
+        col_ratio         = COL_RATIO,
+        deflection_limit  = DEFL_LIMIT,
+        column_strategies = col_strats,
     )
 elseif mode == "full"
-    println("\n=== FULL SWEEP ($(length(SPANS_X))×$(length(SPANS_Y)) grid, ACI + no-minimum) ===\n")
+    println("\n=== FULL SWEEP ($(length(SPANS_X))×$(length(SPANS_Y)) grid, ACI + no-minimum, cols=$(col_strats)) ===\n")
     dual_heatmap_sweep(;
-        spans_x          = SPANS_X,
-        spans_y          = SPANS_Y,
-        live_loads       = LIVE_LOADS,
-        n_bays           = N_BAYS,
-        sdl              = SDL,
-        max_col_in       = MAX_COL_IN,
-        col_ratio        = COL_RATIO,
-        deflection_limit = DEFL_LIMIT,
-        min_h_variants   = [
+        spans_x           = SPANS_X,
+        spans_y           = SPANS_Y,
+        live_loads        = LIVE_LOADS,
+        n_bays            = N_BAYS,
+        sdl               = SDL,
+        max_col_in        = MAX_COL_IN,
+        col_ratio         = COL_RATIO,
+        deflection_limit  = DEFL_LIMIT,
+        column_strategies = col_strats,
+        min_h_variants    = [
             ("ACI",   nothing),       # ACI Table 8.3.1.1 minimum thickness
             ("nomin", 1.0u"inch"),     # strength/serviceability governs
         ],
     )
-else
-    println("\n=== DEFAULT SWEEP ($(length(SPANS_X))×$(length(SPANS_Y)) grid, ACI only) ===\n")
+else  # "default", "nlp", "both"
+    label = mode == "nlp"  ? "NLP columns only" :
+            mode == "both" ? "catalog + NLP columns" : "catalog columns"
+    println("\n=== SWEEP ($(length(SPANS_X))×$(length(SPANS_Y)) grid, $(label)) ===\n")
     dual_heatmap_sweep(;
-        spans_x          = SPANS_X,
-        spans_y          = SPANS_Y,
-        live_loads       = LIVE_LOADS,
-        n_bays           = N_BAYS,
-        sdl              = SDL,
-        max_col_in       = MAX_COL_IN,
-        col_ratio        = COL_RATIO,
-        deflection_limit = DEFL_LIMIT,
+        spans_x           = SPANS_X,
+        spans_y           = SPANS_Y,
+        live_loads        = LIVE_LOADS,
+        n_bays            = N_BAYS,
+        sdl               = SDL,
+        max_col_in        = MAX_COL_IN,
+        col_ratio         = COL_RATIO,
+        deflection_limit  = DEFL_LIMIT,
+        column_strategies = col_strats,
     )
 end
 
@@ -94,20 +110,39 @@ if isempty(valid_h)
 else
     h_range = (0.0, ceil(maximum(valid_h)))
 
+    # Determine column strategy groups (split heatmaps when comparing strategies)
+    col_groups = hasproperty(df, :column_strategy) ? sort(unique(df.column_strategy)) : ["catalog"]
+
     if hasproperty(df, :min_h_rule)
-        for v in sort(unique(df.min_h_rule))
-            sub = filter(r -> r.min_h_rule == v, df)
+        for v in sort(unique(df.min_h_rule)), cg in col_groups
+            sub = if hasproperty(df, :column_strategy)
+                filter(r -> r.min_h_rule == v && r.column_strategy == cg, df)
+            else
+                filter(r -> r.min_h_rule == v, df)
+            end
+            isempty(sub) && continue
+            cs_tag = length(col_groups) > 1 ? "_$(cg)" : ""
             for metric in (false, true)
-                sfx = metric ? "_$(v)_metric" : "_$v"
+                sfx = metric ? "_$(v)$(cs_tag)_metric" : "_$(v)$(cs_tag)"
+                title_sfx = length(col_groups) > 1 ? " [$v, $cg]" : " [$v]"
                 Base.invokelatest(plot_depth_heatmap, sub; floor_type="flat_plate",
-                                  h_range, title_suffix=" [$v]", file_suffix=sfx, metric)
+                                  h_range, title_suffix=title_sfx, file_suffix=sfx, metric)
                 Base.invokelatest(plot_depth_heatmap, sub; floor_type="flat_slab",
-                                  h_range, title_suffix=" [$v]", file_suffix=sfx, metric)
+                                  h_range, title_suffix=title_sfx, file_suffix=sfx, metric)
             end
         end
     else
-        Base.invokelatest(plot_dual_heatmaps, df; file_suffix="")
-        Base.invokelatest(plot_dual_heatmaps, df; file_suffix="_metric", metric=true)
+        for cg in col_groups
+            sub = if hasproperty(df, :column_strategy)
+                filter(r -> r.column_strategy == cg, df)
+            else
+                df
+            end
+            isempty(sub) && continue
+            cs_tag = length(col_groups) > 1 ? "_$(cg)" : ""
+            Base.invokelatest(plot_dual_heatmaps, sub; file_suffix=cs_tag)
+            Base.invokelatest(plot_dual_heatmaps, sub; file_suffix="$(cs_tag)_metric", metric=true)
+        end
     end
 end
 

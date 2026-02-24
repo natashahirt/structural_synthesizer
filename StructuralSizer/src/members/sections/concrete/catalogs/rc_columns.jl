@@ -250,12 +250,12 @@ end
 """
     high_capacity_rc_columns() -> Vector{RCColumnSection}
 
-Larger columns (18"-48") with heavy reinforcement (#8-#18).
-For high-rise or heavy load applications. Includes rectangular. ~400-600 sections.
+Larger columns (18"-72") with heavy reinforcement (#8-#18).
+For high-rise or heavy load applications. Includes rectangular. ~600-900 sections.
 """
 function high_capacity_rc_columns()
     standard_rc_columns(
-        sizes = 18:2:48,
+        sizes = 18:2:72,
         bar_sizes = [8, 9, 10, 11, 14, 18],
         n_bars_range = [8, 10, 12, 14, 16, 18, 20, 24, 28],
         cover = 2.0u"inch",
@@ -267,12 +267,12 @@ end
 """
     all_rc_rect_columns() -> Vector{RCColumnSection}
 
-Comprehensive catalog (8"-48") with all bar sizes and rectangular options.
-Use for full optimization studies. ~1000+ sections.
+Comprehensive catalog (8"-72") with all bar sizes and rectangular options.
+Use for full optimization studies. ~1500+ sections.
 """
 function all_rc_rect_columns()
     standard_rc_columns(
-        sizes = 8:2:48,
+        sizes = 8:2:72,
         bar_sizes = [5, 6, 7, 8, 9, 10, 11, 14, 18],
         n_bars_range = [4, 6, 8, 10, 12, 14, 16, 18, 20, 24],
         cover = 1.5u"inch",

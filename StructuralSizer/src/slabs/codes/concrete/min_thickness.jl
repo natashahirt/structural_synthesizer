@@ -11,12 +11,11 @@
 #
 # References
 # ----------
-# ACI 318-11 Table 9.5(c)   → flat plate, flat slab
-# ACI 318-19 Table 8.3.1.1  → flat plate, flat slab (renumbered)
-# ACI 318-19 Table 8.3.1.2  → two-way slabs with beams
-# ACI 318-19 Table 7.3.1.1  → one-way slabs
-# ACI 318-11 §9.8           → waffle (two-way joist)
-# PTI DC20.9                → PT banded slabs
+# ACI 318-11 Table 9.5(c)    → flat plate, flat slab
+# ACI 318-11 §9.5.3.3        → two-way slabs with beams
+# ACI 318-11 Table 9.5(a)    → one-way slabs
+# ACI 318-11 §9.8            → waffle (two-way joist)
+# PTI DC20.9                 → PT banded slabs
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -63,7 +62,7 @@ function min_thickness(::FlatSlab, ln::Length; discontinuous_edge::Bool=false)
 end
 
 # -----------------------------------------------------------------------------
-# Two-Way with Beams — ACI Table 8.3.1.2
+# Two-Way with Beams — ACI 318-11 §9.5.3.3, Eq. (9-13)
 # -----------------------------------------------------------------------------
 
 """
@@ -75,7 +74,7 @@ Minimum two-way slab thickness with beams on all sides.
 
 Absolute minimum: 3.5 in.
 
-Ref: ACI 318-19 Table 8.3.1.2 (αfm > 2.0 row, simplified).
+Ref: ACI 318-11 §9.5.3.3(c), Eq. (9-13) (αfm > 2.0 row, simplified).
 """
 function min_thickness(::TwoWay, ln::Length; fy::Pressure=60000u"psi")
     h = ln * (0.8 + fy / (200_000u"psi")) / 36
@@ -83,13 +82,13 @@ function min_thickness(::TwoWay, ln::Length; fy::Pressure=60000u"psi")
 end
 
 # -----------------------------------------------------------------------------
-# One-Way — ACI Table 7.3.1.1
+# One-Way — ACI 318-11 Table 9.5(a)
 # -----------------------------------------------------------------------------
 
 """
     min_thickness(::OneWay, ln; fy=60000psi, support=BOTH_ENDS_CONT)
 
-Minimum one-way slab thickness per ACI 318-19 Table 7.3.1.1.
+Minimum one-way slab thickness per ACI 318-11 Table 9.5(a).
 
     h = ln × (0.4 + fy / 100 000 psi) / divisor
 

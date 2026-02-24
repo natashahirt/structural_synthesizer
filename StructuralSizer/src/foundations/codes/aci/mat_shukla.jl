@@ -296,10 +296,10 @@ function _design_mat_shukla(
     db_y  = bar_diameter(opts.bar_size_y)
     ϕf    = opts.ϕ_flexure
     ϕv    = opts.ϕ_shear
-    μ     = 0.2  # Poisson's ratio of concrete (ACI typical)
+    μ     = Float64(opts.material.concrete.ν)  # Poisson's ratio from material
 
     # Concrete modulus — ACI 318 §19.2.2.1
-    Ec = 57000.0u"psi" * sqrt(ustrip(u"psi", fc))
+    Ec_c = Ec(fc)
 
     # ── Step 1: Plan Sizing (first-principles overhang) ──
     plan = _mat_plan_sizing(positions, opts; demands = demands, soil = soil)
@@ -349,7 +349,7 @@ function _design_mat_shukla(
 
         # Run Shukla analysis for this thickness
         M_x_f, M_y_f, _, _, q_f, Leff = _shukla_analysis(
-            h, positions, demands, Ec, μ, ks)
+            h, positions, demands, Ec_c, μ, ks)
 
         # ── Bearing check at critical locations ──
         bearing_ok = true

@@ -82,7 +82,7 @@ _adaptive_max_col(span_ft::Float64; ratio::Float64 = 1.1) =
     _make_params(; method, floor_type, sdl_psf, live_psf, max_col_in, ...)
 
 Build `DesignParameters` for one sweep run.  The `method` kwarg selects
-which analysis method the pipeline's `size_slabs!` stage will use.
+which analysis method the pipeline's `size_slabs!` stage will use. 
 
 Pipeline stages (handled automatically by `build_pipeline`):
   1. size_slabs!  (with selected method)
@@ -99,6 +99,7 @@ function _make_params(;
     min_h               = nothing,
     max_iterations::Int = 150,
     deflection_limit::Symbol = :L_360,
+    column_strategy::Symbol = :catalog,
 )
     fp = SR.FlatPlateOptions(
         method           = method,
@@ -118,7 +119,11 @@ function _make_params(;
             roof_SDL  = sdl_psf * psf,
         ),
         materials = MaterialOptions(concrete = SR.NWC_4000, rebar = SR.Rebar_60),
-        columns   = SR.ConcreteColumnOptions(grade = SR.NWC_6000, catalog = :high_capacity),
+        columns   = SR.ConcreteColumnOptions(
+            grade           = SR.NWC_6000,
+            catalog         = :high_capacity,
+            sizing_strategy = column_strategy,
+        ),
         floor     = floor,
         max_iterations = max_iterations,
         foundation_options = FoundationParameters(
@@ -859,6 +864,7 @@ function dual_heatmap_sweep(;
     max_col_in::Union{Nothing, Float64} = nothing,
     col_ratio::Float64                  = 1.1,
     deflection_limit::Symbol            = :L_360,
+    column_strategies::Vector{Symbol}   = [:catalog],
 )
     if isempty(min_h_variants)
         label = isnothing(min_h) ? "ACI" : "override"
@@ -866,10 +872,11 @@ function dual_heatmap_sweep(;
     end
 
     floor_types = [:flat_plate, :flat_slab]
-    n_methods   = length(ALL_METHODS)  # EFM-only sweep
+    n_methods   = length(ALL_METHODS)
     n_geom      = length(spans_x) * length(spans_y)
+    n_strats    = length(column_strategies)
     n_runs_per  = length(live_loads) * n_methods
-    n_variants  = length(min_h_variants) * length(floor_types)
+    n_variants  = length(min_h_variants) * length(floor_types) * n_strats
     n_total     = n_geom * n_runs_per * n_variants
 
     print_header("Dual Heatmap — Full Pipeline")
@@ -878,6 +885,7 @@ function dual_heatmap_sweep(;
     println("  Ly spans:     $(spans_y) ft")
     println("  Live loads:   $(live_loads) psf")
     println("  Methods:      $n_methods")
+    println("  Col strategy: $(column_strategies)")
     println("  Pipeline:     slab → columns → spread foundations")
     println("  Geometries:   $n_geom  (skeleton shared per variant)")
     println("  Total runs:   $n_total")
@@ -897,14 +905,14 @@ function dual_heatmap_sweep(;
             skel = _build_skeleton(lx, ly, ht, n_bays)
         catch e
             @warn "Skeleton build failed — skipping" lx ly exception=e
-            for (mh_label, _) in min_h_variants, ft in floor_types, ll in live_loads, mcfg in ALL_METHODS
+            for (mh_label, _) in min_h_variants, ft in floor_types, cs in column_strategies, ll in live_loads, mcfg in ALL_METHODS
                 row = _blank_failure_row(;
                     floor_type=ft, lx_ft=lx, ly_ft=ly, live_psf=ll,
                     method_name=mcfg.name, elapsed=0.0,
                     failure_reason="skeleton_build_failed",
                     failing_check=string(e),
                     story_ht_ft=ht)
-                push!(fail_rows, merge(row, (min_h_rule = mh_label,)))
+                push!(fail_rows, merge(row, (min_h_rule = mh_label, column_strategy = string(cs))))
             end
             n_skip = n_runs_per * n_variants
             n_fail += n_skip
@@ -913,17 +921,19 @@ function dual_heatmap_sweep(;
         end
 
         for (mh_label, mh_val) in min_h_variants
-            for ft in floor_types
+            for ft in floor_types, cs in column_strategies
                 local struc, base_params
                 try
                     base_params = _make_params(; floor_type = ft, sdl_psf = sdl,
                                                   max_col_in = max_col, min_h = mh_val,
-                                                  deflection_limit = deflection_limit)
+                                                  deflection_limit = deflection_limit,
+                                                  column_strategy = cs)
                     struc = BuildingStructure(skel)
                     prepare!(struc, base_params)
                 catch e
                     ft_label = ft === :flat_slab ? "Flat Slab" : "Flat Plate"
-                    @warn "$(ft_label) [$(mh_label)] prepare failed" lx ly exception=e
+                    strat_label = cs == :nlp ? " [NLP]" : ""
+                    @warn "$(ft_label)$(strat_label) [$(mh_label)] prepare failed" lx ly exception=e
                     n_fail += n_runs_per
                     for _ in 1:n_runs_per; next!(p); end
                     continue
@@ -937,9 +947,9 @@ function dual_heatmap_sweep(;
                         n_fail += 1
                     elseif hasproperty(row, :converged) && !row.converged
                         n_fail += 1
-                        push!(fail_rows, merge(row, (min_h_rule = mh_label,)))
+                        push!(fail_rows, merge(row, (min_h_rule = mh_label, column_strategy = string(cs))))
                     else
-                        row = merge(row, (min_h_rule = mh_label,))
+                        row = merge(row, (min_h_rule = mh_label, column_strategy = string(cs)))
                         push!(rows, row)
                     end
                     next!(p)
@@ -1116,5 +1126,118 @@ end
 function dual_stud_sweep(; kw...)
     df_fp = stud_sweep(; floor_type = :flat_plate, kw...)
     df_fs = stud_sweep(; floor_type = :flat_slab,  kw...)
+    return vcat(df_fp, df_fs)
+end
+
+# ==============================================================================
+# Column sizing strategy comparison sweep (MIP catalog vs NLP continuous)
+# ==============================================================================
+
+"""
+    column_strategy_sweep(; spans, live_loads, methods, strategies, ...)
+
+Compare MIP (catalog) vs NLP (continuous) column sizing across span × LL × method.
+
+Each (span, LL, method, strategy) combination is a full pipeline run because
+column sizes affect punching shear, stiffness, and moments — the slab result
+is not independent of the column sizing strategy.
+
+The structure is prepared once per (span, strategy) pair; all (LL, method)
+combinations reuse it via snapshot/restore.
+
+# Example
+```julia
+df = column_strategy_sweep()                          # default spans, FEA only
+df = column_strategy_sweep(spans=[20.0, 28.0, 36.0])  # custom spans
+df = column_strategy_sweep(methods=ALL_METHODS)        # all slab methods
+```
+"""
+function column_strategy_sweep(;
+    spans::Vector{Float64}      = [16.0, 20.0, 24.0, 28.0, 32.0, 36.0, 40.0],
+    live_loads::Vector{Float64}  = [50.0, 150.0],
+    methods                      = [(key=:fea, name="FEA", method=SR.FEA(; pattern_loading=false))],
+    strategies::Vector{Symbol}   = [:catalog, :nlp],
+    floor_type::Symbol           = :flat_plate,
+    n_bays::Int                  = 3,
+    sdl::Float64                 = 20.0,
+    save::Bool                   = true,
+)
+    ft_label  = floor_type === :flat_slab ? "Flat Slab" : "Flat Plate"
+    n_methods = length(methods)
+    n_strats  = length(strategies)
+    n_total   = length(spans) * length(live_loads) * n_methods * n_strats
+
+    print_header("$(ft_label) Column Strategy Comparison")
+    println("  Floor type:  $(ft_label)")
+    println("  Spans:       $(spans) ft")
+    println("  Live loads:  $(live_loads) psf")
+    println("  Methods:     $(n_methods)")
+    println("  Strategies:  $(strategies)")
+    println("  Total runs:  $n_total")
+    println()
+
+    rows      = NamedTuple[]
+    fail_rows = NamedTuple[]
+    n_fail    = 0
+    p         = Progress(n_total; desc = "Col strategy: ")
+
+    n_runs_per_strat = length(live_loads) * n_methods
+    for span in spans
+        ht      = _adaptive_story_ht(span)
+        max_col = _adaptive_max_col(span)
+
+        for strat in strategies
+            local struc, base_params
+            try
+                base_params = _make_params(; floor_type, sdl_psf = sdl,
+                                              max_col_in = max_col,
+                                              column_strategy = strat)
+                skel  = _build_skeleton(span, span, ht, n_bays)
+                struc = BuildingStructure(skel)
+                prepare!(struc, base_params)
+            catch e
+                @warn "Prepare failed" span strat exception=e
+                n_fail += n_runs_per_strat
+                for _ in 1:n_runs_per_strat; next!(p); end
+                continue
+            end
+
+            for ll in live_loads, mcfg in methods
+                row = _run_method(struc, base_params, mcfg;
+                                  lx_ft = span, ly_ft = span, live_psf = ll,
+                                  floor_type = floor_type)
+                if isnothing(row)
+                    n_fail += 1
+                elseif hasproperty(row, :converged) && !row.converged
+                    n_fail += 1
+                    push!(fail_rows, merge(row, (col_strategy = string(strat),)))
+                else
+                    row = merge(row, (col_strategy = string(strat),))
+                    push!(rows, row)
+                end
+                next!(p)
+            end
+        end
+    end
+
+    df = DataFrame(rows)
+    df_fail = isempty(fail_rows) ? DataFrame() : DataFrame(fail_rows)
+    outfile = nothing
+    if save && !isempty(df)
+        outfile = output_filename("col_strategy_$(floor_type)", FP_RESULTS_DIR)
+        CSV.write(outfile, df)
+    end
+    if save && !isempty(df_fail)
+        fail_file = output_filename("col_strategy_failures_$(floor_type)", FP_RESULTS_DIR)
+        CSV.write(fail_file, df_fail)
+        println("  Failures:    $fail_file")
+    end
+    print_footer(nrow(df), n_fail, outfile)
+    return df
+end
+
+function dual_column_strategy_sweep(; kw...)
+    df_fp = column_strategy_sweep(; floor_type = :flat_plate, kw...)
+    df_fs = column_strategy_sweep(; floor_type = :flat_slab,  kw...)
     return vcat(df_fp, df_fs)
 end

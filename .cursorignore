@@ -1,0 +1,8 @@
+# Override .gitignore for Cursor indexing/search.
+# The .gitignore excludes **/reference/ and *.txt to keep copyrighted
+# documents out of version control. We still want Cursor's tools
+# (grep, semantic search) to be able to read the extracted text files.
+#
+# NOTE: ripgrep still respects .gitignore by default, so when using
+# grep on reference .txt files, pass glob="*.txt" to force inclusion.
+# The read_file tool always works regardless of ignore rules.

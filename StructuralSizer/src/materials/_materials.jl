@@ -8,6 +8,7 @@ include("types.jl")
 # Preset instances
 include("steel.jl")
 include("concrete.jl")
+include("frc.jl")
 include("timber.jl")
 
 # Fire protection types (SurfaceCoating, SFRM, IntumescentCoating, etc.)
