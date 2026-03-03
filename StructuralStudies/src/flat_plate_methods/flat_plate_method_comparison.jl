@@ -53,7 +53,8 @@ const ALL_METHODS = [
     (key=:efm_hc, name="EFM (HC)",    method=SR.EFM(solver=:hardy_cross, pattern_loading=false)),
     (key=:efm,    name="EFM (ASAP)",  method=SR.EFM(solver=:asap, pattern_loading=false)),
     (key=:efm_kc, name="EFM (Kc)",    method=SR.EFM(solver=:asap, column_stiffness=:Kc, pattern_loading=false)),
-    (key=:fea,    name="FEA",         method=SR.FEA(; pattern_loading=false)),
+    (key=:fea,    name="FEA (frame)", method=SR.FEA(; pattern_loading=false, design_approach=:frame)),
+    (key=:fea_d,  name="FEA (strip)", method=SR.FEA(; pattern_loading=false, design_approach=:strip)),
 ]
 
 # Full factorial of EFM options for side-by-side comparison:

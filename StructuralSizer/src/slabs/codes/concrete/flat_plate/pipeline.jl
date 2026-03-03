@@ -289,7 +289,8 @@ function _run_final_design(method, struc, slab, columns, moment_results, seconda
                             local_to_global, column_opts, column_result, Pu, opts, iter,
                             deflection_result, ρ_prime_est, drop_panel, slab_sw, γ_concrete,
                             material;
-                            verbose::Bool = false)
+                            verbose::Bool = false,
+                            analysis_cache = nothing)
     # ─── Face-of-Support Moment Reduction (ACI 8.11.6.1) ───
     if method isa EFM
         _c1_ext_min = typemax(typeof(columns[1].c1))
@@ -366,7 +367,56 @@ function _run_final_design(method, struc, slab, columns, moment_results, seconda
 
     # ─── Strip Reinforcement Design ───
     verbose && @debug "REINFORCEMENT DESIGN"
-    rebar_design = design_strip_reinforcement(moment_results, columns, h, d, fc, fy, cover; verbose=verbose)
+    _fea_direct_mode = method isa FEA && method.design_approach != :frame &&
+                       analysis_cache isa FEAModelCache && analysis_cache.initialized
+
+    # Per-element rebar field (populated when design_approach == :area)
+    _element_rebar_field = nothing
+
+    # Lightweight concrete factor — shared by torsion discount in both directions
+    _λ_val = _fea_direct_mode ? Float64(isnothing(opts.λ) ? material.concrete.λ : opts.λ) : 1.0
+
+    rebar_design = if _fea_direct_mode
+        # FEA direct extraction — extract CS/MS moments from the shell model.
+        _setup = _moment_analysis_setup(struc, slab, columns, h, γ_concrete)
+        # Resolve rebar axis (differs from span_axis when rebar_direction is set)
+        _rebar_ax = !isnothing(method.rebar_direction) ?
+            _resolve_rebar_axis(method, _setup.span_axis) : nothing
+        _td = if method.concrete_torsion_discount && method.moment_transform == :wood_armer
+            (h_m  = ustrip(u"m", h),
+             d_m  = ustrip(u"m", d),
+             fc_Pa = ustrip(u"Pa", fc),
+             λ     = Float64(_λ_val))
+        else
+            nothing
+        end
+
+        _fea_strips = if method.design_approach == :area
+            # Area-based: per-element design → bridge to strip envelope
+            _area_moms = _extract_area_design_moments(
+                analysis_cache, method, _setup.span_axis;
+                torsion_discount=_td, verbose=verbose)
+
+            # Per-element rebar sizing — full field
+            _element_rebar_field = _build_element_rebar_field(
+                _area_moms, h, d, fc, fy, method.moment_transform;
+                verbose=verbose)
+
+            _area_to_strip_envelope(
+                _area_moms, analysis_cache, struc, slab, columns,
+                _setup.span_axis; rebar_axis=_rebar_ax, verbose=verbose)
+        else
+            # Strip-based: dispatch to appropriate strip extraction method
+            _dispatch_fea_strip_extraction(
+                method, analysis_cache, struc, slab, columns,
+                _setup.span_axis; rebar_axis=_rebar_ax,
+                torsion_discount=_td, verbose=verbose)
+        end
+        design_strip_reinforcement_fea(_fea_strips, _setup.l2, h, d, fc, fy, cover;
+                                        verbose=verbose)
+    else
+        design_strip_reinforcement(moment_results, columns, h, d, fc, fy, cover; verbose=verbose)
+    end
 
     # Check for inadequate section (Whitney block solution failed)
     if !rebar_design.section_adequate
@@ -383,8 +433,48 @@ function _run_final_design(method, struc, slab, columns, moment_results, seconda
     # ─── Secondary Direction Reinforcement ───
     _db_inner = 0.625u"inch"
     d_inner = d - _db_inner
+    _secondary_element_rebar_field = nothing
+
     secondary_rebar_design = if !isnothing(secondary_results) && d_inner > 0.0u"inch"
-        design_strip_reinforcement(secondary_results, columns, h, d_inner, fc, fy, cover; verbose=verbose)
+        if _fea_direct_mode
+            _sec_setup = _secondary_moment_analysis_setup(struc, slab, columns, h, γ_concrete)
+            _sec_rebar_ax = !isnothing(method.rebar_direction) ?
+                _resolve_rebar_axis(method, _sec_setup.span_axis) : nothing
+
+            # Torsion discount for secondary direction (uses d_inner)
+            _td_sec = if method.concrete_torsion_discount && method.moment_transform == :wood_armer
+                (h_m  = ustrip(u"m", h),
+                 d_m  = ustrip(u"m", d_inner),
+                 fc_Pa = ustrip(u"Pa", fc),
+                 λ     = Float64(_λ_val))
+            else
+                nothing
+            end
+
+            _sec_fea_strips = if method.design_approach == :area
+                _sec_area_moms = _extract_area_design_moments(
+                    analysis_cache, method, _sec_setup.span_axis;
+                    torsion_discount=_td_sec, verbose=verbose)
+
+                # Per-element rebar sizing — secondary direction
+                _secondary_element_rebar_field = _build_element_rebar_field(
+                    _sec_area_moms, h, d_inner, fc, fy, method.moment_transform;
+                    verbose=verbose)
+
+                _area_to_strip_envelope(
+                    _sec_area_moms, analysis_cache, struc, slab, columns,
+                    _sec_setup.span_axis; rebar_axis=_sec_rebar_ax, verbose=verbose)
+            else
+                _dispatch_fea_strip_extraction(
+                    method, analysis_cache, struc, slab, columns,
+                    _sec_setup.span_axis; rebar_axis=_sec_rebar_ax,
+                    torsion_discount=_td_sec, verbose=verbose)
+            end
+            design_strip_reinforcement_fea(_sec_fea_strips, _sec_setup.l2, h, d_inner, fc, fy, cover;
+                                            verbose=verbose)
+        else
+            design_strip_reinforcement(secondary_results, columns, h, d_inner, fc, fy, cover; verbose=verbose)
+        end
     else
         nothing
     end
@@ -499,6 +589,8 @@ function _run_final_design(method, struc, slab, columns, moment_results, seconda
         drop_panel=drop_panel, integrity=integrity,
         integrity_check=integrity_check, transfer_results=transfer_results,
         ρ_prime=ρ_prime_est,
+        element_rebar_field=_element_rebar_field,
+        secondary_element_rebar_field=_secondary_element_rebar_field,
     )
 end
 
@@ -994,19 +1086,22 @@ function size_flat_plate!(
             
             verbose && @debug "ρ' estimate for long-term deflection" ρ_prime=round(ρ_prime_est, digits=5)
             
+            _Ie_method = method isa FEA ? method.deflection_Ie_method : :branson
             _defl_ok = try
                 deflection_result = if !isnothing(drop_panel)
                     check_two_way_deflection(
                         moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns,
                         drop_panel;
                         verbose=verbose, limit_type=opts.deflection_limit,
-                        ρ_prime=ρ_prime_est
+                        ρ_prime=ρ_prime_est,
+                        deflection_Ie_method=_Ie_method,
                     )
                 else
                     check_two_way_deflection(
                         moment_results, h, d, fc, fy, Es, Ecs, slab.spans, γ_concrete, columns;
                         verbose=verbose, limit_type=opts.deflection_limit,
-                        ρ_prime=ρ_prime_est
+                        ρ_prime=ρ_prime_est,
+                        deflection_Ie_method=_Ie_method,
                     )
                 end
                 deflection_result.ok
@@ -1016,15 +1111,62 @@ function size_flat_plate!(
             
             if !_defl_ok
                 h = round_up_thickness(h + h_increment, h_increment)
-                verbose && @warn "Deflection FAILED. Increasing h → $h"
+                verbose && @warn "Deflection FAILED (primary). Increasing h → $h"
                 last_failing_check = "two_way_deflection"
                 continue
+            end
+            
+            # ─── A3b: Secondary Direction Deflection Check ───
+            # The primary check uses primary-direction moments for Ie.  For slabs
+            # where the secondary span is longer or has higher cracking, the
+            # secondary direction may govern.  Run a separate check with swapped
+            # spans and secondary-direction moments.
+            if !isnothing(secondary_results)
+                verbose && @debug "SECONDARY DEFLECTION CHECK (ACI 24.2)"
+                _sec_spans = (primary = slab.spans.secondary, secondary = slab.spans.primary)
+                # Build a lightweight proxy with secondary moments + shared loads
+                _sec_proxy = (
+                    M_pos     = secondary_results.M_pos,
+                    M_neg_ext = secondary_results.M_neg_ext,
+                    M_neg_int = secondary_results.M_neg_int,
+                    qu        = moment_results.qu,
+                    qD        = moment_results.qD,
+                    qL        = moment_results.qL,
+                    # FEA: same 2D panel displacement, but Ie uses secondary moments
+                    fea_Δ_panel = hasproperty(moment_results, :fea_Δ_panel) ?
+                                  moment_results.fea_Δ_panel : nothing,
+                )
+                _sec_defl_ok = try
+                    _sec_defl = check_two_way_deflection(
+                        _sec_proxy, h, d, fc, fy, Es, Ecs, _sec_spans, γ_concrete, columns;
+                        verbose=verbose, limit_type=opts.deflection_limit,
+                        ρ_prime=ρ_prime_est,
+                        deflection_Ie_method=_Ie_method,
+                    )
+                    _sec_defl.ok
+                catch
+                    false
+                end
+                if !_sec_defl_ok
+                    h = round_up_thickness(h + h_increment, h_increment)
+                    verbose && @warn "Deflection FAILED (secondary direction). Increasing h → $h"
+                    last_failing_check = "two_way_deflection_secondary"
+                    continue
+                end
             end
             
             # ─── A4: One-Way Shear Check ───
             verbose && @debug "ONE-WAY SHEAR CHECK (ACI 22.5)"
             
-            shear_result = check_one_way_shear(moment_results, d, fc; verbose=verbose, λ=λ, φ_shear=φ_shear)
+            # Extract FEA-based one-way shear demand when available
+            _fea_Vu = if analysis_cache isa FEAModelCache && analysis_cache.initialized
+                _span_ax = _get_span_axis(slab)
+                _extract_fea_one_way_shear(analysis_cache, columns, _span_ax, d; verbose=verbose)
+            else
+                nothing
+            end
+            shear_result = check_one_way_shear(moment_results, d, fc;
+                verbose=verbose, λ=λ, φ_shear=φ_shear, fea_Vu=_fea_Vu)
             
             if !shear_result.ok
                 h = round_up_thickness(h + h_increment, h_increment)
@@ -1290,7 +1432,7 @@ function size_flat_plate!(
             h, d, fc, fy, cover, sw_estimate, n_cols, punching_local,
             local_to_global, column_opts, column_result, Pu, opts, total_iters,
             deflection_result, ρ_prime_est, drop_panel, slab_sw, γ_concrete,
-            material; verbose=verbose
+            material; verbose=verbose, analysis_cache=analysis_cache
         )
         
         # If rebar design failed, bump h and restart from Phase A

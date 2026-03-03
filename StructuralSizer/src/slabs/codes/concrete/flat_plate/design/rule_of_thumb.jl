@@ -310,8 +310,16 @@ function check_flat_plate_at_thickness!(
     end
 
     # 5e. One-way shear
+    # Extract FEA-based one-way shear demand when available
+    _fea_Vu = if analysis_cache isa FEAModelCache && analysis_cache.initialized
+        _span_ax = _get_span_axis(slab)
+        _extract_fea_one_way_shear(analysis_cache, columns, _span_ax, d; verbose=verbose)
+    else
+        nothing
+    end
     shear_result = check_one_way_shear(moment_results, d, fc;
-                                        verbose=verbose, λ=λ, φ_shear=φ_shear)
+                                        verbose=verbose, λ=λ, φ_shear=φ_shear,
+                                        fea_Vu=_fea_Vu)
     if !shear_result.ok
         push!(failures, "one_way_shear")
     end

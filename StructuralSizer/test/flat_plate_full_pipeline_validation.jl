@@ -14,7 +14,7 @@ isdir(pkg_path) ? Pkg.activate(pkg_path) : Pkg.activate(joinpath(@__DIR__, "..")
 
 using StructuralSynthesizer
 using StructuralSizer
-using StructuralSizer: size_flat_plate!, DDM, EFM, ConcreteColumnOptions
+using StructuralSizer: size_flat_plate!, DDM, EFM, FEA, ConcreteColumnOptions
 using Unitful
 using Printf
 using Dates
@@ -1013,5 +1013,182 @@ catch e
 end
 
 global_logger(ConsoleLogger(stderr, Logging.Error))
+
+# ─────────────────────────────────────────────────────────────────────────────
+section("9. DEFLECTION Ie METHOD COMPARISON (Branson vs Bischoff)")
+# ─────────────────────────────────────────────────────────────────────────────
+
+println("""
+  Pipeline-level comparison of Branson's cubic Ie (ACI 318 default)
+  vs Bischoff's bilinear Ie (more conservative for lightly reinforced slabs).
+
+  Each row runs the full design pipeline (DDM + FEA) on the same geometry.
+  Differences show up as thicker slabs or higher deflection ratios.
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  Ie Method     │  Equation                                             │
+  ├──────────────────────────────────────────────────────────────────────────┤
+  │  Branson       │  Ie = (Mcr/Ma)³·Ig + [1−(Mcr/Ma)³]·Icr  (ACI 9-10) │
+  │  Bischoff      │  1/Ie = (Mcr/Ma)²/Ig + [1−(Mcr/Ma)²]/Icr           │
+  └──────────────────────────────────────────────────────────────────────────┘
+""")
+
+# ── Case A: Standard office (3×3 bay, 18×14 ft) ──
+println("  ── Case A: Standard office (3×3 bay, 18×14 ft, 16\" columns) ──")
+println()
+
+ie_configs_A = [
+    ("DDM (ref)",    DDM()),
+    ("FEA-branson",  FEA(deflection_Ie_method=:branson)),
+    ("FEA-bischoff", FEA(deflection_Ie_method=:bischoff)),
+]
+ie_results_A = Dict{String, NamedTuple}()
+
+for (ie_label, ie_method_obj) in ie_configs_A
+    println("  Running $ie_label...")
+    fp_opts = FlatPlateOptions(method = ie_method_obj)
+    struc_ie, opts_ie = make_structure(flat_plate_opts = fp_opts)
+    slab_ie = struc_ie.slabs[1]
+
+    col_opts = ConcreteColumnOptions()
+    full_result = try
+        size_flat_plate!(struc_ie, slab_ie, col_opts;
+                         method = ie_method_obj, opts = fp_opts, verbose = false)
+    catch e
+        println("    ✗ Failed: ", first(string(e), 60))
+        nothing
+    end
+
+    if full_result !== nothing
+        r = full_result.slab_result
+        ie_results_A[ie_label] = (
+            h = ustrip(u"inch", r.thickness),
+            defl_ratio = r.deflection_check.ratio,
+            Δ_total = ustrip(u"inch", r.deflection_check.Δ_total),
+            Δ_limit = ustrip(u"inch", r.deflection_check.Δ_limit),
+            punch = r.punching_check.max_ratio,
+        )
+    end
+end
+
+ie_labels_A = [lbl for (lbl, _) in ie_configs_A]
+
+println()
+divider()
+println(@sprintf "  %-16s │ h (in) │ Defl Ratio │ Δ_total (in) │ Δ_limit (in) │ Punch" "Method+Ie")
+divider()
+for lbl in ie_labels_A
+    haskey(ie_results_A, lbl) || continue
+    r = ie_results_A[lbl]
+    println(@sprintf "  %-16s │ %5.2f  │   %5.3f    │    %6.4f     │    %6.4f     │ %5.3f" lbl r.h r.defl_ratio r.Δ_total r.Δ_limit r.punch)
+end
+divider()
+println()
+
+# Analysis
+if haskey(ie_results_A, "FEA-branson") && haskey(ie_results_A, "FEA-bischoff")
+    rb = ie_results_A["FEA-branson"]
+    rbi = ie_results_A["FEA-bischoff"]
+    if rb.h == rbi.h
+        println("  FEA: Same slab thickness — Bischoff did not change the governing check.")
+        if abs(rbi.defl_ratio - rb.defl_ratio) > 1e-4
+            pct = (rbi.defl_ratio - rb.defl_ratio) / rb.defl_ratio * 100
+            dir = pct > 0 ? "higher" : "lower"
+            println(@sprintf "    Bischoff deflection ratio %.1f%% %s." abs(pct) dir)
+        else
+            println("    Deflection ratios identical (section is uncracked).")
+        end
+    else
+        println(@sprintf "  FEA: Bischoff required thicker slab (%.2f\" vs %.2f\")." rbi.h rb.h)
+    end
+end
+println()
+
+# ── Case B: Deflection-critical (long spans, strict limit) ──
+println("  ── Case B: Deflection-critical (30×24 ft, L/480, high LL) ──")
+println()
+
+ie_results_B = Dict{String, NamedTuple}()
+
+function make_ie_defl_critical(method_obj)
+    skel = gen_medium_office(30.0u"ft", 24.0u"ft", 10.0u"ft", 1, 1, 1)
+    struc = BuildingStructure(skel)
+    fp_opts = FlatPlateOptions(
+        shear_studs = :never,
+        max_column_size = 36.0u"inch",
+        method = method_obj,
+        deflection_limit = :L_480,
+    )
+    initialize!(struc; floor_type = :flat_plate, floor_opts = fp_opts)
+    for col in struc.columns
+        col.c1 = 28.0u"inch"
+        col.c2 = 28.0u"inch"
+    end
+    for cell in struc.cells
+        cell.sdl = uconvert(u"kN/m^2", 15.0psf)
+        cell.live_load = uconvert(u"kN/m^2", 100.0psf)
+    end
+    to_asap!(struc)
+    return struc, fp_opts
+end
+
+ie_configs_B = [
+    ("DDM (ref)",    DDM()),
+    ("FEA-branson",  FEA(deflection_Ie_method=:branson)),
+    ("FEA-bischoff", FEA(deflection_Ie_method=:bischoff)),
+]
+
+for (ie_label, ie_method_obj) in ie_configs_B
+    println("  Running $ie_label (deflection-critical)...")
+    struc_ie, opts_ie = make_ie_defl_critical(ie_method_obj)
+
+    try
+        global_logger(ConsoleLogger(stderr, Logging.Error))
+        size_slabs!(struc_ie; options = opts_ie, verbose = false, max_iterations = 30)
+
+        r = struc_ie.slabs[1].result
+        ie_results_B[ie_label] = (
+            h = ustrip(u"inch", r.thickness),
+            defl_ratio = r.deflection_check.ratio,
+            Δ_total = ustrip(u"inch", r.deflection_check.Δ_total),
+            Δ_limit = ustrip(u"inch", r.deflection_check.Δ_limit),
+            punch = r.punching_check.max_ratio,
+        )
+    catch e
+        println("    ✗ Failed: ", first(string(e), 60))
+    end
+end
+
+global_logger(ConsoleLogger(stderr, Logging.Error))
+
+ie_labels_B = [lbl for (lbl, _) in ie_configs_B]
+
+println()
+divider()
+println(@sprintf "  %-16s │ h (in) │ Defl Ratio │ Δ_total (in) │ Δ_limit (in) │ Punch" "Method+Ie")
+divider()
+for lbl in ie_labels_B
+    haskey(ie_results_B, lbl) || continue
+    r = ie_results_B[lbl]
+    println(@sprintf "  %-16s │ %5.2f  │   %5.3f    │    %6.4f     │    %6.4f     │ %5.3f" lbl r.h r.defl_ratio r.Δ_total r.Δ_limit r.punch)
+end
+divider()
+println()
+
+# Analysis for Case B
+if haskey(ie_results_B, "FEA-branson") && haskey(ie_results_B, "FEA-bischoff")
+    rb = ie_results_B["FEA-branson"]
+    rbi = ie_results_B["FEA-bischoff"]
+    if rbi.h > rb.h
+        println(@sprintf "  FEA: Bischoff required thicker slab (%.2f\" vs %.2f\" = +%.2f\")." rbi.h rb.h (rbi.h - rb.h))
+    elseif rbi.h == rb.h && abs(rbi.defl_ratio - rb.defl_ratio) > 1e-4
+        pct = (rbi.defl_ratio - rb.defl_ratio) / rb.defl_ratio * 100
+        dir = pct > 0 ? "higher" : "lower"
+        println(@sprintf "  FEA: Same thickness, Bischoff deflection ratio %.1f%% %s." abs(pct) dir)
+    else
+        println("  FEA: No meaningful difference between Branson and Bischoff.")
+    end
+end
+println()
 
 section("END OF REPORT")

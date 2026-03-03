@@ -345,7 +345,8 @@ function check_two_way_deflection(
     rotation_factor    = 0.10,
     ξ::Float64         = 2.0,
     ρ_prime::Float64   = 0.0,
-    As_provided        = nothing
+    As_provided        = nothing,
+    deflection_Ie_method::Symbol = :branson,
 )
     l1 = spans.primary
     l2 = spans.secondary
@@ -393,11 +394,13 @@ function check_two_way_deflection(
     As_neg = max(required_reinforcement(M_neg_max, l2, d, fc, fy), As_min)
     Icr_sup = cracked_moment_of_inertia(As_neg, l2, d, Ecs, Es)
 
-    # ── Effective I at each section (Branson's equation) ──
-    Ie_mid_D  = effective_moment_of_inertia(Mcr, Ma_D_mid,  Ig_frame, Icr_mid)
-    Ie_mid_DL = effective_moment_of_inertia(Mcr, Ma_DL_mid, Ig_frame, Icr_mid)
-    Ie_sup_D  = effective_moment_of_inertia(Mcr, Ma_D_sup,  Ig_frame, Icr_sup)
-    Ie_sup_DL = effective_moment_of_inertia(Mcr, Ma_DL_sup, Ig_frame, Icr_sup)
+    # ── Effective I at each section ──
+    _Ie = deflection_Ie_method === :bischoff ?
+        effective_moment_of_inertia_bischoff : effective_moment_of_inertia
+    Ie_mid_D  = _Ie(Mcr, Ma_D_mid,  Ig_frame, Icr_mid)
+    Ie_mid_DL = _Ie(Mcr, Ma_DL_mid, Ig_frame, Icr_mid)
+    Ie_sup_D  = _Ie(Mcr, Ma_D_sup,  Ig_frame, Icr_sup)
+    Ie_sup_DL = _Ie(Mcr, Ma_DL_sup, Ig_frame, Icr_sup)
 
     # ── ACI 435R-95 weighted average (accounts for support cracking) ──
     Ie_D  = weighted_effective_Ie(Ie_mid_D,  Ie_sup_D,  Ie_sup_D;  position=position)
@@ -586,6 +589,7 @@ function check_two_way_deflection(
     ξ::Float64         = 2.0,
     ρ_prime::Float64   = 0.0,
     As_provided        = nothing,
+    deflection_Ie_method::Symbol = :branson,
 )
     l1 = spans.primary
     l2 = spans.secondary
@@ -640,10 +644,12 @@ function check_two_way_deflection(
     Icr_sup = cracked_moment_of_inertia(As_neg, l2, d_total, Ecs, Es)
 
     # ── Effective I at each section ──
-    Ie_mid_D  = effective_moment_of_inertia(Mcr_mid, Ma_D_mid,  Ig_mid, Icr_mid)
-    Ie_mid_DL = effective_moment_of_inertia(Mcr_mid, Ma_DL_mid, Ig_mid, Icr_mid)
-    Ie_sup_D  = effective_moment_of_inertia(Mcr_supp, Ma_D_sup,  Ig_support, Icr_sup)
-    Ie_sup_DL = effective_moment_of_inertia(Mcr_supp, Ma_DL_sup, Ig_support, Icr_sup)
+    _Ie = deflection_Ie_method === :bischoff ?
+        effective_moment_of_inertia_bischoff : effective_moment_of_inertia
+    Ie_mid_D  = _Ie(Mcr_mid, Ma_D_mid,  Ig_mid, Icr_mid)
+    Ie_mid_DL = _Ie(Mcr_mid, Ma_DL_mid, Ig_mid, Icr_mid)
+    Ie_sup_D  = _Ie(Mcr_supp, Ma_D_sup,  Ig_support, Icr_sup)
+    Ie_sup_DL = _Ie(Mcr_supp, Ma_DL_sup, Ig_support, Icr_sup)
 
     # ── ACI 435R-95 weighted average ──
     Ie_D  = weighted_effective_Ie(Ie_mid_D,  Ie_sup_D,  Ie_sup_D;  position=position)
@@ -724,35 +730,64 @@ function check_two_way_deflection(
 end
 
 # =============================================================================
-# One-Way Shear Check (ACI 318-11 §11.2)
+# One-Way Shear Check (ACI 318-11 §22.5)
 # =============================================================================
 
 """
-    check_one_way_shear(moment_results, d, fc; verbose=false, λ=1.0, φ_shear=0.75) -> NamedTuple
+    check_one_way_shear(moment_results, d, fc; kwargs...) -> NamedTuple
 
-Check one-way (beam) shear at the critical section (distance d from column face)
-per ACI 318-11 §11.2.
+Check one-way (beam) shear at the critical section (distance `d` from column
+face) per ACI 318-11 §22.5.
+
+## Shear demand source — auto-selected
+
+- **FEA**: When `fea_Vu` is provided, it is used directly as the factored shear
+  demand.  This should be the output of `_extract_fea_one_way_shear`, which
+  integrates the FEA transverse shear field (Qxz, Qyz) across section cuts at
+  distance `d` from each column face.  More accurate than the analytical formula
+  for irregular layouts.
+
+- **DDM / EFM**: Falls back to the analytical formula
+  `Vu = qu × l₂ × (ln/2 − d)` per ACI 318-11 §22.5.1.2.
+
+## Keyword Arguments
+- `verbose`: Enable debug logging (default `false`)
+- `λ`: Lightweight concrete factor (default `1.0`)
+- `φ_shear`: Strength reduction factor (default `0.75`)
+- `fea_Vu`: Pre-computed FEA shear demand (Force).  When provided and positive,
+  used instead of the analytical formula.
 
 # Returns
-Named tuple with `(ok, ratio, Vu, Vc, message)`
+Named tuple with `(ok, ratio, Vu, Vc, message, source)` where `source` is
+`:fea` or `:analytical`.
 """
-function check_one_way_shear(moment_results, d, fc; verbose=false, λ=1.0, φ_shear=0.75)
+function check_one_way_shear(moment_results, d, fc;
+                             verbose=false, λ=1.0, φ_shear=0.75,
+                             fea_Vu=nothing)
     l2 = moment_results.l2
-    ln = moment_results.ln
-    qu = moment_results.qu
-    
-    # Shear at critical section d from face of support (ACI 22.5.1.2)
-    Vu = one_way_shear_demand(qu, l2, ln, d)
+
+    # ── Shear demand: FEA or analytical ──
+    source = :analytical
+    if !isnothing(fea_Vu) && ustrip(u"N", fea_Vu) > 0
+        Vu = fea_Vu
+        source = :fea
+    else
+        ln = moment_results.ln
+        qu = moment_results.qu
+        # Shear at critical section d from face of support (ACI 22.5.1.2)
+        Vu = one_way_shear_demand(qu, l2, ln, d)
+    end
+
     Vc = one_way_shear_capacity(fc, l2, d; λ=λ)
     result = StructuralSizer.check_one_way_shear(Vu, Vc; φ=φ_shear)
     
     if verbose
         status = result.ok ? "✓ PASS" : "✗ FAIL"
         φVc = φ_shear * Vc
-        @debug "One-way shear" Vu=Vu Vc=Vc φVc=φVc ratio=round(result.ratio, digits=2) status=status
+        @debug "One-way shear ($source)" Vu=Vu Vc=Vc φVc=φVc ratio=round(result.ratio, digits=2) status=status
     end
     
-    return (ok=result.ok, ratio=result.ratio, Vu=Vu, Vc=Vc, message=result.message)
+    return (ok=result.ok, ratio=result.ratio, Vu=Vu, Vc=Vc, message=result.message, source=source)
 end
 
 # =============================================================================

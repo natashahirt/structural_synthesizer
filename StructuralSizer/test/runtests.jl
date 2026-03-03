@@ -96,6 +96,8 @@ using Asap  # custom units (kip, ksi, ksf, psf, etc.)
         # Punching / shear
         include("slabs/test_shear_transfer.jl")
         include("slabs/test_shear_studs.jl")
+        # Torsion discount (ACI concrete torsion capacity for Wood–Armer)
+        include("slabs/test_torsion_discount.jl")
         # Optimizer
         include("slabs/test_flat_plate_optimizer.jl")
         # FEA flat plate

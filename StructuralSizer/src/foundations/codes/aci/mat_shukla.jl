@@ -176,7 +176,7 @@ function _shukla_analysis(
     # Equivalent column radii (map rectangular to circular for singularity capping)
     # Expressed as r_col / L (dimensionless). Using default column size.
     default_col = 18.0u"inch"
-    r_col_over_L = Float64(ustrip(Unitful.NoUnits, sqrt(default_col^2 / π) / L))
+    r_col_over_L = ustrip(Unitful.NoUnits, sqrt(default_col^2 / π) / L)
     equiv_radii = fill(r_col_over_L, length(demands))
 
     P = [d.Pu for d in demands]

@@ -297,20 +297,42 @@ function _method_to_symbol(m::FlatPlateAnalysisMethod)
     m isa EFM && m.solver == :hardy_cross && return :efm_hc
     m isa EFM && m.column_stiffness == :Kc && return :efm_kc
     m isa EFM && return :efm
-    m isa FEA && return :fea
+    if m isa FEA
+        # New knob-based symbols
+        m.design_approach == :frame && return :fea
+        m.design_approach == :area  && return :fea_area
+        # :strip — further differentiate by sub-knobs
+        m.moment_transform == :wood_armer && return :fea_wa
+        m.field_smoothing == :nodal && m.cut_method == :isoparametric && return :fea_nod
+        m.field_smoothing == :element && m.cut_method == :delta_band && return :fea_cut
+        # Fallback for other strip combos
+        return :fea_strip
+    end
     return :ddm
 end
 
 """Convert a legacy analysis_method Symbol to a typed FlatPlateAnalysisMethod."""
 function _symbol_to_method(s::Symbol)::FlatPlateAnalysisMethod
-    s == :ddm      ? DDM() :
-    s == :mddm     ? DDM(:simplified) :
-    s == :efm      ? EFM() :
-    s == :efm_hc   ? EFM(solver=:hardy_cross) :
-    s == :efm_asap ? EFM(solver=:asap) :
-    s == :efm_kc   ? EFM(column_stiffness=:Kc) :
-    s == :fea      ? FEA() :
-    throw(ArgumentError("Unknown analysis_method :$s. Use :ddm, :mddm, :efm, :efm_hc, :efm_asap, :efm_kc, or :fea."))
+    s == :ddm        ? DDM() :
+    s == :mddm       ? DDM(:simplified) :
+    s == :efm        ? EFM() :
+    s == :efm_hc     ? EFM(solver=:hardy_cross) :
+    s == :efm_asap   ? EFM(solver=:asap) :
+    s == :efm_kc     ? EFM(column_stiffness=:Kc) :
+    # New knob-based FEA symbols
+    s == :fea        ? FEA() :
+    s == :fea_frame  ? FEA(design_approach=:frame) :
+    s == :fea_strip  ? FEA(design_approach=:strip) :
+    s == :fea_area   ? FEA(design_approach=:area, moment_transform=:wood_armer) :
+    # Legacy aliases (still work via strip_design mapping in FEA constructor)
+    s == :fea_direct ? FEA(strip_design=:fea_integration) :
+    s == :fea_cut    ? FEA(strip_design=:fea_integration) :
+    s == :fea_nod    ? FEA(strip_design=:nodal_cuts) :
+    s == :fea_wa     ? FEA(strip_design=:wood_armer) :
+    s == :fea_pk     ? FEA(strip_design=:peak_nodal) :
+    throw(ArgumentError("Unknown analysis_method :$s. Valid: :ddm, :mddm, :efm, :efm_hc, " *
+          ":efm_asap, :efm_kc, :fea, :fea_frame, :fea_strip, :fea_area, " *
+          ":fea_cut, :fea_nod, :fea_wa."))
 end
 
 

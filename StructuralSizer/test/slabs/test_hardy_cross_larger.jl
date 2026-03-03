@@ -140,7 +140,9 @@ using StructuralSizer
     end
     
     @testset "Hardy Cross vs ASAP Cross-Validation (5 spans)" begin
-        # This is the key test: both solvers should agree
+        # Both solvers should agree when using the same column stiffness model.
+        # Use Kc (raw column stiffness, no torsional reduction) for Hardy Cross,
+        # and col_I_factor=1.0 (gross Ig) for ASAP so the column elements match.
         n_spans = 5
         n_joints = n_spans + 1
         
@@ -156,11 +158,14 @@ using StructuralSizer
         ]
         
         joint_positions = fill(:interior, n_joints)
-        joint_Kec = StructuralSizer._compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc)
+
+        # Hardy Cross with raw Kc (no torsional reduction)
+        joint_Kc = StructuralSizer._compute_joint_Kec(
+            spans, joint_positions, H, Ecs, Ecc; use_kc_only=true
+        )
         
-        # Hardy Cross solution
         hc_moments = StructuralSizer.solve_moment_distribution(
-            spans, joint_Kec, joint_positions, qu;
+            spans, joint_Kc, joint_positions, qu;
             COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
         )
         
@@ -168,19 +173,20 @@ using StructuralSizer
         col_above_mock = (c1=c1, c2=c2, base=(L=H,), column_above=nothing)
         mock_columns = [(c1=c1, c2=c2, base=(L=H,), column_above=col_above_mock) for _ in 1:n_joints]
         
-        # ASAP column-stub solution
+        # ASAP column-stub solution with gross Ig (col_I_factor=1.0)
         model, span_elements, _ = StructuralSizer.build_efm_asap_model(
             spans, joint_positions, qu;
             Ecs=Ecs, Ecc=Ecc,
             ν_concrete=0.20, ρ_concrete=2380.0u"kg/m^3",
             columns=mock_columns,
+            col_I_factor=1.0,
         )
         StructuralSizer.solve_efm_frame!(model)
         asap_moments = StructuralSizer.extract_span_moments(model, span_elements, spans; qu=qu)
         
-        println("\n=== Hardy Cross vs ASAP Comparison (5 spans) ===")
+        println("\n=== Hardy Cross vs ASAP Comparison (5 spans, Kc mode) ===")
         println("Span | HC M_left | ASAP M_left | HC M_pos | ASAP M_pos | HC M_right | ASAP M_right")
-        println("-" ^ 80)
+        println("-" ^ 85)
         for i in 1:n_spans
             hc = hc_moments[i]
             asap = asap_moments[i]
@@ -192,7 +198,7 @@ using StructuralSizer
                     "$(round(ustrip(u"kip*ft", asap.M_neg_right), digits=1))")
         end
         
-        # Compare Hardy Cross vs ASAP (should agree within ~5%)
+        # Compare Hardy Cross vs ASAP — with matching Kc stiffness they should agree within ~5%
         for i in 1:n_spans
             hc = hc_moments[i]
             asap = asap_moments[i]
@@ -201,11 +207,87 @@ using StructuralSizer
             @test ustrip(u"kip*ft", hc.M_neg_left) ≈ ustrip(u"kip*ft", asap.M_neg_left) rtol=0.05
             @test ustrip(u"kip*ft", hc.M_neg_right) ≈ ustrip(u"kip*ft", asap.M_neg_right) rtol=0.05
             
-            # Positive moments (might have slightly larger tolerance due to midspan calculation)
+            # Positive moments (slightly larger tolerance — midspan interpolation)
             @test ustrip(u"kip*ft", hc.M_pos) ≈ ustrip(u"kip*ft", asap.M_pos) rtol=0.10
         end
     end
     
+    @testset "Hardy Cross vs ASAP Cross-Validation (5 spans, Kec mode)" begin
+        # With Kec reduction applied to ASAP column stubs, both solvers should
+        # agree even when using the standard Kec (torsional reduction) model.
+        n_spans = 5
+        n_joints = n_spans + 1
+        
+        spans = [
+            StructuralSizer.EFMSpanProperties(
+                i, i, i+1,
+                l1, l2, ln,
+                h, c1, c2, c1, c2,
+                Is, Ksb,
+                sf_lg.m, sf_lg.COF, sf_lg.k
+            )
+            for i in 1:n_spans
+        ]
+        
+        joint_positions = fill(:interior, n_joints)
+
+        # Hardy Cross with Kec (standard torsional reduction)
+        joint_Kec = StructuralSizer._compute_joint_Kec(
+            spans, joint_positions, H, Ecs, Ecc; use_kc_only=false
+        )
+        
+        hc_moments = StructuralSizer.solve_moment_distribution(
+            spans, joint_Kec, joint_positions, qu;
+            COF=sf_lg.COF, max_iterations=30, tolerance=0.001, verbose=false
+        )
+        
+        # Mock column objects (identical columns above & below at each joint)
+        col_above_mock = (c1=c1, c2=c2, base=(L=H,), column_above=nothing)
+        mock_columns = [(c1=c1, c2=c2, base=(L=H,), column_above=col_above_mock) for _ in 1:n_joints]
+        
+        # Kec reduction factors (same computation the production code uses)
+        kec_factors = StructuralSizer._compute_kec_reduction_factors(
+            spans, joint_positions, H, Ecs, Ecc; use_kc_only=false, columns=mock_columns
+        )
+        
+        # ASAP column-stub solution with Kec-reduced I
+        model, span_elements, _ = StructuralSizer.build_efm_asap_model(
+            spans, joint_positions, qu;
+            Ecs=Ecs, Ecc=Ecc,
+            ν_concrete=0.20, ρ_concrete=2380.0u"kg/m^3",
+            columns=mock_columns,
+            col_I_factor=1.0,
+            kec_factors=kec_factors,
+        )
+        StructuralSizer.solve_efm_frame!(model)
+        asap_moments = StructuralSizer.extract_span_moments(model, span_elements, spans; qu=qu)
+        
+        println("\n=== Hardy Cross vs ASAP Comparison (5 spans, Kec mode) ===")
+        println("Kec/Kc factors: $(round.(kec_factors, digits=3))")
+        println("Span | HC M_left | ASAP M_left | HC M_pos | ASAP M_pos | HC M_right | ASAP M_right")
+        println("-" ^ 85)
+        for i in 1:n_spans
+            hc = hc_moments[i]
+            asap = asap_moments[i]
+            println("  $i  |  $(round(ustrip(u"kip*ft", hc.M_neg_left), digits=1))   |   " *
+                    "$(round(ustrip(u"kip*ft", asap.M_neg_left), digits=1))     |  " *
+                    "$(round(ustrip(u"kip*ft", hc.M_pos), digits=1))   |   " *
+                    "$(round(ustrip(u"kip*ft", asap.M_pos), digits=1))    |   " *
+                    "$(round(ustrip(u"kip*ft", hc.M_neg_right), digits=1))    |    " *
+                    "$(round(ustrip(u"kip*ft", asap.M_neg_right), digits=1))")
+        end
+        
+        # With Kec reduction, ASAP and Hardy Cross should agree within ~10%
+        for i in 1:n_spans
+            hc = hc_moments[i]
+            asap = asap_moments[i]
+            
+            @test ustrip(u"kip*ft", hc.M_neg_left) ≈ ustrip(u"kip*ft", asap.M_neg_left) rtol=0.10
+            @test ustrip(u"kip*ft", hc.M_neg_right) ≈ ustrip(u"kip*ft", asap.M_neg_right) rtol=0.10
+            @test ustrip(u"kip*ft", hc.M_pos) ≈ ustrip(u"kip*ft", asap.M_pos) rtol=0.15
+        end
+    end
+
     @testset "Single Span Edge Case" begin
         # Single span with columns at both ends
         n_spans = 1

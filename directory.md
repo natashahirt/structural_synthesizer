@@ -1,6 +1,6 @@
 # Structural Synthesizer — Codebase Directory
 
-> **Last updated:** 2026-02-23 (PixelFrame: FRC material, section, ACI/fib capacities, checker, catalog, multi-material MIP)
+> **Last updated:** 2026-03-02 (Drop panel strip widening per Pacoste §4.2.1; cantilever slab note)
 > 
 > Reference document for codebase capabilities, types, and workflows.
 > Update this file when implementing new features or changing APIs.
@@ -316,12 +316,46 @@ Internal dispatch: `_size_slab!(::FloorType, struc, slab, idx; ...)` routes to t
 |------|----------|--------|
 | `OneWay` | One-way | ⚠️ Type defined |
 | `TwoWay` | Two-way | ⚠️ Type defined |
-| `FlatPlate` | Beamless | ✅ Full (DDM + EFM) |
+| `FlatPlate` | Beamless | ✅ Full (DDM + EFM + FEA) |
 | `FlatSlab` | Beamless | ⚠️ Type defined |
 | `PTBanded` | Two-way | ⚠️ Type defined |
 | `Waffle` | Two-way | ⚠️ Type defined |
 | `HollowCore` | One-way | ⚠️ Stub |
 | `Vault` | Custom | ✅ Full (Haile method) |
+| `CantileverSlab` | Cantilever | ❌ Not Started |
+
+> **Cantilever Slabs (future):** Relevant for balconies and bridge overhangs. Distribution widths for transverse moments and shear follow Pacoste et al. (2012) §4.4, based on Hedman & Losberg (1976) tests. Key equations: `w_x = min(7d + b + t, 10d + 1.3·y_CS)` for ULS moments (Eq. 4.32), with SLS width `w_x = 2h + b + t` (Eq. 4.33). Shear distribution widths interpolate between `w_max` at the clamped edge and `w_min` at `y_max` (Eqs. 4.34–4.35). Implementation would require a simplified clamped-free slab model (Fig. 4.15) and integration with the existing FEA infrastructure. See `Pacoste_et_al_2012_FEA_Recommendations.pdf` for full details.
+
+> **Wall Supports (future):** Walls are line supports (on skeleton edges, not vertices) and require different treatment from columns at every layer:
+>
+> *Building model:* Add `Wall{T} <: AbstractMember{T}` on a skeleton edge `(v1, v2)` with thickness `t_w`, height, and material. Currently no wall type exists — only `Beam`, `Column`, `Strut`.
+>
+> *FEA model (`model.jl`):* Pacoste §2.2.1 (Fig 2.1) recommends a **pin support at the wall centreline** — constrain vertical DOF at each node along the wall top edge, no rotational constraint (avoids over-constraint per Rombach 2004). For monolithic connections, either include the wall as shell elements below the slab (preferred, §2.2.1 Fig 2.2) or use rigid links over the wall width when `a < min(l₀₁, l₀₂)` and `a/t < 2`. Mesh conformity via an elongated `ShellPatch` running the full wall length × wall thickness, with at least one element between the support line and the critical section (§2.2.2).
+>
+> *Moment extraction:* Wall-supported edges don't participate in the column-strip/middle-strip paradigm. The slab is continuously supported → **one-way spanning** perpendicular to the wall. Design for the maximum moment at the wall face (§3.1.2 for monolithic, §3.1.3 at `a/4` for simple supports). In the direction parallel to the wall, normal strip rules apply if the slab also spans to columns. Distribution widths per Pacoste §4.2.1.3: `L_c = L_x` (longitudinal), `L_c = B_y` (transverse).
+>
+> *Phased plan:* (1) `Wall` type + FEA pin-line support + `ShellPatch`, (2) line-integration moment extraction at wall face, (3) ACI one-way slab provisions for wall-supported edges.
+
+#### FEA Knobs (`FEA` struct in `slabs/types.jl`)
+
+| Knob | Values | Default | Description |
+|------|--------|---------|-------------|
+| `target_edge` | `Length` / `nothing` | `nothing` (auto) | Mesh edge length |
+| `pattern_loading` | `Bool` | `true` | ACI 318-11 §13.7.6 pattern loading |
+| `pattern_mode` | `:efm_amp`, `:fea_resolve` | `:efm_amp` | Pattern loading strategy |
+| `design_approach` | `:frame`, `:strip`, `:area` | `:frame` | How element moments → design moments |
+| `moment_transform` | `:projection`, `:wood_armer`, `:no_torsion` | `:projection` | 2D tensor → scalar reduction |
+| `field_smoothing` | `:element`, `:nodal` | `:element` | Raw centroids vs SPR-smoothed field |
+| `cut_method` | `:delta_band`, `:isoparametric` | `:delta_band` | Section cut integration method |
+| `iso_alpha` | `[0, 1]` | `1.0` | Isoparametric cut blending |
+| `rebar_direction` | `Float64` (rad) / `nothing` | `nothing` (span) | Reinforcement axis angle |
+| `sign_treatment` | `:signed`, `:separate_faces` | `:signed` | Nodal smoothing sign handling |
+| `concrete_torsion_discount` | `Bool` | `false` | Subtract concrete Mxy capacity before Wood–Armer |
+
+- `:no_torsion` drops Mxy from projection — intentionally unconservative baseline for quantifying torsion effects.
+- `:separate_faces` smooths hogging/sagging fields independently, preventing cross-sign cancellation at inflection points.
+- `concrete_torsion_discount` reduces |Mxy| by the concrete's torsion capacity (ACI 318-11 §11.2.1.1 via Parsekian circular V–T interaction) before the Wood–Armer transformation. Only applies when `moment_transform = :wood_armer`. See `torsion_discount.jl`.
+- **Drop panel strip widening** (Pacoste §4.2.1 Fig 4.4): When a `DropPanelGeometry` is present, column strip polygons are automatically widened so their transverse extent covers the drop panel zone. The minimum CS half-width becomes `max(d_max/2, a_drop)`, where `a_drop` is the drop panel half-extent. Stored in `FEAModelCache.drop_panel` and threaded to all `_build_cs_polygons_abs` call sites. A `@debug` warning fires when the widening scale exceeds 1.5× (check `m_av/m_max ≥ 0.6` per Pacoste §4.2.1 point 1).
 
 **Flat plate functions:** `StripReinforcement`, `FlatPlatePanelResult`, `estimate_column_size`
 

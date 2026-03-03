@@ -85,7 +85,7 @@ function _mat_plan_sizing(
         gy = y_max - y_min
         grid_area = gx * gy
 
-        if ustrip(u"ft^2", uconvert(u"ft^2", grid_area)) < 1e-6
+        if ustrip(u"ft^2", grid_area) < 1e-6
             # Single column or co-linear columns: need full area from overhang.
             # For a square mat centred on the column, side = √A_req.
             side = sqrt(uconvert(u"ft^2", A_req))   # → ft
@@ -94,7 +94,7 @@ function _mat_plan_sizing(
             # Grid alone is not enough; solve the quadratic for oh
             gx_ft = ustrip(u"ft", gx)
             gy_ft = ustrip(u"ft", gy)
-            A_req_ft2 = ustrip(u"ft^2", uconvert(u"ft^2", A_req))
+            A_req_ft2 = ustrip(u"ft^2", A_req)
             deficit = A_req_ft2 - gx_ft * gy_ft
             # 4·oh² + 2(gx+gy)·oh − deficit = 0
             a_q = 4.0
@@ -405,7 +405,7 @@ function _design_mat_rigid(
     if soil.ks !== nothing
         Ec_psi = ustrip(u"psi", Ec(fc))
         Ig_in4 = ustrip(u"inch", B) * ustrip(u"inch", h)^3 / 12.0
-        ks_pci = ustrip(u"lbf/inch^3", uconvert(u"lbf/inch^3", soil.ks))
+        ks_pci = ustrip(u"lbf/inch^3", soil.ks)
         Kr = Ec_psi * Ig_in4 / (ks_pci * ustrip(u"inch", B) * ustrip(u"inch", Lm)^3)
         Kr < 0.5 && @warn "Kr=$(round(Kr, digits=3)) < 0.5 — flexible analysis may be needed"
     end

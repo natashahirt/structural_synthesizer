@@ -381,11 +381,13 @@ function sync_asap!(struc::BuildingStructure;
             for tload in get(struc.cell_live_loads, cell_idx, Asap.TributaryLoad[])
                 tload.pressure = live_p
             end
-        end
-        # Always update combined loads (used by model.loads for default solve)
-        new_pressure = uconvert(u"Pa", envelope_pressure(combos, cell.sdl + cell.self_weight, cell.live_load))
-        for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
-            tload.pressure = new_pressure
+        else
+            # Only update combined loads if NOT using patterns
+            # (If using patterns, the dead/live updates above already updated the objects in tributary_loads)
+            new_pressure = uconvert(u"Pa", envelope_pressure(combos, cell.sdl + cell.self_weight, cell.live_load))
+            for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
+                tload.pressure = new_pressure
+            end
         end
     end
     

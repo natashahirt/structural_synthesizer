@@ -95,6 +95,10 @@ populate the `story_properties` field with:
     # Column cross-section shape: :rectangular or :circular
     # For :circular, c1 = c2 = diameter D.
     shape::Symbol = :rectangular
+    # Orientation angle (radians, CCW from global X).
+    # c1 is measured along the rotated local-x axis, c2 along local-y.
+    # Default 0.0 → axis-aligned (c1 ∥ X, c2 ∥ Y).
+    θ::Float64 = 0.0
     # Per-column concrete grade (nothing → use ConcreteColumnOptions.grade).
     # Set when columns on different stories use different f'c.
     concrete::Union{Nothing, StructuralSizer.Concrete} = nothing

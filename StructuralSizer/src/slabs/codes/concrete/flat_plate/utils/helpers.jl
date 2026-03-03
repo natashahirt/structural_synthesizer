@@ -30,6 +30,9 @@ col_story(col)::Int = hasproperty(col, :story) ? col.story : 1
 """Boundary edge directions for the column (empty = interior)."""
 col_boundary_edge_dirs(col) = hasproperty(col, :boundary_edge_dirs) ? col.boundary_edge_dirs : NTuple{2, Float64}[]
 
+"""Column orientation angle in radians (CCW from global X). 0.0 = axis-aligned."""
+col_orientation(col)::Float64 = hasproperty(col, :θ) ? Float64(col.θ) : 0.0
+
 # =============================================================================
 # Analysis Method Utilities
 # =============================================================================
@@ -46,7 +49,50 @@ function method_name(method::EFM)
 end
 
 """Display name for FEA analysis method."""
-method_name(method::FEA) = "FEA (Shell + Springs, edge=$(method.target_edge))"
+function method_name(method::FEA)
+    # Design approach
+    da = method.design_approach
+    da_str = da == :frame ? "frame" :
+             da == :strip ? "strip" :
+             da == :area  ? "area" : string(da)
+
+    # Sub-knobs (only shown when relevant)
+    parts = String[]
+
+    if da in (:strip, :area)
+        mt = method.moment_transform
+        mt == :wood_armer && push!(parts, "W-A")
+        mt == :no_torsion && push!(parts, "no-Mxy")
+    end
+
+    if da == :strip
+        fs = method.field_smoothing
+        fs != :element && push!(parts, string(fs))
+
+        cm = method.cut_method
+        cm != :delta_band && push!(parts, string(cm))
+
+        if cm == :isoparametric && method.iso_alpha != 1.0
+            push!(parts, "α=$(method.iso_alpha)")
+        end
+    end
+
+    if method.sign_treatment != :signed
+        push!(parts, "sep-faces")
+    end
+
+    if !isnothing(method.rebar_direction)
+        push!(parts, "θ=$(round(rad2deg(method.rebar_direction), digits=0))°")
+    end
+
+    if method.pattern_loading && method.pattern_mode != :efm_amp
+        push!(parts, "pat=$(method.pattern_mode)")
+    end
+
+    knob_str = isempty(parts) ? "" : ", " * join(parts, "/")
+    edge_str = isnothing(method.target_edge) ? "auto" : string(method.target_edge)
+    return "FEA ($(da_str)$(knob_str), edge=$(edge_str))"
+end
 
 """Display name for RuleOfThumb analysis method."""
 method_name(::RuleOfThumb) = "ACI Min"
@@ -389,18 +435,108 @@ end
 """
     enforce_method_applicability(method::FEA, struc, slab, columns; verbose=false)
 
-FEA has no geometric restrictions — always applicable.
+FEA shell model has no geometric restrictions — always applicable.
+However, the post-processing design approach may have assumptions that
+are violated for certain geometries.  This function issues warnings
+(not errors) for approach-specific concerns.
 """
 function enforce_method_applicability(method::FEA, struc, slab, columns; verbose::Bool=false, kwargs...)
     n_cols = length(columns)
     if n_cols < 2
         error("FEA requires at least 2 supporting columns; found $n_cols")
     end
+
+    # ── Approach-specific guardrails (warnings, not hard errors) ──
+    _check_fea_approach_applicability(method, struc, slab, columns; verbose=verbose)
+
     if verbose
         @debug "───────────────────────────────────────────────────────────────────"
-        @debug "FEA APPLICABILITY: ✓ No geometric restrictions"
+        @debug "FEA APPLICABILITY: ✓ Shell model always valid"
         @debug "  $(n_cols) columns, target edge = $(method.target_edge)"
+        @debug "  design_approach = $(method.design_approach)"
         @debug "───────────────────────────────────────────────────────────────────"
     end
 end
 
+# =============================================================================
+# FEA Approach-Specific Guardrails
+# =============================================================================
+
+"""
+    _check_fea_approach_applicability(method::FEA, struc, slab, columns; verbose=false)
+
+Issue warnings when the chosen FEA design approach has assumptions that may
+be violated by the slab geometry.  The FEA solve itself always proceeds —
+these are advisory, not blocking.
+
+# Checks by `design_approach`
+
+## `:frame` — Frame-Level + ACI Fractions (§8.10.5)
+Uses DDM-like ACI fractions to split total moments into CS/MS.  The fraction
+tables assume the same geometric regularity as DDM (§8.10.2):
+- Rectangular panels
+- Aspect ratio l₂/l₁ ≤ 2.0
+- Successive span ratio within 1/3
+- ≥ 3 continuous spans per direction
+- L/D ≤ 2.0 (without pattern loading)
+
+## `:strip` — Design Strip Integration
+- Non-quad cells cannot use isoparametric section cuts (falls back to δ-band)
+- Non-convex cells cannot use any isoparametric mapping
+
+## `:area` — Per-Element Design
+- `:projection` moment transform is unconservative (ignores twisting moment
+  envelope); `:wood_armer` is recommended for area-based design.
+"""
+function _check_fea_approach_applicability(
+    method::FEA, struc, slab, columns;
+    verbose::Bool = false,
+)
+    da = method.design_approach
+
+    # ── :frame — ACI fractions assume DDM-like regularity ──
+    if da == :frame
+        result = check_ddm_applicability(struc, slab, columns; throw_on_failure=false)
+        if !result.ok
+            violated = join(result.violations, "\n    • ")
+            @warn "FEA design_approach=:frame uses ACI §8.10.5 fractions for the " *
+                  "CS/MS moment split.  These fractions assume the same geometric " *
+                  "regularity as DDM.  The following DDM checks failed:\n    • " *
+                  violated *
+                  "\nResults may be approximate.  Consider :strip or :area for " *
+                  "irregular geometry."
+        elseif verbose
+            @debug "FEA :frame guardrails — DDM geometry checks passed"
+        end
+    end
+
+    # ── :strip — isoparametric cuts require quad (or convex) cells ──
+    if da == :strip
+        skel = struc.skeleton
+        non_quad = 0
+        for ci in slab.cell_indices
+            cell = struc.cells[ci]
+            n_v = length(skel.face_vertex_indices[cell.face_idx])
+            n_v != 4 && (non_quad += 1)
+        end
+        n_cells = length(slab.cell_indices)
+        if non_quad > 0
+            @warn "FEA strip: $(non_quad)/$(n_cells) cell(s) are non-quad. " *
+                  "Wachspress mapping handles convex N-gons; non-convex " *
+                  "cells fall back to δ-band integration."
+        end
+        if verbose && non_quad == 0
+            @debug "FEA :strip guardrails — all cells are quad"
+        end
+    end
+
+    # ── :area — projection/no_torsion without Wood-Armer is unconservative ──
+    if da == :area && method.moment_transform in (:projection, :no_torsion)
+        @warn "FEA design_approach=:area with moment_transform=:$(method.moment_transform) does " *
+              "not envelope twisting moments (Mxy) in the design.  This can be " *
+              "unconservative for elements with significant torsion.  Consider " *
+              "using moment_transform=:wood_armer for area-based design."
+    end
+
+    return nothing
+end

@@ -80,6 +80,7 @@ function _update_efm_sections_and_loads!(
     ρ_concrete,
     columns;
     col_I_factor::Float64 = 0.70,
+    kec_factors::Union{Nothing, Vector{Float64}} = nothing,
 )
     model = cache.model
     span_elements = cache.span_elements
@@ -148,16 +149,18 @@ function _update_efm_sections_and_loads!(
         stubs = cache.col_stubs[j]
         col = columns[j]
 
+        I_j = col_I_factor * (!isnothing(kec_factors) ? kec_factors[j] : 1.0)
+
         # Below stub (always present)
         stubs.below.element.section = column_asap_section(
-            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=col_I_factor)
+            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=I_j)
 
         # Above stub (if column above exists)
         col_above = col.column_above
         if !isnothing(stubs.above) && !isnothing(col_above)
             stubs.above.element.section = column_asap_section(
                 col_above.c1, col_above.c2, col_shape(col_above), Ecc, ν_concrete;
-                I_factor=col_I_factor)
+                I_factor=I_j)
         end
     end
 
@@ -273,6 +276,15 @@ function run_moment_analysis(
                            columns=supporting_columns) :
         nothing
     
+    # Kec reduction factors for ASAP column stubs (ACI 318-11 §13.7.4)
+    # When column_stiffness=:Kec, soften stubs by Kec/ΣKc to match the
+    # torsional flexibility that Hardy Cross captures via Kec.
+    _kec_factors = method.solver == :asap ?
+        _compute_kec_reduction_factors(spans, joint_positions, H, Ecs, Ecc;
+                                       column_shape=col_shape_val, use_kc_only=use_kc_only,
+                                       columns=supporting_columns) :
+        nothing
+    
     # ─── Helper: run solver once for a given (scalar or per-span) load ───
     function _solve_once(qu_arg)
         if method.solver == :asap
@@ -281,6 +293,7 @@ function run_moment_analysis(
                     efm_cache, spans, qu, Ecs, Ecc,
                     ν_concrete, γ_concrete, supporting_columns;
                     col_I_factor = col_I_factor,
+                    kec_factors = _kec_factors,
                 )
                 # Override per-span loads for pattern loading
                 _is_pattern = qu_arg isa Vector
@@ -307,6 +320,7 @@ function run_moment_analysis(
                     columns = supporting_columns,
                     verbose = verbose,
                     col_I_factor = col_I_factor,
+                    kec_factors = _kec_factors,
                 )
                 # Override per-span loads for pattern loading
                 if qu_arg isa Vector
@@ -621,6 +635,98 @@ function _compute_joint_Kec(
     return joint_Kec
 end
 
+"""
+    _compute_kec_reduction_factors(spans, joint_positions, H, Ecs, Ecc; kwargs...)
+        -> Vector{Float64}
+
+Compute the Kec / ΣKc ratio at each joint.
+
+When `column_stiffness = :Kec`, the ASAP column stubs must be softened to
+account for the torsional flexibility that Kec captures.  This function
+returns the per-joint reduction factor α = Kec / ΣKc (≤ 1.0) that should
+multiply the column stub I_factor.
+
+When `use_kc_only = true`, returns `ones(n_joints)` (no reduction).
+"""
+function _compute_kec_reduction_factors(
+    spans::Vector{<:EFMSpanProperties},
+    joint_positions::Vector{Symbol},
+    H::Length,
+    Ecs::Pressure,
+    Ecc::Pressure;
+    column_shape::Symbol = :rectangular,
+    use_kc_only::Bool = false,
+    columns = nothing,
+)
+    n_spans = length(spans)
+    n_joints = n_spans + 1
+
+    use_kc_only && return ones(n_joints)
+
+    h = spans[1].h
+    l2 = spans[1].l2
+    has_drops = has_drop_panels(spans[1])
+
+    col_factors = pca_column_factors(H, h)
+    k_col = col_factors.k
+
+    factors = Vector{Float64}(undef, n_joints)
+
+    for j in 1:n_joints
+        # Column dimensions at this joint
+        if j == 1
+            c1 = spans[1].c1_left
+            c2 = spans[1].c2_left
+        elseif j == n_joints
+            c1 = spans[end].c1_right
+            c2 = spans[end].c2_right
+        else
+            c1 = (spans[j-1].c1_right + spans[j].c1_left) / 2
+            c2 = (spans[j-1].c2_right + spans[j].c2_left) / 2
+        end
+
+        c2_torsion = column_shape == :circular ? equivalent_square_column(c2) : c2
+
+        # ΣKc (below + above)
+        Ic = column_moment_of_inertia(c1, c2; shape=column_shape)
+        Kc_below = column_stiffness_Kc(Ecc, Ic, H, h; k_factor=k_col)
+
+        col_above = !isnothing(columns) ? columns[j].column_above : nothing
+        if !isnothing(col_above)
+            c1_a = col_above.c1; c2_a = col_above.c2; H_a = col_above.base.L
+            col_factors_a = pca_column_factors(H_a, h)
+            Ic_a = column_moment_of_inertia(c1_a, c2_a; shape=column_shape)
+            Kc_above = column_stiffness_Kc(Ecc, Ic_a, H_a, h; k_factor=col_factors_a.k)
+        elseif isnothing(columns)
+            Kc_above = Kc_below
+        else
+            Kc_above = zero(Kc_below)
+        end
+        ΣKc = Kc_below + Kc_above
+
+        # Kec
+        if has_drops
+            drop = spans[1].drop
+            h_total = total_depth_at_drop(h, drop)
+            C = torsional_constant_C(h_total, c2_torsion)
+        else
+            C = torsional_constant_C(h, c2_torsion)
+        end
+        Kt_single = torsional_member_stiffness_Kt(Ecs, C, l2, c2_torsion)
+        n_torsion = joint_positions[j] == :interior ? 2 : 1
+        ΣKt = n_torsion * Kt_single
+
+        Kec = equivalent_column_stiffness_Kec(ΣKc, ΣKt)
+
+        # α = Kec / ΣKc  (≤ 1.0)
+        ΣKc_val = ustrip(u"lbf*inch", ΣKc)
+        Kec_val = ustrip(u"lbf*inch", Kec)
+        factors[j] = ΣKc_val > 0 ? clamp(Kec_val / ΣKc_val, 0.0, 1.0) : 1.0
+    end
+
+    return factors
+end
+
 # =============================================================================
 # EFM ASAP Model Building
 # =============================================================================
@@ -684,6 +790,7 @@ function build_efm_asap_model(
     columns,
     verbose::Bool = false,
     col_I_factor::Float64 = 0.70,
+    kec_factors::Union{Nothing, Vector{Float64}} = nothing,
 )
     n_spans = length(spans)
     n_joints = n_spans + 1
@@ -790,13 +897,16 @@ function build_efm_asap_model(
         slab_node = nodes[slab_node_indices[j]]
         x_j = slab_node.position[1]
 
+        # Per-joint I factor: base factor × Kec reduction (ACI 318-11 §13.7.4)
+        I_j = col_I_factor * (!isnothing(kec_factors) ? kec_factors[j] : 1.0)
+
         # Below column (always present)
         Lc_below = col.base.L
         base_below = Node([x_j, 0.0u"m", -uconvert(u"m", Lc_below)], :fixed)
         push!(nodes, base_below)
 
         sec_below = column_asap_section(
-            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=col_I_factor)
+            col.c1, col.c2, col_shape(col), Ecc, ν_concrete; I_factor=I_j)
         elem_below = Element(base_below, slab_node, sec_below)
         push!(elements, elem_below)
 
@@ -810,7 +920,7 @@ function build_efm_asap_model(
 
             sec_above = column_asap_section(
                 col_above.c1, col_above.c2, col_shape(col_above), Ecc, ν_concrete;
-                I_factor=col_I_factor)
+                I_factor=I_j)
             elem_above = Element(slab_node, base_above, sec_above)
             push!(elements, elem_above)
         end
@@ -823,7 +933,8 @@ function build_efm_asap_model(
 
         if verbose
             above_str = isnothing(col_above) ? "roof (no above)" : "above+below"
-            @debug "Joint $j column stubs" c1=col.c1 c2=col.c2 Lc_below=Lc_below type=above_str
+            kec_str = !isnothing(kec_factors) ? "  Kec/Kc=$(round(kec_factors[j], digits=3))" : ""
+            @debug "Joint $j column stubs" c1=col.c1 c2=col.c2 Lc_below=Lc_below type=above_str I_factor=round(I_j, digits=3) kec_str
         end
     end
 
@@ -1697,6 +1808,14 @@ function run_moment_analysis(
     
     # Derive col_I_factor from method fields
     col_I_factor = (method.solver == :asap && method.cracked_columns) ? 0.70 : 1.0
+    use_kc_only = method.column_stiffness == :Kc
+    
+    # Kec reduction factors for ASAP column stubs
+    _kec_factors = method.solver == :asap ?
+        _compute_kec_reduction_factors(spans, joint_positions, H, Ecs, Ecc;
+                                       column_shape=col_shape_val, use_kc_only=use_kc_only,
+                                       columns=sorted_columns) :
+        nothing
     
     # Solve using selected method
     if method.solver == :asap
@@ -1705,6 +1824,7 @@ function run_moment_analysis(
                 efm_cache, spans, qu, Ecs, Ecc,
                 ν_concrete, ρ_concrete, sorted_columns;
                 col_I_factor = col_I_factor,
+                kec_factors = _kec_factors,
             )
             solve_efm_frame!(efm_cache.model; full_process=false)
             span_moments = extract_span_moments(
@@ -1719,6 +1839,7 @@ function run_moment_analysis(
                 columns = sorted_columns,
                 verbose = verbose,
                 col_I_factor = col_I_factor,
+                kec_factors = _kec_factors,
             )
             solve_efm_frame!(model)
             span_moments = extract_span_moments(model, span_elements, spans; qu=qu)
@@ -1727,7 +1848,6 @@ function run_moment_analysis(
         end
         
     elseif method.solver == :hardy_cross
-        use_kc_only = method.column_stiffness == :Kc
         joint_Kec = _compute_joint_Kec(spans, joint_positions, H, Ecs, Ecc;
                                        column_shape=col_shape_val, use_kc_only=use_kc_only,
                                        columns=sorted_columns)

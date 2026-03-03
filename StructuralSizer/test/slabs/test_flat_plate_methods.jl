@@ -53,6 +53,80 @@ using StructuralSizer: kip, ksi, psf, ksf, pcf
         
         # Invalid EFM solver should error
         @test_throws ErrorException EFM(solver=:invalid)
+        
+        # FEA — new knob-based API
+        fea = FEA()
+        @test fea isa FlatPlateAnalysisMethod
+        @test fea isa FEA
+        @test fea.design_approach == :frame
+        @test fea.moment_transform == :projection
+        @test fea.field_smoothing == :element
+        @test fea.cut_method == :delta_band
+        @test fea.iso_alpha == 1.0
+        @test fea.rebar_direction === nothing
+        @test fea.strip_design == :aci_fractions  # backward compat
+
+        # FEA strip with element/delta_band/projection
+        fea_strip = FEA(design_approach=:strip)
+        @test fea_strip.design_approach == :strip
+        @test fea_strip.strip_design == :fea_integration
+
+        # FEA strip with nodal/isoparametric
+        fea_nod = FEA(design_approach=:strip, field_smoothing=:nodal, cut_method=:isoparametric)
+        @test fea_nod.design_approach == :strip
+        @test fea_nod.field_smoothing == :nodal
+        @test fea_nod.cut_method == :isoparametric
+        @test fea_nod.strip_design == :nodal_cuts
+
+        # FEA strip with Wood–Armer
+        fea_wa = FEA(design_approach=:strip, moment_transform=:wood_armer)
+        @test fea_wa.moment_transform == :wood_armer
+        @test fea_wa.strip_design == :wood_armer
+
+        # FEA area-based design
+        fea_area = FEA(design_approach=:area, moment_transform=:wood_armer)
+        @test fea_area.design_approach == :area
+
+        # iso_alpha knob
+        fea_iso = FEA(design_approach=:strip, field_smoothing=:nodal,
+                      cut_method=:isoparametric, iso_alpha=0.3)
+        @test fea_iso.iso_alpha == 0.3
+
+        # rebar_direction knob
+        fea_rebar = FEA(rebar_direction=π/4)
+        @test fea_rebar.rebar_direction ≈ π/4
+
+        # pattern_mode knob
+        fea_efm = FEA(pattern_mode=:efm_amp)
+        @test fea_efm.pattern_mode == :efm_amp
+        fea_resolve = FEA(pattern_mode=:fea_resolve)
+        @test fea_resolve.pattern_mode == :fea_resolve
+        @test_throws ErrorException FEA(pattern_mode=:invalid)
+
+        # Validation
+        @test_throws ErrorException FEA(design_approach=:invalid)
+        @test_throws ErrorException FEA(moment_transform=:invalid)
+        @test_throws ErrorException FEA(field_smoothing=:invalid)
+        @test_throws ErrorException FEA(cut_method=:invalid)
+        @test_throws ErrorException FEA(iso_alpha=1.5)
+
+        # Legacy strip_design backward compat
+        fea_legacy_cut = FEA(strip_design=:fea_integration)
+        @test fea_legacy_cut.design_approach == :strip
+        @test fea_legacy_cut.strip_design == :fea_integration
+
+        fea_legacy_nod = FEA(strip_design=:nodal_cuts)
+        @test fea_legacy_nod.design_approach == :strip
+        @test fea_legacy_nod.field_smoothing == :nodal
+        @test fea_legacy_nod.strip_design == :nodal_cuts
+
+        fea_legacy_wa = FEA(strip_design=:wood_armer)
+        @test fea_legacy_wa.moment_transform == :wood_armer
+        @test fea_legacy_wa.strip_design == :wood_armer
+
+        @test_logs (:warn, r"deprecated") FEA(strip_design=:peak_nodal)
+
+        @test_throws ErrorException FEA(strip_design=:invalid)
     end
     
     # =========================================================================

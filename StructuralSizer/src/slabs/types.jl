@@ -274,32 +274,234 @@ struct EFM <: FlatPlateAnalysisMethod
 end
 
 """
-    FEA(; target_edge=nothing, pattern_loading=true)
+    FEA(; target_edge, pattern_loading, pattern_mode, design_approach,
+           moment_transform, field_smoothing, cut_method, iso_alpha,
+           rebar_direction, sign_treatment, strip_design)
 
 Finite Element Analysis — 2D shell model with column stubs.
 
 No geometric restrictions — works for any slab shape or column layout.
+Dead and live loads are solved separately for proper post-solve combination
+(ASCE 7 §2.3.1).
 
-# Options
+# Mesh
 - `target_edge::Length`: Target mesh edge length (default: adaptive from span).
-- `pattern_loading::Bool`: Enable ACI 318-11 §13.7.6 pattern loading amplification (default: `true`).
-  FEA uses EFM-derived amplification factors (always ≥ 1.0, conservative).
-  Set to `false` for direct comparison with DDM which uses fixed coefficients.
+
+# Loading
+- `pattern_loading::Bool`: Enable ACI 318-11 §13.7.6 pattern loading (default: `true`).
+- `pattern_mode::Symbol`: How pattern loading is applied when `pattern_loading=true`:
+  - `:efm_amp` (default) — Build an EFM frame, run checkerboard patterns through it,
+    compute amplification factors, and scale the FEA moments.  Fast (one FEA solve +
+    many cheap EFM solves) but approximate: the amplification factors come from a 1-D
+    frame model, not the 2-D shell.
+  - `:fea_resolve` — Re-solve the FEA model for each load pattern (D on all spans,
+    L on selected spans) and take the per-element moment envelope.  More accurate
+    (captures 2-D redistribution) but slower (one FEA solve per pattern).
+    Requires the D/L split solve (always enabled).
+
+# Design Approach  (`design_approach`)
+Controls how FEA element moments become design moments:
+- `:frame` — integrate moments across the full frame width at critical sections,
+  then distribute to column-strip / middle-strip using ACI 8.10.5 tabulated
+  fractions (same logic as DDM/EFM).
+- `:strip` — integrate moments directly over the column-strip and middle-strip
+  widths.  Sub-knobs control how the integration is performed.
+- `:area` — per-element design: transform each element's moment tensor into
+  design moments (no strip integration).  For use with per-element rebar maps.
+
+# Moment Transform  (`moment_transform`)
+How the 2D moment tensor (Mxx, Myy, Mxy) is reduced to a scalar design moment:
+- `:projection` — project the tensor onto the reinforcement axis:
+  Mn = Mxx cos²θ + Myy sin²θ + Mxy sin2θ.  Preserves equilibrium.
+- `:wood_armer` — Wood (1968) / Wood–Armer transformation: adds |Mxy| to both
+  Mxx and Myy to produce conservative design moments that account for twisting.
+  Required for area-based design; optional for strip/frame.
+- `:no_torsion` — project the tensor onto the reinforcement axis but **ignore
+  the twisting moment Mxy**: Mn = Mxx cos²θ + Myy sin²θ.  This is intentionally
+  unconservative and exists as a baseline to quantify the effect of Mxy.
+  See Parsekian (2018) and Shin & Alemdar (2020) for why ignoring Mxy is unsafe.
+
+# Concrete Torsion Discount  (`concrete_torsion_discount`)
+- `false` (default) — use the full twisting moment |Mxy| in Wood–Armer.
+- `true` — subtract the ACI-based concrete torsion capacity Mxy_c from |Mxy|
+  before applying the Wood–Armer transformation.  The concrete can resist some
+  twisting via its shear capacity; only the excess Mxy needs reinforcement.
+  Uses a circular V–T interaction: Mxy_c = √(1 − (V/(d·τ_c))²) · h²·τ_c/3,
+  where τ_c = 2λ√f'c (ACI 318-11 §11.2.1.1) and V = max(|Qxz|, |Qyz|).
+  Reference: Parsekian (1996), adapted to ACI 318.
+
+# Field Smoothing  (`field_smoothing`)
+- `:element` — use raw element-centroid moments (default for strip/frame).
+- `:nodal` — area-weighted nodal smoothing → continuous field.
+
+# Sign Treatment  (`sign_treatment`)
+Controls how signed moments are handled during nodal smoothing.  Only meaningful
+when `field_smoothing = :nodal`; ignored for `:element`.
+- `:signed` (default) — smooth the full signed tensor field.  Opposite-sign
+  contributions from adjacent elements can cancel at shared nodes.  This is the
+  standard SPR approach.
+- `:separate_faces` — smooth top-face (hogging) and bottom-face (sagging) fields
+  independently, preventing cross-sign cancellation at inflection points.
+  Recommended for irregular grids or high L/D cases where hogging zones shift
+  under pattern loading.  See Skorpen & Dekker (2014), Pacoste & Plos (2006).
+
+# Cut Method  (`cut_method`, strip design only)
+- `:delta_band` — δ-band section-cut integration (adaptive bandwidth).
+- `:isoparametric` — isoparametric line-integral cuts through quad cells.
+
+# Isoparametric Alpha  (`iso_alpha ∈ [0, 1]`)
+Blending parameter for isoparametric cuts (only used when `cut_method = :isoparametric`):
+- `0.0` — cuts follow slab contours (waffle-slab style)
+- `1.0` — straight cuts perpendicular to span axis
+- Default: `1.0` (straight cuts)
+
+# Rebar Direction  (`rebar_direction`)
+Angle (radians) of the primary reinforcement from the global x-axis.
+`nothing` (default) → aligned with the span axis.  For skewed slabs, set to
+the actual reinforcement direction.
+
+# Backward Compatibility
+The legacy `strip_design` keyword is still accepted and maps to the new knobs:
+- `:aci_fractions`   → `design_approach=:frame`
+- `:fea_integration` → `design_approach=:strip, moment_transform=:projection`
+- `:nodal_cuts`      → `design_approach=:strip, field_smoothing=:nodal, cut_method=:isoparametric`
+- `:wood_armer`      → `design_approach=:strip, moment_transform=:wood_armer`
 
 # Reference
 - ACI 318-11 §13.2.1
+- Wood (1968) for Wood–Armer transformation
 """
 struct FEA <: FlatPlateAnalysisMethod
     target_edge::Union{Nothing, typeof(1.0u"m")}
     pattern_loading::Bool
+    pattern_mode::Symbol          # :efm_amp, :fea_resolve
+    design_approach::Symbol       # :frame, :strip, :area
+    moment_transform::Symbol      # :projection, :wood_armer, :no_torsion
+    field_smoothing::Symbol       # :element, :nodal
+    cut_method::Symbol            # :delta_band, :isoparametric
+    iso_alpha::Float64            # ∈ [0, 1] for isoparametric cuts
+    rebar_direction::Union{Nothing, Float64}  # radians from global x, nothing = span axis
+    sign_treatment::Symbol        # :signed, :separate_faces
+    concrete_torsion_discount::Bool  # subtract concrete Mxy capacity before Wood–Armer
 
-    function FEA(; target_edge::Union{Nothing, Unitful.Length} = nothing, pattern_loading::Bool = true)
-        if target_edge !== nothing
-            ustrip(u"m", target_edge) > 0 || error("FEA target_edge must be > 0")
-            new(uconvert(u"m", target_edge), pattern_loading)
-        else
-            new(nothing, pattern_loading)
+    # Column patch stiffness multiplier on E (1.0 = no stiffening, >1 = rigid zone).
+    # Default 1.0.  Future use: model rigid column–slab junction zones.
+    patch_stiffness_factor::Float64
+
+    # Effective moment of inertia method for deflection:
+    #   :branson  — ACI 318-11 Eq. (9-10), cubic interpolation (default)
+    #   :bischoff — Bischoff (2005) reciprocal interpolation (better for lightly
+    #               reinforced / irregular slabs where Branson overestimates Ie)
+    deflection_Ie_method::Symbol
+
+    # Legacy alias — kept for reading in dispatch/options; not a user knob
+    strip_design::Symbol
+
+    function FEA(;
+        target_edge::Union{Nothing, Unitful.Length} = nothing,
+        pattern_loading::Bool = true,
+        pattern_mode::Symbol = :efm_amp,
+        design_approach::Symbol = :frame,
+        moment_transform::Symbol = :projection,
+        field_smoothing::Symbol = :element,
+        cut_method::Symbol = :delta_band,
+        iso_alpha::Float64 = 1.0,
+        rebar_direction::Union{Nothing, Float64} = nothing,
+        sign_treatment::Symbol = :signed,
+        concrete_torsion_discount::Bool = false,
+        patch_stiffness_factor::Float64 = 1.0,
+        deflection_Ie_method::Symbol = :branson,
+        # Legacy keyword — maps to new knobs when provided alone
+        strip_design::Union{Nothing, Symbol} = nothing,
+    )
+        # ── Legacy mapping ──
+        if !isnothing(strip_design)
+            if strip_design == :aci_fractions
+                design_approach = :frame
+            elseif strip_design == :fea_integration
+                design_approach = :strip
+                moment_transform = :projection
+                field_smoothing = :element
+                cut_method = :delta_band
+            elseif strip_design == :nodal_cuts
+                design_approach = :strip
+                field_smoothing = :nodal
+                cut_method = :isoparametric
+            elseif strip_design == :wood_armer
+                design_approach = :strip
+                moment_transform = :wood_armer
+            elseif strip_design == :peak_nodal
+                # Deprecated — map to nodal strip with element smoothing
+                design_approach = :strip
+                field_smoothing = :nodal
+                cut_method = :delta_band
+                @warn "FEA strip_design=:peak_nodal is deprecated; mapped to :strip + :nodal + :delta_band"
+            else
+                error("Unknown legacy strip_design=$(strip_design)")
+            end
         end
+
+        # ── Compute canonical strip_design for backward compat ──
+        _strip_design = if design_approach == :frame
+            :aci_fractions
+        elseif design_approach == :strip && moment_transform == :wood_armer
+            :wood_armer
+        elseif design_approach == :strip && field_smoothing == :nodal && cut_method == :isoparametric
+            :nodal_cuts
+        elseif design_approach == :strip
+            :fea_integration
+        else  # :area
+            :wood_armer  # area-based defaults to wood_armer in legacy view
+        end
+
+        # ── Validation ──
+        design_approach in (:frame, :strip, :area) ||
+            error("FEA design_approach must be :frame, :strip, or :area; got :$design_approach")
+        moment_transform in (:projection, :wood_armer, :no_torsion) ||
+            error("FEA moment_transform must be :projection, :wood_armer, or :no_torsion; got :$moment_transform")
+        field_smoothing in (:element, :nodal) ||
+            error("FEA field_smoothing must be :element or :nodal; got :$field_smoothing")
+        cut_method in (:delta_band, :isoparametric) ||
+            error("FEA cut_method must be :delta_band or :isoparametric; got :$cut_method")
+        pattern_mode in (:efm_amp, :fea_resolve) ||
+            error("FEA pattern_mode must be :efm_amp or :fea_resolve; got :$pattern_mode")
+        sign_treatment in (:signed, :separate_faces) ||
+            error("FEA sign_treatment must be :signed or :separate_faces; got :$sign_treatment")
+        0.0 ≤ iso_alpha ≤ 1.0 ||
+            error("FEA iso_alpha must be in [0, 1]; got $iso_alpha")
+
+        # Warn if projection/no_torsion is used with area-based (can be unconservative)
+        if design_approach == :area && moment_transform in (:projection, :no_torsion)
+            @warn "FEA: :$(moment_transform) with :area design can be unconservative — " *
+                  "consider :wood_armer for area-based design"
+        end
+        if moment_transform == :no_torsion
+            @warn "FEA: :no_torsion ignores Mxy — intentionally unconservative baseline"
+        end
+        if sign_treatment == :separate_faces && field_smoothing != :nodal
+            @warn "FEA: sign_treatment=:separate_faces only affects nodal smoothing; " *
+                  "ignored with field_smoothing=:$(field_smoothing)"
+        end
+        if concrete_torsion_discount && moment_transform != :wood_armer
+            @warn "FEA: concrete_torsion_discount=true only affects :wood_armer; " *
+                  "ignored with moment_transform=:$(moment_transform)"
+        end
+        patch_stiffness_factor > 0 ||
+            error("FEA patch_stiffness_factor must be > 0; got $patch_stiffness_factor")
+        deflection_Ie_method in (:branson, :bischoff) ||
+            error("FEA deflection_Ie_method must be :branson or :bischoff; got :$deflection_Ie_method")
+
+        te = if target_edge !== nothing
+            ustrip(u"m", target_edge) > 0 || error("FEA target_edge must be > 0")
+            uconvert(u"m", target_edge)
+        else
+            nothing
+        end
+
+        new(te, pattern_loading, pattern_mode, design_approach, moment_transform,
+            field_smoothing, cut_method, iso_alpha, rebar_direction, sign_treatment,
+            concrete_torsion_discount, patch_stiffness_factor, deflection_Ie_method,
+            _strip_design)
     end
 end
 

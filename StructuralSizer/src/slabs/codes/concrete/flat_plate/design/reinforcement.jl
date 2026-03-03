@@ -12,6 +12,65 @@
 # =============================================================================
 
 """
+    _design_strips_from_moments(M_neg_ext_cs, M_neg_int_cs, M_pos_cs,
+                                M_neg_ext_ms, M_neg_int_ms, M_pos_ms,
+                                l2, d, fc, fy, h; label="", verbose=false)
+
+Shared core: given six Unitful design moments (column-strip and middle-strip
+for exterior negative, positive, and interior negative), design reinforcement
+for all strip locations.
+
+Returns the standard named tuple
+`(column_strip_width, column_strip_reinf, middle_strip_width,
+  middle_strip_reinf, section_adequate)`.
+"""
+function _design_strips_from_moments(
+    M_neg_ext_cs, M_neg_int_cs, M_pos_cs,
+    M_neg_ext_ms, M_neg_int_ms, M_pos_ms,
+    l2, d, fc, fy, h;
+    label::String = "",
+    verbose::Bool = false,
+)
+    cs_width = l2 / 2  # Column strip = half of panel width
+    ms_width = l2 / 2  # Middle strip = half of panel width
+
+    column_strip_reinf = StripReinforcement[
+        design_single_strip(:ext_neg, M_neg_ext_cs, cs_width, d, fc, fy, h),
+        design_single_strip(:pos,     M_pos_cs,     cs_width, d, fc, fy, h),
+        design_single_strip(:int_neg, M_neg_int_cs, cs_width, d, fc, fy, h),
+    ]
+
+    middle_strip_reinf = StripReinforcement[
+        design_single_strip(:pos,     M_pos_ms,     ms_width, d, fc, fy, h),
+        design_single_strip(:int_neg, M_neg_int_ms, ms_width, d, fc, fy, h),
+    ]
+
+    all_strips = vcat(column_strip_reinf, middle_strip_reinf)
+    section_adequate = all(sr.section_adequate for sr in all_strips)
+
+    if verbose
+        tag = isempty(label) ? "Column strip" : "Column strip ($label)"
+        @debug tag width=cs_width
+        for sr in column_strip_reinf
+            @debug "  $(sr.location)" Mu=uconvert(kip*u"ft", sr.Mu) As_reqd=sr.As_reqd As_provided=sr.As_provided adequate=sr.section_adequate
+        end
+        tag_ms = isempty(label) ? "Middle strip" : "Middle strip ($label)"
+        @debug tag_ms width=ms_width
+        for sr in middle_strip_reinf
+            @debug "  $(sr.location)" Mu=uconvert(kip*u"ft", sr.Mu) As_reqd=sr.As_reqd As_provided=sr.As_provided adequate=sr.section_adequate
+        end
+    end
+
+    return (
+        column_strip_width = cs_width,
+        column_strip_reinf = column_strip_reinf,
+        middle_strip_width = ms_width,
+        middle_strip_reinf = middle_strip_reinf,
+        section_adequate   = section_adequate,
+    )
+end
+
+"""
     design_strip_reinforcement(moment_results, columns, h, d, fc, fy, cover; verbose=false)
 
 Design strip reinforcement using ACI 8.10.5 transverse distribution.
@@ -37,8 +96,6 @@ Named tuple with column_strip and middle_strip reinforcement vectors.
 """
 function design_strip_reinforcement(moment_results, columns, h, d, fc, fy, cover; verbose=false)
     l2 = moment_results.l2
-    cs_width = l2 / 2  # Column strip = half of panel width
-    ms_width = l2 / 2  # Middle strip = half of panel width
 
     # ACI 8.10.5 — derive design moments from per-column data
     zero_M = zero(moment_results.M0)
@@ -59,39 +116,50 @@ function design_strip_reinforcement(moment_results, columns, h, d, fc, fy, cover
     M_pos_cs = 0.60 * moment_results.M_pos
     M_pos_ms = 0.40 * moment_results.M_pos
 
-    # Design each strip location
-    column_strip_reinf = StripReinforcement[
-        design_single_strip(:ext_neg, M_neg_ext_cs, cs_width, d, fc, fy, h),
-        design_single_strip(:pos, M_pos_cs, cs_width, d, fc, fy, h),
-        design_single_strip(:int_neg, M_neg_int_cs, cs_width, d, fc, fy, h)
-    ]
+    # Exterior negative middle strip is zero (100% goes to column strip)
+    M_neg_ext_ms = zero_M
 
-    middle_strip_reinf = StripReinforcement[
-        design_single_strip(:pos, M_pos_ms, ms_width, d, fc, fy, h),
-        design_single_strip(:int_neg, M_neg_int_ms, ms_width, d, fc, fy, h)
-    ]
+    return _design_strips_from_moments(
+        M_neg_ext_cs, M_neg_int_cs, M_pos_cs,
+        M_neg_ext_ms, M_neg_int_ms, M_pos_ms,
+        l2, d, fc, fy, h;
+        label="ACI fractions", verbose=verbose,
+    )
+end
 
-    # Check if any strip has inadequate section
-    all_strips = vcat(column_strip_reinf, middle_strip_reinf)
-    section_adequate = all(sr.section_adequate for sr in all_strips)
+"""
+    design_strip_reinforcement_fea(fea_strip_moments, l2, h, d, fc, fy, cover; verbose=false)
 
-    if verbose
-        @debug "Column strip" width=cs_width
-        for sr in column_strip_reinf
-            @debug "  $(sr.location)" Mu=uconvert(kip*u"ft", sr.Mu) As_reqd=sr.As_reqd As_provided=sr.As_provided adequate=sr.section_adequate
-        end
-        @debug "Middle strip" width=ms_width
-        for sr in middle_strip_reinf
-            @debug "  $(sr.location)" Mu=uconvert(kip*u"ft", sr.Mu) As_reqd=sr.As_reqd As_provided=sr.As_provided adequate=sr.section_adequate
-        end
-    end
+Design strip reinforcement using FEA-derived strip moments (direct integration).
 
-    return (
-        column_strip_width = cs_width,
-        column_strip_reinf = column_strip_reinf,
-        middle_strip_width = ms_width,
-        middle_strip_reinf = middle_strip_reinf,
-        section_adequate   = section_adequate,
+Instead of applying ACI 8.10.5 tabulated fractions to frame-level moments,
+this function uses column-strip and middle-strip moments extracted directly
+from the shell model via `_extract_fea_strip_moments`.
+
+# Arguments
+- `fea_strip_moments`: NamedTuple from `_extract_fea_strip_moments` with
+  `M_neg_ext_cs`, `M_neg_int_cs`, `M_pos_cs`, `M_neg_ext_ms`, `M_neg_int_ms`, `M_pos_ms`
+  (bare Float64 in N·m).
+- `l2`: Panel width (for strip width calculation)
+- `h`, `d`, `fc`, `fy`, `cover`: Same as `design_strip_reinforcement`
+
+# Returns
+Same named tuple format as `design_strip_reinforcement`.
+"""
+function design_strip_reinforcement_fea(fea_strip_moments, l2, h, d, fc, fy, cover; verbose=false)
+    # Convert bare N·m to Unitful moments
+    M_neg_ext_cs = fea_strip_moments.M_neg_ext_cs * u"N*m"
+    M_neg_int_cs = fea_strip_moments.M_neg_int_cs * u"N*m"
+    M_pos_cs     = fea_strip_moments.M_pos_cs * u"N*m"
+    M_neg_ext_ms = fea_strip_moments.M_neg_ext_ms * u"N*m"
+    M_neg_int_ms = fea_strip_moments.M_neg_int_ms * u"N*m"
+    M_pos_ms     = fea_strip_moments.M_pos_ms * u"N*m"
+
+    return _design_strips_from_moments(
+        M_neg_ext_cs, M_neg_int_cs, M_pos_cs,
+        M_neg_ext_ms, M_neg_int_ms, M_pos_ms,
+        l2, d, fc, fy, h;
+        label="FEA direct", verbose=verbose,
     )
 end
 

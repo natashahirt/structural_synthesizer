@@ -87,6 +87,48 @@ function effective_moment_of_inertia(Mcr, Ma, Ig, Icr)
 end
 
 """
+    effective_moment_of_inertia_bischoff(Mcr, Ma, Ig, Icr)
+
+Effective moment of inertia per Bischoff (2005) reciprocal interpolation.
+
+    1/Ie = (Mcr/Ma)² / Ig + [1 − (Mcr/Ma)²] / Icr    when Ma > Mcr
+    Ie   = Ig                                           when Ma ≤ Mcr
+
+This formulation is more accurate than Branson's cubic equation (ACI 318-11
+Eq. 9-10) for lightly reinforced members and irregular slabs, where Branson
+tends to overestimate Ie (underestimate deflection).
+
+The bilinear reciprocal form ensures Ie → Ig as Ma → Mcr and Ie → Icr as
+Ma ≫ Mcr, with a smoother transition than Branson's cubic.
+
+# Arguments
+- `Mcr`: Cracking moment
+- `Ma`: Service load moment
+- `Ig`: Gross moment of inertia
+- `Icr`: Cracked moment of inertia
+
+# Reference
+- Bischoff, P.H. (2005). "Reevaluation of Deflection Prediction for Concrete
+  Beams Reinforced with Steel and Fiber Reinforced Polymer Bars." J. Struct.
+  Eng., 131(5), 752–767.
+- ACI 440.1R-06 Eq. 8-12a (adopted Bischoff's equation for FRP)
+"""
+function effective_moment_of_inertia_bischoff(Mcr, Ma, Ig, Icr)
+    if ustrip(u"N*m", Ma) <= ustrip(u"N*m", Mcr)
+        return Ig
+    end
+
+    ratio = ustrip(u"N*m", Mcr) / ustrip(u"N*m", Ma)
+    η = ratio^2  # (Mcr/Ma)²
+
+    # 1/Ie = η/Ig + (1-η)/Icr
+    inv_Ie = η / Ig + (1 - η) / Icr
+    Ie = 1 / inv_Ie
+
+    return min(Ie, Ig)
+end
+
+"""
     cracking_moment(fr, Ig, h) -> Moment
 
 Cracking moment per ACI 24.2.3.5.

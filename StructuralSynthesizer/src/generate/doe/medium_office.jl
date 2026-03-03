@@ -9,6 +9,9 @@ Generate a medium office building skeleton.
   - `:shift_x` - Shift interior columns in x by ±offset (alternating rows)
   - `:shift_y` - Shift interior columns in y by ±offset (alternating columns)
   - `:zigzag` - Alternating shift in both directions
+  - `:trapezoid` - Shift interior x-columns by ±offset alternating by column index
+    (creates true trapezoids: adjacent columns in the same row shift opposite
+    directions, so every bay has unequal-length horizontal edges)
 - `offset::Unitful.Length`: Amount to shift interior columns (default 0.0m)
 """
 function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::Unitful.Length, 
@@ -59,6 +62,11 @@ function gen_medium_office(x::Unitful.Length, y::Unitful.Length, floor_height::U
             if is_interior_y
                 dy = iseven(i + j) ? offset : -offset
             end
+        elseif irregular == :trapezoid && is_interior_x
+            # Alternate direction based on column index — adjacent interior
+            # columns shift opposite ways, creating true trapezoids where
+            # opposite horizontal edges have different lengths.
+            dx = iseven(i) ? offset : -offset
         end
         
         return Meshes.Point(base_x + dx, base_y + dy, skel.stories_z[k+1])

@@ -123,7 +123,7 @@ function _mat_apply_column_loads(
     loads = NodeForce[]
     for (k, dem) in enumerate(demands)
         cx, cy = positions_loc_m[k]
-        Pu_N = ustrip(u"N", uconvert(u"N", dem.Pu))
+        Pu_N = ustrip(u"N", dem.Pu)
         node, _ = _find_nearest_node(nodes, cx, cy)
         push!(loads, NodeForce(node, [0.0, 0.0, -Pu_N] .* u"N"))
     end
@@ -271,13 +271,13 @@ function _design_mat_winkler_fea(
     edge_dofs = [false, false, true, true, true, true]
 
     # Soil spring stiffness in SI
-    ks_Pa_m = ustrip(u"N/m^3", uconvert(u"N/m^3", soil.ks))
+    ks_Pa_m = ustrip(u"N/m^3", soil.ks)
 
     # ── Step 3: Iterate on thickness ──
     h = opts.min_depth
     h_incr = opts.depth_increment
 
-    Ec_Pa = ustrip(u"Pa", uconvert(u"Pa", Ec_c))
+    Ec_Pa = ustrip(u"Pa", Ec_c)
     local gov_Mx_total_pos, gov_Mx_total_neg, gov_My_total_pos, gov_My_total_neg
     local loads, springs  # saved for equilibrium check
 
@@ -341,6 +341,8 @@ function _design_mat_winkler_fea(
         # the full-width integration loses, while avoiding single-element peaks.
 
         # ── Precompute per-element data (same pattern as slab FEA cache) ──
+        # Extract moments and rotate from element-local to global coordinates.
+        # Each ShellTri3 has its own LCS; moments must be rotated before integration.
         n_elems = length(shells)
         elem_cx   = Vector{Float64}(undef, n_elems)
         elem_cy   = Vector{Float64}(undef, n_elems)
@@ -355,8 +357,18 @@ function _design_mat_winkler_fea(
             elem_cx[k]   = c.x
             elem_cy[k]   = c.y
             elem_area[k] = elem.area
-            elem_Mxx[k]  = M_buf[1]
-            elem_Myy[k]  = M_buf[2]
+            
+            # Rotate element-local moments to global frame:
+            # M_global = R · M_local · Rᵀ  where R = [ex ey] (columns = local axes)
+            ex1, ex2 = elem.LCS[1][1], elem.LCS[1][2]
+            ey1, ey2 = elem.LCS[2][1], elem.LCS[2][2]
+            Mxx_l = M_buf[1]  # local Mxx
+            Myy_l = M_buf[2]  # local Myy
+            Mxy_l = M_buf[3]  # local Mxy
+            
+            # Global frame moments
+            elem_Mxx[k] = Mxx_l * ex1^2 + Myy_l * ey1^2 + 2 * Mxy_l * ex1 * ey1
+            elem_Myy[k] = Mxx_l * ex2^2 + Myy_l * ey2^2 + 2 * Mxy_l * ex2 * ey2
         end
 
         # ── Column and midspan lines ──

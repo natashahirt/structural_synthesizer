@@ -369,7 +369,7 @@ export total_static_moment, distribute_moments_mddm, distribute_moments_aci
 export edge_beam_βt, aci_ddm_longitudinal_with_edge_beam, aci_col_strip_ext_neg_fraction
 export required_reinforcement, minimum_reinforcement, max_bar_spacing
 export cracked_moment_of_inertia, cracked_moment_of_inertia_tbeam
-export effective_moment_of_inertia, cracking_moment
+export effective_moment_of_inertia, effective_moment_of_inertia_bischoff, cracking_moment
 export immediate_deflection, long_term_deflection_factor, deflection_limit
 export required_Ix_for_deflection
 export MDDM_COEFFICIENTS, ACI_DDM_LONGITUDINAL
@@ -385,7 +385,7 @@ export distribute_moments_to_strips
 
 # --- Flat plate design helpers ---
 export check_punching_for_column, check_punching_at_drop_edge, check_punching
-export design_strip_reinforcement, design_single_strip
+export design_strip_reinforcement, design_strip_reinforcement_fea, design_single_strip
 export build_slab_result, build_column_results
 export method_name, round_up_thickness
 export run_secondary_moment_analysis

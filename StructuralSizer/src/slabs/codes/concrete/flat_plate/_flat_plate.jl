@@ -52,7 +52,7 @@ include("design/rule_of_thumb.jl")
 include("analysis/common.jl")   # shared setup (_moment_analysis_setup)
 include("analysis/ddm.jl")
 include("analysis/efm.jl")
-include("analysis/fea.jl")
+include("analysis/_fea.jl")      # FEA barrel: fea/ subdirectory files
 
 # Main design pipeline (orchestration only)
 include("pipeline.jl")
