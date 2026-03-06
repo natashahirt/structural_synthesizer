@@ -31,14 +31,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Ensure Asap source exists for Docker build
-        run: |
-          if [ ! -d "external/Asap/.git" ]; then
-            rm -rf external/Asap
-            mkdir -p external
-            git clone --depth 1 https://github.com/natashahirt/Asap.jl.git external/Asap
-          fi
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
