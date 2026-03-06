@@ -8,7 +8,6 @@ secrets/
 
 # Documentation
 *.md
-directory.md
 
 # Test files
 test/
