@@ -11,6 +11,10 @@
 #   SIZER_HOST — Bind address (default "0.0.0.0")
 # =============================================================================
 
+# API runtime is headless; avoid compiling visualization stack on startup.
+ENV["SS_ENABLE_VISUALIZATION"] = get(ENV, "SS_ENABLE_VISUALIZATION", "false")
+ENV["SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD"] = get(ENV, "SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD", "false")
+
 using StructuralSynthesizer
 
 const PORT = parse(Int, get(ENV, "PORT", get(ENV, "SIZER_PORT", "8080")))

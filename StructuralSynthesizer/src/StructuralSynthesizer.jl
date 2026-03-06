@@ -11,13 +11,17 @@ using Reexport
 # (e.g. `Slab`). In Julia, adding methods requires `import`, not `using`.
 import StructuralSizer: self_weight, total_depth, structural_effects
 
-import GLMakie
 import Meshes
 import Graphs
 import Asap
 import LinearAlgebra: norm, normalize
 using Unitful
-import StructuralPlots  # Colors and themes for visualization
+
+const ENABLE_VISUALIZATION = lowercase(get(ENV, "SS_ENABLE_VISUALIZATION", "true")) == "true"
+if ENABLE_VISUALIZATION
+    import GLMakie
+    import StructuralPlots  # Colors and themes for visualization
+end
 
 # =============================================================================
 # File includes (order matters!)
@@ -43,7 +47,9 @@ include("geometry/_geometry.jl")
 
 # Other modules
 include("generate/_generate.jl")
-include("visualization/_visualization.jl")
+if ENABLE_VISUALIZATION
+    include("visualization/_visualization.jl")
+end
 include("analyze/_analyze.jl")
 include("postprocess/_postprocess.jl")
 
@@ -184,75 +190,79 @@ export APIInput, APIOutput, APIError, APIParams
 
 using PrecompileTools
 
-@setup_workload begin
-    @compile_workload begin
-        redirect_stdio(; stdout=devnull, stderr=devnull) do
-            # =================================================================
-            # 1. GLMakie 3D pipeline
-            # =================================================================
-            fig = GLMakie.Figure(size=(400, 300))
-            ax = GLMakie.Axis3(fig[1, 1]; title="precompile", aspect=:data)
+const ENABLE_HEAVY_PRECOMPILE_WORKLOAD = lowercase(get(ENV, "SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD", "true")) == "true"
 
-            P3 = GLMakie.Point3f
-            pts = [P3(0, 0, 0), P3(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)]
-            GLMakie.scatter!(ax, pts; color=:red, markersize=8)
-            GLMakie.lines!(ax, pts; color=:blue, linewidth=1.0)
+if ENABLE_HEAVY_PRECOMPILE_WORKLOAD && ENABLE_VISUALIZATION
+    @setup_workload begin
+        @compile_workload begin
+            redirect_stdio(; stdout=devnull, stderr=devnull) do
+                # =================================================================
+                # 1. GLMakie 3D pipeline
+                # =================================================================
+                fig = GLMakie.Figure(size=(400, 300))
+                ax = GLMakie.Axis3(fig[1, 1]; title="precompile", aspect=:data)
 
-            TF = GLMakie.GeometryBasics.TriangleFace
-            faces = [TF(1, 2, 3), TF(1, 3, 4)]
-            m = GLMakie.GeometryBasics.Mesh(pts, faces)
-            GLMakie.mesh!(ax, m; color=(:gray, 0.5), transparency=true)
+                P3 = GLMakie.Point3f
+                pts = [P3(0, 0, 0), P3(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)]
+                GLMakie.scatter!(ax, pts; color=:red, markersize=8)
+                GLMakie.lines!(ax, pts; color=:blue, linewidth=1.0)
 
-            # StructuralPlots themes
-            GLMakie.set_theme!(StructuralPlots.sp_light)
-            GLMakie.set_theme!()
+                TF = GLMakie.GeometryBasics.TriangleFace
+                faces = [TF(1, 2, 3), TF(1, 3, 4)]
+                m = GLMakie.GeometryBasics.Mesh(pts, faces)
+                GLMakie.mesh!(ax, m; color=(:gray, 0.5), transparency=true)
 
-            # =================================================================
-            # 2. Full DDM pipeline via design_building
-            #    Cascades through: initialize! → estimate_column_sizes! →
-            #    to_asap! → size_slabs!(DDM) → column P-M MIP → punching →
-            #    deflection → one-way shear → rebar design → results
-            #    NOTE: Use realistic spans (~18ft) so column sizing succeeds.
-            #    40m/3 = 13.3m spans were infeasible for RC column catalog.
-            # =================================================================
-            try
-                _skel_ddm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 3, 3, 1)
-                _struc_ddm = BuildingStructure(_skel_ddm)
-                design_building(_struc_ddm, DesignParameters(
-                    name = "precompile_ddm",
-                    floor = StructuralSizer.FlatPlateOptions(method = StructuralSizer.DDM()),
-                    max_iterations = 2,
-                ))
-            catch; end
+                # StructuralPlots themes
+                GLMakie.set_theme!(StructuralPlots.sp_light)
+                GLMakie.set_theme!()
 
-            # =================================================================
-            # 3. Full EFM pipeline via design_building
-            #    Exercises Asap FrameModel build + solve for equivalent frame
-            # =================================================================
-            try
-                _skel_efm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
-                _struc_efm = BuildingStructure(_skel_efm)
-                design_building(_struc_efm, DesignParameters(
-                    name = "precompile_efm",
-                    floor = StructuralSizer.FlatPlateOptions(method = StructuralSizer.EFM()),
-                    max_iterations = 2,
-                ))
-            catch; end
+                # =================================================================
+                # 2. Full DDM pipeline via design_building
+                #    Cascades through: initialize! → estimate_column_sizes! →
+                #    to_asap! → size_slabs!(DDM) → column P-M MIP → punching →
+                #    deflection → one-way shear → rebar design → results
+                #    NOTE: Use realistic spans (~18ft) so column sizing succeeds.
+                #    40m/3 = 13.3m spans were infeasible for RC column catalog.
+                # =================================================================
+                try
+                    _skel_ddm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 3, 3, 1)
+                    _struc_ddm = BuildingStructure(_skel_ddm)
+                    design_building(_struc_ddm, DesignParameters(
+                        name = "precompile_ddm",
+                        floor = StructuralSizer.FlatPlateOptions(method = StructuralSizer.DDM()),
+                        max_iterations = 2,
+                    ))
+                catch; end
 
-            # =================================================================
-            # 4. Steel member sizing (Asap ElementInternalForces + AISC MIP)
-            # =================================================================
-            try
-                _skel_st = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
-                _struc_st = BuildingStructure(_skel_st)
-                initialize!(_struc_st; floor_type = :flat_plate)
-                to_asap!(_struc_st)
-                Asap.solve!(_struc_st.asap_model)
-                size_steel_members!(_struc_st;
-                    member_edge_group = :beams,
-                    resolution = 20,
-                )
-            catch; end
+                # =================================================================
+                # 3. Full EFM pipeline via design_building
+                #    Exercises Asap FrameModel build + solve for equivalent frame
+                # =================================================================
+                try
+                    _skel_efm = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
+                    _struc_efm = BuildingStructure(_skel_efm)
+                    design_building(_struc_efm, DesignParameters(
+                        name = "precompile_efm",
+                        floor = StructuralSizer.FlatPlateOptions(method = StructuralSizer.EFM()),
+                        max_iterations = 2,
+                    ))
+                catch; end
+
+                # =================================================================
+                # 4. Steel member sizing (Asap ElementInternalForces + AISC MIP)
+                # =================================================================
+                try
+                    _skel_st = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 2, 2, 1)
+                    _struc_st = BuildingStructure(_skel_st)
+                    initialize!(_struc_st; floor_type = :flat_plate)
+                    to_asap!(_struc_st)
+                    Asap.solve!(_struc_st.asap_model)
+                    size_steel_members!(_struc_st;
+                        member_edge_group = :beams,
+                        resolution = 20,
+                    )
+                catch; end
+            end
         end
     end
 end

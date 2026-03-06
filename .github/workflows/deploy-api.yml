@@ -1,0 +1,98 @@
+name: Deploy API
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-api-main
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
+  APP_URL: ${{ vars.APP_URL }}
+
+jobs:
+  deploy:
+    name: Build, Push, Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          echo "sha_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image_uri }}:${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update App Runner image to immutable tag
+        run: |
+          IMAGE_IDENTIFIER="${{ steps.meta.outputs.image_uri }}:${{ steps.meta.outputs.sha_tag }}"
+          aws apprunner describe-service \
+            --service-arn "${APP_RUNNER_SERVICE_ARN}" \
+            --query 'Service.SourceConfiguration' \
+            --output json > source-config.json
+
+          jq --arg image "${IMAGE_IDENTIFIER}" \
+            '.ImageRepository.ImageIdentifier = $image | .AutoDeploymentsEnabled = false' \
+            source-config.json > new-source-config.json
+
+          aws apprunner update-service \
+            --service-arn "${APP_RUNNER_SERVICE_ARN}" \
+            --source-configuration file://new-source-config.json
+
+      - name: Wait for service operation to complete
+        run: |
+          aws apprunner wait service-operation-succeeded \
+            --service-arn "${APP_RUNNER_SERVICE_ARN}"
+
+      - name: Smoke check /health
+        if: ${{ env.APP_URL != '' }}
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent --show-error "${APP_URL%/}/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Health check failed after retries"
+          exit 1
+
+      - name: Smoke check /schema
+        if: ${{ env.APP_URL != '' }}
+        run: |
+          curl --fail --silent --show-error "${APP_URL%/}/schema" >/dev/null
