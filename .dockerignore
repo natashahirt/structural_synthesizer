@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Secrets
+secrets/
+
+# Documentation
+*.md
+directory.md
+
+# Test files
+test/
+*_test.jl
+*_tests.jl
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+*.jl.bak
+*.jl.cov
+*.jl.mem
+*.stackdump
+
+# Grasshopper (not needed in container)
+grasshopper/
+
+# External dependencies (handled separately)
+external/AI-MDO-Steel-Buildings/
+external/AsapToolkit/
+external/fenicsx-shells/
+external/FinEtools.jl/
+external/FinEtoolsDeforNonlinear/
+external/FinEtoolsFlexStructures/
+external/Pixelframe.jl/
+
+# Julia cache
+.julia/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PDFs and other large files
+*.pdf
+*.txt
+
+# Results/outputs
+results/
+outputs/
+
+# Other packages not needed for API
+StructuralStudies/

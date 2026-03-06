@@ -88,11 +88,15 @@ function build_pipeline(params::DesignParameters)
     floor_opts = resolve_floor_options(params)
     floor_type = _infer_floor_type(floor_opts)
     
+    # Extract column options for flat plate/slab sizing (needed for design_details)
+    column_opts = _get_column_opts(params)
+    
     # ─── Stage 1: Slab sizing (always) ─── needs sync to push slab self-weight
     push!(stages, PipelineStage(struc -> begin
         StructuralSizer.size_slabs!(struc; options=floor_opts, verbose=false,
                                     max_iterations=params.max_iterations,
-                                    fire_rating=params.fire_rating)
+                                    fire_rating=params.fire_rating,
+                                    column_opts=column_opts)
         update_slab_volumes!(struc; options=floor_opts)
     end, true))
     
@@ -523,6 +527,11 @@ available to capture column P-M, integrity, transfer, and punching detail
 that `slab.result` (FlatPlatePanelResult) alone doesn't carry.
 """
 function _populate_slab_results!(design::BuildingDesign, struc::BuildingStructure)
+    # Handle case where slabs haven't been initialized yet
+    if isnothing(struc.slabs) || isempty(struc.slabs)
+        return
+    end
+    
     for (slab_idx, slab) in enumerate(struc.slabs)
         # Non-converged slabs have result=nothing but still carry design_details
         if isnothing(slab.result)
@@ -590,35 +599,37 @@ function _populate_slab_results!(design::BuildingDesign, struc::BuildingStructur
         # ── Convergence / pattern loading (from size_flat_plate! NamedTuple) ──
         dd = hasproperty(slab, :design_details) ? slab.design_details : nothing
         if !isnothing(dd)
-            hasproperty(dd, :converged)       && (result.converged       = dd.converged)
-            hasproperty(dd, :failure_reason)  && (result.failure_reason  = dd.failure_reason)
-            hasproperty(dd, :failing_check)   && (result.failing_check   = dd.failing_check)
-            hasproperty(dd, :iterations)      && (result.iterations      = dd.iterations)
-            hasproperty(dd, :pattern_loading) && (result.pattern_loading = dd.pattern_loading)
+            hasproperty(dd, :converged)       && !isnothing(dd.converged)       && (result.converged       = dd.converged)
+            hasproperty(dd, :failure_reason)  && !isnothing(dd.failure_reason)  && (result.failure_reason  = dd.failure_reason)
+            hasproperty(dd, :failing_check)   && !isnothing(dd.failing_check)   && (result.failing_check   = dd.failing_check)
+            hasproperty(dd, :iterations)      && !isnothing(dd.iterations)      && (result.iterations      = dd.iterations)
+            hasproperty(dd, :pattern_loading) && !isnothing(dd.pattern_loading) && (result.pattern_loading = dd.pattern_loading)
         end
         
         # ── Rich design details (column ρg, integrity, transfer, etc.) ───
         if !isnothing(dd)
             # Column ρg
-            if hasproperty(dd, :column_results)
+            if hasproperty(dd, :column_results) && !isnothing(dd.column_results)
                 ρg_vals = [v.ρg for v in values(dd.column_results)]
                 result.col_rho_max = isempty(ρg_vals) ? 0.0 : maximum(ρg_vals)
             end
             
             # Integrity check (ACI 8.7.4.2)
-            if hasproperty(dd, :integrity_check)
+            if hasproperty(dd, :integrity_check) && !isnothing(dd.integrity_check)
                 result.integrity_ok = dd.integrity_check.ok
             end
             
             # Transfer reinforcement (ACI 8.4.2.3)
-            if hasproperty(dd, :transfer_results)
+            if hasproperty(dd, :transfer_results) && !isnothing(dd.transfer_results)
                 result.n_transfer_bars_additional = sum(
                     isnothing(tr) ? 0 : tr.n_bars_additional
                     for tr in dd.transfer_results; init = 0)
             end
             
             # ρ′ for long-term deflection
-            hasproperty(dd, :ρ_prime) && (result.ρ_prime = dd.ρ_prime)
+            if hasproperty(dd, :ρ_prime) && !isnothing(dd.ρ_prime)
+                result.ρ_prime = dd.ρ_prime
+            end
             
             # Drop panel geometry
             dp = hasproperty(dd, :drop_panel) ? dd.drop_panel : nothing

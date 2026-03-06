@@ -69,6 +69,10 @@ mutable struct BuildingSkeleton{T} <: AbstractBuildingSkeleton
     lookup::Union{SkeletonLookup, Nothing}
     # Precomputed geometry (populated by rebuild_geometry_cache!)
     geometry::Union{GeometryCache, Nothing}
+    # Edge chains: maps a chain ID → ordered vector of edge indices that form
+    # one continuous member (populated by shatter logic in the API layer).
+    # When empty, each edge is its own chain (1:1 mapping, the default).
+    edge_chains::Dict{UInt64, Vector{Int}}
 
     function BuildingSkeleton{T}() where T
         new{T}(
@@ -79,6 +83,7 @@ mutable struct BuildingSkeleton{T} <: AbstractBuildingSkeleton
             Dict{Int, Story{T}}(), T[],
             nothing,  # lookup disabled by default
             nothing,  # geometry cache not yet built
+            Dict{UInt64, Vector{Int}}(),  # edge_chains (empty = no shattering)
         )
     end
 end

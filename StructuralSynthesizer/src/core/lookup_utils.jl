@@ -20,7 +20,7 @@
 end
 
 """Canonical face key (sorted vertex indices for order-independent lookup)."""
-@inline function _face_key(v_indices::Vector{Int})::Vector{Int}
+@inline function _face_key(v_indices::AbstractVector{Int})::Vector{Int}
     sort(v_indices)
 end
 
@@ -109,7 +109,7 @@ function find_edge(skel::BuildingSkeleton, v1::Int, v2::Int)::Union{Int, Nothing
 end
 
 """O(1) lookup of face index by vertex indices (order-independent)."""
-function find_face(skel::BuildingSkeleton, v_indices::Vector{Int})::Union{Int, Nothing}
+function find_face(skel::BuildingSkeleton, v_indices::AbstractVector{Int})::Union{Int, Nothing}
     isnothing(skel.lookup) && return findfirst(f -> sort(f) == sort(v_indices), skel.face_vertex_indices)
     get(skel.lookup.face_index, _face_key(v_indices), nothing)
 end

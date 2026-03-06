@@ -55,48 +55,101 @@ function initialize_members!(struc::BuildingStructure{T};
     column_edges = Set(get(skel.groups_edges, :columns, Int[]))
     brace_edges = Set(get(skel.groups_edges, :braces, Int[]))
     
+    # Build reverse lookup: edge_idx → chain_id (for shattered edges)
+    edge_to_chain = Dict{Int, UInt64}()
+    for (chain_id, chain_edge_indices) in skel.edge_chains
+        for eidx in chain_edge_indices
+            edge_to_chain[eidx] = chain_id
+        end
+    end
+    
+    # Build edge_idx → seg_idx lookup
+    edge_to_seg = Dict{Int, Int}()
+    for (seg_idx, seg) in enumerate(struc.segments)
+        edge_to_seg[seg.edge_idx] = seg_idx
+    end
+    
+    # Track which edges have been processed (to skip chain sub-segments)
+    processed_edges = Set{Int}()
+    
     for (seg_idx, seg) in enumerate(struc.segments)
         edge_idx = seg.edge_idx
+        edge_idx in processed_edges && continue
         
-        if edge_idx in column_edges
-            # Create Column
-            v1, v2 = skel.edge_indices[edge_idx]
-            z1 = vc[v1, 3]
-            z2 = vc[v2, 3]
-            # Top vertex is at the slab level (shares vertex index with face vertices)
-            vertex_idx = z1 > z2 ? v1 : v2
+        if haskey(edge_to_chain, edge_idx)
+            # This edge is part of a shattered chain — process the whole chain
+            chain_id = edge_to_chain[edge_idx]
+            chain_edge_indices = skel.edge_chains[chain_id]
             
-            # Read story from geometry cache
-            story = edge_story(skel, edge_idx)
+            # Mark all chain edges as processed
+            for eidx in chain_edge_indices
+                push!(processed_edges, eidx)
+            end
             
-            # Classify position using cached coords + edge-face counts
-            position, boundary_edge_dirs = classify_column_position(skel, vertex_idx, vc, efc)
+            # Collect segment indices for the chain (ordered)
+            chain_seg_indices = [edge_to_seg[eidx] for eidx in chain_edge_indices]
+            chain_segs = [struc.segments[si] for si in chain_seg_indices]
             
-            col = Column(seg_idx, seg.L; 
-                        Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
-                        vertex_idx=vertex_idx, story=story, position=position,
-                        boundary_edge_dirs=boundary_edge_dirs)
-            push!(struc.columns, col)
+            # Compute total length and governing unbraced length
+            L_total = sum(s.L for s in chain_segs)
+            Lb_gov = maximum(s.Lb for s in chain_segs)
+            Cb_gov = minimum(s.Cb for s in chain_segs)
             
-        elseif edge_idx in brace_edges
-            # Create Strut
-            strut = Strut(seg_idx, seg.L;
-                         Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
-                         brace_type=:both)
-            push!(struc.struts, strut)
+            # Determine group from the first edge in the chain
+            first_edge = chain_edge_indices[1]
             
+            if first_edge in column_edges
+                _create_chain_column!(struc, skel, chain_seg_indices, chain_edge_indices,
+                                      L_total, Lb_gov, Cb_gov, default_Kx, default_Ky, vc, efc)
+            elseif first_edge in brace_edges
+                strut = Strut(chain_seg_indices, L_total;
+                             Lb=Lb_gov, Kx=default_Kx, Ky=default_Ky, Cb=Cb_gov,
+                             brace_type=:both)
+                push!(struc.struts, strut)
+            else
+                role = classify_beam_role(skel, first_edge)
+                beam = Beam(chain_seg_indices, L_total;
+                           Lb=Lb_gov, Kx=default_Kx, Ky=default_Ky, Cb=Cb_gov,
+                           role=role)
+                push!(struc.beams, beam)
+            end
         else
-            # Default to Beam (includes edges in :beams group or ungrouped)
-            role = classify_beam_role(skel, edge_idx)
-            beam = Beam(seg_idx, seg.L;
-                       Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
-                       role=role)
-            push!(struc.beams, beam)
+            # Standalone edge (no chain) — 1:1 mapping as before
+            push!(processed_edges, edge_idx)
+            
+            if edge_idx in column_edges
+                v1, v2 = skel.edge_indices[edge_idx]
+                z1 = vc[v1, 3]
+                z2 = vc[v2, 3]
+                vertex_idx = z1 > z2 ? v1 : v2
+                story = edge_story(skel, edge_idx)
+                position, boundary_edge_dirs = classify_column_position(skel, vertex_idx, vc, efc)
+                
+                col = Column(seg_idx, seg.L; 
+                            Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                            vertex_idx=vertex_idx, story=story, position=position,
+                            boundary_edge_dirs=boundary_edge_dirs)
+                push!(struc.columns, col)
+                
+            elseif edge_idx in brace_edges
+                strut = Strut(seg_idx, seg.L;
+                             Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                             brace_type=:both)
+                push!(struc.struts, strut)
+                
+            else
+                role = classify_beam_role(skel, edge_idx)
+                beam = Beam(seg_idx, seg.L;
+                           Lb=seg.Lb, Kx=default_Kx, Ky=default_Ky, Cb=seg.Cb,
+                           role=role)
+                push!(struc.beams, beam)
+            end
         end
     end
     
     n_total = length(struc.beams) + length(struc.columns) + length(struc.struts)
-    @debug "Initialized members from $(length(struc.segments)) segments" beams=length(struc.beams) columns=length(struc.columns) struts=length(struc.struts)
+    n_chains = length(skel.edge_chains)
+    @debug "Initialized members from $(length(struc.segments)) segments" beams=length(struc.beams) columns=length(struc.columns) struts=length(struc.struts) chains=n_chains
     
     # Link columns across stories (col.column_above)
     link_column_stack!(struc)
@@ -105,6 +158,31 @@ function initialize_members!(struc::BuildingStructure{T};
     compute_column_tributaries!(struc)
     
     return struc
+end
+
+"""
+Create a Column from a chain of shattered edge segments.
+
+Uses the top vertex (highest Z) of the last edge in the chain for position
+classification and story assignment.
+"""
+function _create_chain_column!(struc, skel, chain_seg_indices, chain_edge_indices,
+                                L_total, Lb_gov, Cb_gov, default_Kx, default_Ky, vc, efc)
+    # Use the top vertex of the chain (highest Z) for classification
+    last_edge = chain_edge_indices[end]
+    v1, v2 = skel.edge_indices[last_edge]
+    z1 = vc[v1, 3]
+    z2 = vc[v2, 3]
+    vertex_idx = z1 > z2 ? v1 : v2
+    
+    story = edge_story(skel, last_edge)
+    position, boundary_edge_dirs = classify_column_position(skel, vertex_idx, vc, efc)
+    
+    col = Column(chain_seg_indices, L_total;
+                Lb=Lb_gov, Kx=default_Kx, Ky=default_Ky, Cb=Cb_gov,
+                vertex_idx=vertex_idx, story=story, position=position,
+                boundary_edge_dirs=boundary_edge_dirs)
+    push!(struc.columns, col)
 end
 
 """
@@ -472,6 +550,10 @@ Conventions:
 - shear demand uses `Vy`/`Vz` (mapped to weak/strong)
 - deflection uses max local Z displacement from `ElementDisplacements.ulocal`
 
+For multi-segment members (shattered edges), the `δ_max` in the returned demand
+is pre-scaled so that `δ_max / L_total == δ_original / L_defl`, where `L_defl`
+is the longest individual sub-segment (the actual deflection span between supports).
+
 Returns `(group_ids, demands, L_totals, Lb_govs, Cb_govs, Kx_govs, Ky_govs)`.
 """
 function member_group_demands(struc::BuildingStructure; member_edge_group::Symbol=:beams, resolution::Int=200)
@@ -510,6 +592,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
     par_Cb   = Vector{Float64}(undef, n_groups)
     par_Kx   = Vector{Float64}(undef, n_groups)
     par_Ky   = Vector{Float64}(undef, n_groups)
+    par_Ldefl = Vector{Float64}(undef, n_groups)  # deflection span (longest sub-segment)
 
     Threads.@threads for g in 1:n_groups
         gid = all_group_ids[g]
@@ -519,6 +602,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         Mux = 0.0; Muy = 0.0
         Vu_strong = 0.0; Vu_weak = 0.0
         L_total = 0.0; Lb_gov = 0.0; Cb_gov = Inf
+        L_defl = 0.0  # longest individual segment (deflection span)
         Kx_gov = 0.0; Ky_gov = 0.0
         has_any = false
         δ_max = 0.0; I_ref = 0.0
@@ -538,6 +622,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
                 lb_val  = to_meters(seg.Lb)
                 L_total += len_val
                 Lb_gov = max(Lb_gov, lb_val)
+                L_defl = max(L_defl, len_val)  # track longest sub-segment
                 Cb_gov = min(Cb_gov, seg.Cb)
 
                 el = struc.asap_model.elements[edge_idx]
@@ -572,6 +657,7 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
         par_δ[g]    = δ_max;   par_Ir[g]   = I_ref
         par_L[g]    = L_total; par_Lb[g]   = Lb_gov
         par_Cb[g]   = Cb_gov;  par_Kx[g]   = Kx_gov; par_Ky[g] = Ky_gov
+        par_Ldefl[g] = L_defl
     end
 
     # Sequential filter & renumber indices
@@ -582,17 +668,25 @@ function member_group_demands(struc::BuildingStructure; member_edge_group::Symbo
     Cb_govs   = Float64[]
     Kx_govs   = Float64[]
     Ky_govs   = Float64[]
+    Ldefl_govs = Float64[]
 
     for g in 1:n_groups
         par_has[g] || continue
         push!(group_ids, all_group_ids[g])
         g_idx = length(group_ids)
 
+        # For multi-segment members the deflection span (longest sub-segment)
+        # differs from L_total. The AISC checker divides δ by L, so pre-scale
+        # δ_max so that δ_adjusted / L_total == δ_original / L_defl.
+        L_t = par_L[g]
+        L_d = par_Ldefl[g]
+        δ_adj = (L_d > 0 && L_d < L_t) ? par_δ[g] * L_t / L_d : par_δ[g]
+
         d = StructuralSizer.MemberDemand(g_idx;
             Pu_c=par_Pu_c[g], Pu_t=par_Pu_t[g],
             Mux=par_Mux[g], Muy=par_Muy[g],
             Vu_strong=par_Vus[g], Vu_weak=par_Vuw[g],
-            δ_max=par_δ[g], I_ref=par_Ir[g])
+            δ_max=δ_adj, I_ref=par_Ir[g])
 
         push!(demands, d)
         push!(L_totals, par_L[g])

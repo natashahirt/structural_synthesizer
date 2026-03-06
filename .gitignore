@@ -1,6 +1,9 @@
 # Ignore vendored/external code
 external/
 
+# Ignore secrets
+secrets/
+
 # Ignore reference documents (e.g., PDFs) anywhere in the repo
 # **/reference/
 

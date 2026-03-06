@@ -47,6 +47,9 @@ include("visualization/_visualization.jl")
 include("analyze/_analyze.jl")
 include("postprocess/_postprocess.jl")
 
+# API server (Oxygen routes, JSON serialization)
+include("api/_api.jl")
+
 # =============================================================================
 # Exports
 # =============================================================================
@@ -162,6 +165,11 @@ export group_foundations_by_reaction!, size_foundations_grouped!, foundation_gro
 export element_ec, compute_building_ec, ec_summary
 export ElementECResult, BuildingECResult
 export engineering_report
+
+# --- API server ---
+export register_routes!, json_to_skeleton, json_to_params, design_to_json
+export validate_input, compute_geometry_hash
+export APIInput, APIOutput, APIError, APIParams
 
 # =============================================================================
 # Precompilation Workload

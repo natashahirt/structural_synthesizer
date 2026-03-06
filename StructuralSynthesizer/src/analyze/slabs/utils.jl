@@ -77,7 +77,8 @@ function initialize_cells!(struc::BuildingStructure{T, A, P};
             face_idx in processed_faces && continue
             push!(processed_faces, face_idx)
             
-            area = face_area(skel, face_idx)
+            area_raw = face_area(skel, face_idx)
+            area = convert(A, area_raw)   # ensure area matches BuildingStructure type A
             spans = get_cell_spans(skel, face_idx)
             position = classify_cell_position(skel, face_idx)
             
