@@ -10,6 +10,26 @@ catch
     _HAS_GUROBI[] = false
 end
 
+"""
+    _probe_gurobi_license!()
+
+Test whether Gurobi can actually create an Env (i.e. has a valid license).
+Called from `__init__` so that `:auto` falls back to HiGHS when the package
+is installed but no license is present.
+"""
+function _probe_gurobi_license!()
+    _HAS_GUROBI[] || return
+    try
+        env = Gurobi.Env()
+        lock(_GUROBI_ENV_LOCK) do
+            _GUROBI_ENV_POOL[Threads.threadid()] = env
+        end
+    catch
+        _HAS_GUROBI[] = false
+        @debug "Gurobi package found but no valid license — falling back to HiGHS"
+    end
+end
+
 # Thread-local Gurobi environment pool.
 # Each thread gets its own Env to avoid contention when parallel solves run.
 const _GUROBI_ENV_POOL = Dict{Int, Any}()

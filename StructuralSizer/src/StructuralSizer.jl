@@ -45,11 +45,9 @@ function __init__()
     # Gurobi C-pointers and JuMP model state are not safe in that context.
     ccall(:jl_generating_output, Cint, ()) != 0 && return
 
-    # Eagerly initialize Gurobi so the license handshake (~5 s) happens during
-    # `using StructuralSizer` rather than surprising users mid-pipeline.
-    if _HAS_GUROBI[]
-        try _get_gurobi_env() catch; end
-    end
+    # Probe Gurobi license: sets _HAS_GUROBI[] = false if no valid license,
+    # so :auto optimizer falls back to HiGHS gracefully.
+    _probe_gurobi_license!()
     # Warm up the JuMP → solver bridge with a trivial MIP so that the first real
     # optimize_discrete() call doesn't pay ~2-3 s of JIT compilation.
     _warmup_jump_solvers()
