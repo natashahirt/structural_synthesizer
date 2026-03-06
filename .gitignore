@@ -1,5 +1,7 @@
-# Ignore vendored/external code
-external/
+# Ignore vendored/external code, except Asap
+external/*
+!external/Asap/
+!external/Asap/**
 
 # Ignore secrets
 secrets/
