@@ -13,3 +13,6 @@ secrets/
 
 # Ignore crash dump files
 *.stackdump
+
+# Documenter.jl build output
+docs/build/
