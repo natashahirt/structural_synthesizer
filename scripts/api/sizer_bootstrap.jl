@@ -11,38 +11,45 @@
 # Env: PORT or SIZER_PORT, SIZER_HOST (default 0.0.0.0)
 # =============================================================================
 
+println(stdout, "[bootstrap] starting")
+flush(stdout)
+
 ENV["SS_ENABLE_VISUALIZATION"] = get(ENV, "SS_ENABLE_VISUALIZATION", "false")
 ENV["SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD"] = get(ENV, "SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD", "false")
 
+println(stdout, "[bootstrap] loading Oxygen...")
+flush(stdout)
 using Oxygen
+println(stdout, "[bootstrap] loading HTTP...")
+flush(stdout)
 using HTTP
 
 const PORT = parse(Int, get(ENV, "PORT", get(ENV, "SIZER_PORT", "8080")))
 const HOST = get(ENV, "SIZER_HOST", "0.0.0.0")
+println(stdout, "[bootstrap] host=$HOST port=$PORT")
+flush(stdout)
 
-# Status callback: "warming" until full app is loaded, then delegates to API.
 const STATUS_FN = Ref{Function}(() -> "warming")
 
 @get "/health" function (_)
-    # Health check only: always 200 so load balancers see "up".
     return HTTP.Response(200, ["Content-Type" => "application/json"], "{\"status\":\"ok\"}")
 end
 
 @get "/status" function (_)
-    # "warming" → still loading; then "idle" / "running" / "queued" or "error".
     s = STATUS_FN[]()
     msg = s == "warming" ? "Full API not ready yet" : "ready"
     body = "{\"status\":\"$(s)\",\"message\":\"$(msg)\"}"
     return HTTP.Response(200, ["Content-Type" => "application/json"], body)
 end
 
-# Load full app in background so first connection is fast.
+# Load StructuralSynthesizer in background via require (no "using" inside block).
+const SS_PKGID = Base.PkgId(Base.UUID("fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"), "StructuralSynthesizer")
 @async begin
     try
         @info "Loading StructuralSynthesizer (first request may be slow)..."
-        using StructuralSynthesizer
-        register_routes!()
-        STATUS_FN[] = () -> StructuralSynthesizer.status_string(StructuralSynthesizer.SERVER_STATUS)
+        mod = Base.require(Main, SS_PKGID)
+        mod.register_routes!()
+        STATUS_FN[] = () -> mod.status_string(mod.SERVER_STATUS)
         @info "StructuralSynthesizer loaded; POST /design, /validate, GET /schema ready"
     catch e
         @error "Failed to load StructuralSynthesizer" exception=(e, catch_backtrace())
@@ -51,4 +58,15 @@ end
 end
 
 @info "Sizer API bootstrap listening on http://$HOST:$PORT (GET /health, /status ready)"
-serve(; host=HOST, port=PORT)
+println(stdout, "[bootstrap] calling serve()...")
+flush(stdout)
+try
+    serve(; host=HOST, port=PORT)
+catch e
+    msg = sprint(showerror, e, catch_backtrace())
+    println(stderr, "[bootstrap] FATAL: ", msg)
+    @error "Bootstrap serve failed" exception=(e, catch_backtrace())
+    flush(stdout)
+    flush(stderr)
+    exit(1)
+end
