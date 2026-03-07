@@ -35,19 +35,13 @@ COPY StructuralVisualization/src ./StructuralVisualization/src
 COPY external/Asap/src ./external/Asap/src
 COPY scripts/api ./scripts/api
 
-# Warm exact server path only (no full Pkg.precompile). Full precompile was
-# hanging after InteractiveUtils (open tasks/IO in a transitive dep). This
-# warms the API code path so runtime startup is fast enough for health checks.
-RUN julia --project=StructuralSynthesizer -e '\
-  ENV["SS_ENABLE_VISUALIZATION"]="false"; ENV["SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD"]="false"; \
-  using StructuralSynthesizer; register_routes!(); using Oxygen;'
+# Precompile only Oxygen + HTTP so the bootstrap binds quickly (no StructuralSynthesizer).
+RUN julia --project=StructuralSynthesizer -e 'using Oxygen; using HTTP'
 
 # Expose port (AWS App Runner sets PORT env var)
 EXPOSE 8080
 
-# Set environment variables
 ENV JULIA_PROJECT=StructuralSynthesizer
 ENV SIZER_HOST=0.0.0.0
 
-# Start the server
-CMD ["julia", "--project=StructuralSynthesizer", "scripts/api/sizer_service.jl"]
+CMD ["julia", "--project=StructuralSynthesizer", "scripts/api/sizer_bootstrap.jl"]
