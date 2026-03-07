@@ -31,12 +31,9 @@ RUN julia --project=StructuralSynthesizer -e 'using Pkg; Pkg.instantiate()'
 COPY StructuralSynthesizer/src ./StructuralSynthesizer/src
 COPY StructuralSizer/src ./StructuralSizer/src
 COPY StructuralPlots/src ./StructuralPlots/src
+COPY StructuralVisualization/src ./StructuralVisualization/src
 COPY external/Asap/src ./external/Asap/src
 COPY scripts/api ./scripts/api
-
-# Precompile after local path package sources are present.
-# strict=false prevents headless GLMakie issues from failing the image build.
-RUN julia --project=StructuralSynthesizer -e 'using Pkg; Pkg.precompile(strict=false)'
 
 # Warm package cache so App Runner instances start faster.
 # Keep this non-fatal: if warmup fails, runtime can still start.

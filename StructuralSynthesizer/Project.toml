@@ -7,7 +7,6 @@ authors = ["Natasha K. Hirt"]
 Accessors = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
 Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
@@ -26,14 +25,12 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
-StructuralPlots = "a1b2c3d4-5678-90ab-cdef-123456789abc"
 StructuralSizer = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
 [sources]
 Asap = {path = "..\\external\\Asap"}
-StructuralPlots = {path = "..\\StructuralPlots"}
 StructuralSizer = {path = "..\\StructuralSizer"}
 
 [compat]

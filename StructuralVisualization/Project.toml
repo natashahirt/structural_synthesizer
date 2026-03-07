@@ -1,0 +1,19 @@
+name = "StructuralVisualization"
+uuid = "7f2a2d5c-9cbb-4a20-9f9a-1a11d13f4d27"
+authors = ["Natasha Hirt"]
+version = "0.1.0"
+
+[deps]
+Asap = "763a8c06-ba23-41fc-b385-b3b57b52403a"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Meshes = "eacbb407-ea5a-433e-ab97-5258b1ca43fa"
+StructuralPlots = "a1b2c3d4-5678-90ab-cdef-123456789abc"
+StructuralSynthesizer = "fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[sources]
+Asap = {path = "..\\external\\Asap"}
+StructuralPlots = {path = "..\\StructuralPlots"}
+StructuralSynthesizer = {path = "..\\StructuralSynthesizer"}

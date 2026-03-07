@@ -14,9 +14,11 @@ ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 StructuralSizer = "9d8e7f6a-5b4c-3d2e-1f0a-9b8c7d6e5f4a"
 StructuralSynthesizer = "fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"
+StructuralVisualization = "7f2a2d5c-9cbb-4a20-9f9a-1a11d13f4d27"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [sources]
 Asap = {path = "external\\Asap"}
 StructuralSizer = {path = "StructuralSizer"}
 StructuralSynthesizer = {path = "StructuralSynthesizer"}
+StructuralVisualization = {path = "StructuralVisualization"}

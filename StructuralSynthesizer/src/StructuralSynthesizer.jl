@@ -17,12 +17,6 @@ import Asap
 import LinearAlgebra: norm, normalize
 using Unitful
 
-const ENABLE_VISUALIZATION = lowercase(get(ENV, "SS_ENABLE_VISUALIZATION", "true")) == "true"
-if ENABLE_VISUALIZATION
-    import GLMakie
-    import StructuralPlots  # Colors and themes for visualization
-end
-
 # =============================================================================
 # File includes (order matters!)
 # =============================================================================
@@ -47,9 +41,6 @@ include("geometry/_geometry.jl")
 
 # Other modules
 include("generate/_generate.jl")
-if ENABLE_VISUALIZATION
-    include("visualization/_visualization.jl")
-end
 include("analyze/_analyze.jl")
 include("postprocess/_postprocess.jl")
 
@@ -116,15 +107,6 @@ export group_id, section, volumes, set_group_id!, set_section!, set_volumes!
 export classify_column_position, is_exterior_support  # Column position classification for DDM/EFM
 export Support, Foundation, FoundationGroup, FoundationDemand
 
-# --- Visualization ---
-export visualize
-export visualize_cell_groups, visualize_cell_tributary, visualize_cell_tributaries
-export visualize_vertex_tributaries, visualize_tributaries_combined
-export vis_embodied_carbon_summary
-export draw_slab!, draw_slabs!, draw_vault!, draw_vault_deflected!
-export slab_info, slab_summary_text
-export visualize_vault
-
 # --- Building operations ---
 export add_vertex!, add_element!, find_faces!, rebuild_stories!, to_asap!
 export initialize!, size!
@@ -181,41 +163,20 @@ export APIInput, APIOutput, APIError, APIParams
 # Precompilation Workload
 # =============================================================================
 # Comprehensive workload that exercises every hot code path:
-#   1. GLMakie 3D pipeline (Figure, Axis3, scatter, lines, mesh)
-#   2. Full design_building DDM (initialize → estimate columns → to_asap →
+#   1. Full design_building DDM (initialize → estimate columns → to_asap →
 #      size_slabs [DDM moments, column P-M MIP, punching, deflection,
 #      one-way shear, rebar design] → result building)
-#   3. Full design_building EFM (Asap FrameModel build + solve for EFM)
-#   4. Steel member sizing (member_group_demands + AISC MIP from Asap model)
+#   2. Full design_building EFM (Asap FrameModel build + solve for EFM)
+#   3. Steel member sizing (member_group_demands + AISC MIP from Asap model)
 
 using PrecompileTools
 
 const ENABLE_HEAVY_PRECOMPILE_WORKLOAD = lowercase(get(ENV, "SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD", "true")) == "true"
 
-if ENABLE_HEAVY_PRECOMPILE_WORKLOAD && ENABLE_VISUALIZATION
+if ENABLE_HEAVY_PRECOMPILE_WORKLOAD
     @setup_workload begin
         @compile_workload begin
             redirect_stdio(; stdout=devnull, stderr=devnull) do
-                # =================================================================
-                # 1. GLMakie 3D pipeline
-                # =================================================================
-                fig = GLMakie.Figure(size=(400, 300))
-                ax = GLMakie.Axis3(fig[1, 1]; title="precompile", aspect=:data)
-
-                P3 = GLMakie.Point3f
-                pts = [P3(0, 0, 0), P3(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)]
-                GLMakie.scatter!(ax, pts; color=:red, markersize=8)
-                GLMakie.lines!(ax, pts; color=:blue, linewidth=1.0)
-
-                TF = GLMakie.GeometryBasics.TriangleFace
-                faces = [TF(1, 2, 3), TF(1, 3, 4)]
-                m = GLMakie.GeometryBasics.Mesh(pts, faces)
-                GLMakie.mesh!(ax, m; color=(:gray, 0.5), transparency=true)
-
-                # StructuralPlots themes
-                GLMakie.set_theme!(StructuralPlots.sp_light)
-                GLMakie.set_theme!()
-
                 # =================================================================
                 # 2. Full DDM pipeline via design_building
                 #    Cascades through: initialize! → estimate_column_sizes! →
