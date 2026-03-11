@@ -169,6 +169,51 @@ println("═"^60)
         end
     end
 
+    # =========================================================================
+    # 3. Integration: DesignParameters.collinear_grouping
+    # =========================================================================
+    @testset "DesignParameters — collinear_grouping field" begin
+        using StructuralSynthesizer
+
+        @testset "default is false" begin
+            p = DesignParameters()
+            @test p.collinear_grouping === false
+        end
+
+        @testset "can set to true" begin
+            p = DesignParameters(collinear_grouping=true)
+            @test p.collinear_grouping === true
+        end
+    end
+
+    # =========================================================================
+    # 4. Integration: auto solver selection (binary search vs MIP)
+    # =========================================================================
+    @testset "Auto solver selection" begin
+
+        @testset "binary search gives same result as MIP for n_max_sections=0" begin
+            catalog = preferred_W()
+            material = A992_Steel
+            checker = AISCChecker(; deflection_limit=1/360)
+
+            demands = [
+                MemberDemand(1; Mux=120e3, Vu_strong=30e3, δ_max=0.003, I_ref=5e-5),
+                MemberDemand(2; Mux=250e3, Vu_strong=60e3, δ_max=0.006, I_ref=1e-4),
+            ]
+            geometries = [
+                SteelMemberGeometry(6.0; Lb=3.0),
+                SteelMemberGeometry(9.0; Lb=4.5),
+            ]
+
+            r_mip = optimize_discrete(checker, demands, geometries, catalog, material;
+                                       n_max_sections=0)
+            r_bs  = optimize_binary_search(checker, demands, geometries, catalog, material)
+
+            @test r_bs.sections[1].name == r_mip.sections[1].name
+            @test r_bs.sections[2].name == r_mip.sections[2].name
+        end
+    end
+
 end
 
 println("\n✓ All Phase 2 tests passed!")

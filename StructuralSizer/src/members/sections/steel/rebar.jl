@@ -7,28 +7,37 @@ struct Rebar{L, W, A} <: AbstractSection
     A::A            # Area (e.g., inch²)
 end
 
-# Derived properties
+"""Moment of inertia about any axis for a solid circular bar (in⁴)."""
 compute_Ix(r::Rebar) = π * r.diameter^4 / 64
+"""Moment of inertia about any axis (= `compute_Ix`, symmetric) (in⁴)."""
 compute_Iy(r::Rebar) = compute_Ix(r)
+"""Polar moment of inertia `J = πd⁴/32` for a solid circular bar (in⁴)."""
 compute_J(r::Rebar)  = π * r.diameter^4 / 32
+"""Radius of gyration `r = d/4` for a solid circular bar (in)."""
 compute_r(r::Rebar)  = r.diameter / 4
 
+"""Return bar geometry as a single-element tuple `(diameter,)`."""
 geometry(r::Rebar) = (r.diameter,)
+"""Return 2D circular outline coordinates for the rebar cross-section."""
 get_coords(r::Rebar) = get_circle_coords(r.diameter / 2)
 
-# Interface
+"""Nominal cross-sectional area (in²)."""
 section_area(r::Rebar) = r.A
+"""Bar diameter (in)."""
 section_depth(r::Rebar) = r.diameter
+"""Bar diameter (in) — circular section, same as depth."""
 section_width(r::Rebar) = r.diameter
 
+"""Generate `n+1` equally-spaced 2D points on a circle of given `radius` for plotting."""
 function get_circle_coords(radius, n=32)
     θ = range(0, 2π, length=n+1)
     return [[radius * cos(t), radius * sin(t)] for t in θ]
 end
 
-# Catalog - use Any since Rebar has multiple type parameters
+"""Global catalog of standard rebar sizes, keyed by bar number (e.g., 3 for #3)."""
 const REBAR_CATALOG = Dict{Int, Any}()
 
+"""Populate `REBAR_CATALOG` with ASTM A615 Grade 60 standard bar sizes (#3–#18)."""
 function load_rebar_catalog!()
     data = [
         (3,  0.375, 0.376, 0.11),
@@ -57,5 +66,7 @@ function rebar(size::Int; material=Rebar_60)
     material === Rebar_60 ? r : Rebar(r.size, material, r.diameter, r.weight, r.A)
 end
 
+"""Return a sorted vector of available rebar size numbers (e.g., `[3, 4, 5, …, 18]`)."""
 rebar_sizes() = (isempty(REBAR_CATALOG) && load_rebar_catalog!(); sort(collect(keys(REBAR_CATALOG))))
+"""Return a vector of all `Rebar` objects in the catalog."""
 all_rebar() = (isempty(REBAR_CATALOG) && load_rebar_catalog!(); collect(values(REBAR_CATALOG)))

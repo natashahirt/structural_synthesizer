@@ -129,7 +129,12 @@ function effective_stiffness(
     return EI_eff  # kip-in²
 end
 
-"""Calculate moment of inertia of reinforcement about section centroid (returns in⁴)."""
+"""
+    _calc_Ise(section::RCColumnSection) -> Float64
+
+Moment of inertia of longitudinal reinforcement about the section centroid (in⁴).
+Uses the parallel-axis theorem, ignoring each bar's own moment of inertia.
+"""
 function _calc_Ise(section::RCColumnSection)
     # All computations in inches
     h = to_inches(section.h)
@@ -927,7 +932,12 @@ function effective_stiffness(
     return EI_eff  # kip-in²
 end
 
-"""Calculate moment of inertia of reinforcement for circular section (returns in⁴)."""
+"""
+    _calc_Ise(section::RCCircularSection) -> Float64
+
+Moment of inertia of longitudinal reinforcement about the circular section centroid (in⁴).
+Uses the parallel-axis theorem, ignoring each bar's own moment of inertia.
+"""
 function _calc_Ise(section::RCCircularSection)
     # All computations in inches
     D = to_inches(section.D)

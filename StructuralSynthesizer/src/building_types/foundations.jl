@@ -19,6 +19,11 @@ mutable struct Support{T, F, M, L}
     shape::Symbol               # :rectangular or :circular
 end
 
+"""
+    Support(vertex_idx, node_idx; forces, moments, foundation_type, c1, c2, shape) -> Support
+
+Keyword constructor with sensible defaults (zero reactions, 18″ square column, spread footing).
+"""
 function Support(vertex_idx::Int, node_idx::Int; 
                  forces=(0.0u"kN", 0.0u"kN", 0.0u"kN"),
                  moments=(0.0u"kN*m", 0.0u"kN*m", 0.0u"kN*m"),
@@ -32,7 +37,7 @@ function Support(vertex_idx::Int, node_idx::Int;
         c1, c2, shape)
 end
 
-# Convenience: access reactions as combined tuple
+"""Return the full 6-DOF reaction tuple `(Fx, Fy, Fz, Mx, My, Mz)` for a support."""
 function reactions(s::Support)
     return (s.forces..., s.moments...)
 end
@@ -46,6 +51,11 @@ mutable struct Foundation{T, R<:AbstractFoundationResult}
     volumes::MaterialVolumes  # concrete + rebar materials → volumes
 end
 
+"""
+    Foundation(support_indices, result; foundation_type, group_id, volumes) -> Foundation
+
+Construct a `Foundation` linking one or more supports to a sizing result.
+"""
 function Foundation(support_indices::Vector{Int}, result::R; 
                     foundation_type=:spread, group_id=nothing,
                     volumes::MaterialVolumes=MaterialVolumes()) where {R<:AbstractFoundationResult}
@@ -53,12 +63,14 @@ function Foundation(support_indices::Vector{Int}, result::R;
     Foundation{T, R}(support_indices, result, foundation_type, group_id, volumes)
 end
 
-# Single-support foundation convenience
+"""Single-support foundation convenience: wraps the index in a vector."""
 Foundation(support_idx::Int, result::R; kwargs...) where {R<:AbstractFoundationResult} = 
     Foundation([support_idx], result; kwargs...)
 
-# Convenience accessors for foundation volumes (from result)
+"""Concrete volume of the foundation (delegates to the sizing result)."""
 concrete_volume(f::Foundation) = StructuralSizer.concrete_volume(f.result)
+
+"""Steel volume of the foundation (delegates to the sizing result)."""
 steel_volume(f::Foundation) = StructuralSizer.steel_volume(f.result)
 
 """Optimization grouping for similar foundations (pure grouping logic)."""
@@ -67,4 +79,5 @@ mutable struct FoundationGroup
     foundation_indices::Vector{Int}
 end
 
+"""Create an empty `FoundationGroup` with the given hash key."""
 FoundationGroup(hash::UInt64) = FoundationGroup(hash, Int[])

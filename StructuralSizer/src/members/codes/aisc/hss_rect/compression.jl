@@ -81,6 +81,12 @@ function _calc_effective_width(b, t, λ, λr, Fy, Fcr, c1, c2)
     return clamp(be, zero(b), b)
 end
 
+"""
+    get_Pn(s::HSSRectSection, mat::Metal, L; axis=:weak) -> Force
+
+Nominal compressive strength for rectangular HSS per AISC 360-16 Chapters E3/E7.
+Uses Euler buckling stress and effective area for slender walls.
+"""
 function get_Pn(s::HSSRectSection, mat::Metal, L; axis=:weak)
     E, Fy = mat.E, mat.Fy
     r = axis === :weak ? s.ry : s.rx
@@ -90,6 +96,12 @@ function get_Pn(s::HSSRectSection, mat::Metal, L; axis=:weak)
     return Fcr * Ae
 end
 
+"""
+    get_ϕPn(s::HSSRectSection, mat::Metal, L; axis=:weak, ϕ=0.9) -> Force
+
+Design compressive strength ϕPn for rectangular HSS per AISC 360-16 (LRFD).
+Torsional buckling maps to weak-axis for rectangular HSS.
+"""
 function get_ϕPn(s::HSSRectSection, mat::Metal, L; axis=:weak, ϕ=0.9)
     axis_eff = axis === :torsional ? :weak : axis
     return ϕ * get_Pn(s, mat, L; axis=axis_eff)

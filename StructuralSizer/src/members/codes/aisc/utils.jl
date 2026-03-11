@@ -2,17 +2,20 @@
 # AISC Utilities (shared helpers across shapes)
 # ==============================================================================
 
+"""Piecewise linear interpolation clamped to `[y0, y1]` over `[x0, x1]`."""
 @inline function _linear_interp(x, x0, x1, y0, y1)
     x <= x0 && return y0
     x >= x1 && return y1
     y0 + (y1 - y0) * ((x - x0) / (x1 - x0))
 end
 
+"""Euler flexural buckling stress Fe = π²E / (KL/r)² (AISC 360-16 Eq. E3-4)."""
 @inline function _Fe_euler(E, L, r)
     KL_r = L / r
     return π^2 * E / KL_r^2
 end
 
+"""Piecewise critical column stress Fcr from AISC 360-16 Section E3."""
 @inline function _Fcr_column(Fe, Fy)
     ratio = Fy / Fe
     if ratio <= 2.25

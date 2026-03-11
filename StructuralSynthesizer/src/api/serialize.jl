@@ -34,6 +34,7 @@ end
 
 # ─── Slabs ────────────────────────────────────────────────────────────────────
 
+"""Serialize slab design results into `APISlabResult` records."""
 function _serialize_slabs(design::BuildingDesign, is_imperial::Bool)
     results = APISlabResult[]
     for idx in sort(collect(keys(design.slabs)))
@@ -57,6 +58,7 @@ end
 
 # ─── Columns ──────────────────────────────────────────────────────────────────
 
+"""Serialize column design results into `APIColumnResult` records."""
 function _serialize_columns(design::BuildingDesign, is_imperial::Bool)
     results = APIColumnResult[]
     for idx in sort(collect(keys(design.columns)))
@@ -79,6 +81,7 @@ end
 
 # ─── Beams ────────────────────────────────────────────────────────────────────
 
+"""Serialize beam design results into `APIBeamResult` records."""
 function _serialize_beams(design::BuildingDesign)
     results = APIBeamResult[]
     for idx in sort(collect(keys(design.beams)))
@@ -96,6 +99,7 @@ end
 
 # ─── Foundations ──────────────────────────────────────────────────────────────
 
+"""Serialize foundation design results into `APIFoundationResult` records."""
 function _serialize_foundations(design::BuildingDesign, is_imperial::Bool)
     results = APIFoundationResult[]
     for idx in sort(collect(keys(design.foundations)))
@@ -114,6 +118,7 @@ end
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
+"""Serialize the design summary (material quantities, critical ratio) into `APISummary`."""
 function _serialize_summary(design::BuildingDesign, is_imperial::Bool)
     s = design.summary
     # steel_weight and rebar_weight are mass (kg); convert to lb
@@ -178,6 +183,7 @@ function _serialize_visualization(design::BuildingDesign, is_imperial::Bool)
     )
 end
 
+"""Serialize model nodes with positions and displacements for visualization."""
 function _serialize_visualization_nodes(model, is_imperial::Bool)
     nodes = APIVisualizationNode[]
     for (i, node) in enumerate(model.nodes)
@@ -193,6 +199,7 @@ function _serialize_visualization_nodes(model, is_imperial::Bool)
     return nodes
 end
 
+"""Serialize frame elements with section geometry, utilization, and interpolated deflected shapes."""
 function _serialize_visualization_frame_elements(design::BuildingDesign, model, is_imperial::Bool)
     struc = design.structure
     skel = struc.skeleton
@@ -344,6 +351,7 @@ function _serialize_visualization_frame_elements(design::BuildingDesign, model, 
     return elements
 end
 
+"""Extract section type string and key dimensions (ft) from a section object."""
 function _extract_section_geometry(sec_obj, is_imperial::Bool)
     isnothing(sec_obj) && return ("", 0.0, 0.0, 0.0, 0.0, 0.0)
     
@@ -374,6 +382,7 @@ function _extract_section_geometry(sec_obj, is_imperial::Bool)
     end
 end
 
+"""Serialize sized slab boundary polygons and utilization for 3D visualization."""
 function _serialize_sized_slabs(design::BuildingDesign, struc::BuildingStructure, is_imperial::Bool)
     sized_slabs = APISizedSlab[]
     skel = struc.skeleton
@@ -425,6 +434,7 @@ function _serialize_sized_slabs(design::BuildingDesign, struc::BuildingStructure
     return sized_slabs
 end
 
+"""Serialize shell-element meshes with vertex displacements for deflected slab visualization."""
 function _serialize_deflected_slab_meshes(design::BuildingDesign, model, is_imperial::Bool)
     deflected_meshes = APIDeflectedSlabMesh[]
     
@@ -498,13 +508,14 @@ function _serialize_deflected_slab_meshes(design::BuildingDesign, model, is_impe
     return deflected_meshes
 end
 
+"""Compute average frame element length in feet for displacement scale calibration."""
 function _compute_avg_element_length(model, is_imperial::Bool)
     isempty(model.elements) && return 1.0
     total_length = sum(ustrip(u"ft", elem.length) for elem in model.elements)
     return total_length / length(model.elements)
 end
 
-# Simple convex hull for 2D points (Graham scan)
+"""Compute the 2D convex hull of `points` via Graham scan."""
 function _convex_hull_2d(points::Vector{NTuple{2, Float64}})
     length(points) <= 3 && return points
     
@@ -536,6 +547,7 @@ function _convex_hull_2d(points::Vector{NTuple{2, Float64}})
     return vcat(lower, upper)
 end
 
+"""2D cross product `(a - o) × (b - o)` for convex hull orientation tests."""
 function _cross_product(o::NTuple{2, Float64}, a::NTuple{2, Float64}, b::NTuple{2, Float64})
     return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1])
 end

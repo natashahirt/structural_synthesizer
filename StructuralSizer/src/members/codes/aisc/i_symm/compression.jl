@@ -1,6 +1,14 @@
 # AISC 360 Chapter E - Design of Members for Compression
 
-"""Elastic flexural buckling stress (E3-4)."""
+"""
+    get_Fe_flexural(s::ISymmSection, mat::Metal, L; axis=:weak) -> Pressure
+
+Elastic flexural buckling stress per AISC 360-16 Eq. E3-4: Fe = π²E / (KL/r)².
+
+# Arguments
+- `L`: Effective length KL
+- `axis`: `:strong` or `:weak` (determines radius of gyration used)
+"""
 function get_Fe_flexural(s::ISymmSection, mat::Metal, L; axis=:weak)
     E = mat.E
     r = axis == :weak ? s.ry : s.rx
@@ -8,7 +16,14 @@ function get_Fe_flexural(s::ISymmSection, mat::Metal, L; axis=:weak)
     return π^2 * E / KL_r^2
 end
 
-"""Elastic torsional buckling stress (E4-4)."""
+"""
+    get_Fe_torsional(s::ISymmSection, mat::Metal, Lz) -> Pressure
+
+Elastic torsional buckling stress for doubly symmetric I-shapes per AISC 360-16 Eq. E4-4.
+
+# Arguments
+- `Lz`: Effective length for torsional buckling
+"""
 function get_Fe_torsional(s::ISymmSection, mat::Metal, Lz)
     E, G = mat.E, mat.G
     Cw, J = s.Cw, s.J
@@ -21,7 +36,13 @@ function get_Fe_torsional(s::ISymmSection, mat::Metal, Lz)
     return (term1 + term2) / (Ix + Iy)
 end
 
-"""Calculate Fcr from Fe and Q (E3-2, E3-3, E7)."""
+"""
+    calculate_Fcr(Fe, Fy, Q) -> Pressure
+
+Critical buckling stress Fcr per AISC 360-16 Eqs. E7-2/E7-3.
+Accounts for slender element reduction factor `Q = Qs × Qa`.
+Falls back to E3-2/E3-3 when Q = 1.0 (no slender elements).
+"""
 function calculate_Fcr(Fe, Fy, Q)
     # E3-2 applies if Fy/Fe <= 2.25. E3-3 applies if Fy/Fe > 2.25.
     # With Q: E7-2 applies if Q*Fy/Fe <= 2.25
@@ -38,7 +59,17 @@ function calculate_Fcr(Fe, Fy, Q)
     end
 end
 
-"""Nominal compressive strength (E3/E4/E7)."""
+"""
+    get_Pn(s::ISymmSection, mat::Metal, L; axis=:weak) -> Force
+
+Nominal compressive strength per AISC 360-16 Chapters E3/E4/E7.
+Considers flexural buckling (strong/weak axis) or torsional buckling,
+with slender element reduction via Q factors.
+
+# Arguments
+- `L`: Effective length KL
+- `axis`: `:strong`, `:weak`, or `:torsional`
+"""
 function get_Pn(s::ISymmSection, mat::Metal, L; axis=:weak)
     # 1. Slenderness reduction Q
     q_factors = get_compression_factors(s, mat)
@@ -58,5 +89,9 @@ function get_Pn(s::ISymmSection, mat::Metal, L; axis=:weak)
     return Fcr * s.A
 end
 
-"""Design compressive strength (LRFD)."""
+"""
+    get_ϕPn(s::ISymmSection, mat::Metal, L; axis=:weak, ϕ=0.90) -> Force
+
+Design compressive strength ϕPn per AISC 360-16 (LRFD). `ϕ_c = 0.90` per Section E1.
+"""
 get_ϕPn(s::ISymmSection, mat::Metal, L; axis=:weak, ϕ=0.90) = ϕ * get_Pn(s, mat, L; axis=axis)

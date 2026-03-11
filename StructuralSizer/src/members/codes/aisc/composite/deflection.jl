@@ -12,8 +12,12 @@
 
 Full-composite transformed moment of inertia using the modular ratio n = Es/Ec.
 
-Transforms the concrete slab into an equivalent steel area (b_eff / n) × t_slab,
+Transforms the concrete slab into an equivalent steel area `(b_eff / n) × t_slab`,
 then computes the composite I about the centroidal axis of the transformed section.
+
+For `DeckSlabOnBeam`, only the concrete above the deck ribs is transformed. The
+concrete centroid is at `d + hr + t_slab/2` from the bottom of the steel section
+(the rib height creates a gap between the steel top flange and the concrete).
 """
 function get_I_transformed(section::ISymmSection, slab::AbstractSlabOnBeam, b_eff)
     n  = slab.n
@@ -22,25 +26,23 @@ function get_I_transformed(section::ISymmSection, slab::AbstractSlabOnBeam, b_ef
     d  = section.d
     ts = slab.t_slab
 
-    # Transformed concrete area and I about its own centroid
-    b_tr = b_eff / n
+    b_tr  = b_eff / n
     Ac_tr = b_tr * ts
     Ic_tr = b_tr * ts^3 / 12
 
-    # Centroids measured from bottom of steel section
     ȳ_steel = d / 2
-    ȳ_conc  = d + ts / 2  # concrete centroid above top of steel
+    ȳ_conc  = d + _gap_above_steel(slab) + ts / 2
 
-    # Composite centroid (from bottom of steel)
     A_total = As + Ac_tr
     ȳ_comp = (As * ȳ_steel + Ac_tr * ȳ_conc) / A_total
 
-    # Parallel axis theorem
     I_comp = Is + As * (ȳ_comp - ȳ_steel)^2 +
              Ic_tr + Ac_tr * (ȳ_conc - ȳ_comp)^2
 
     return I_comp
 end
+
+## _gap_above_steel is defined in types.jl (shared by flexure.jl and deflection.jl)
 
 # ==============================================================================
 # Lower-Bound Moment of Inertia (Partial Composite)

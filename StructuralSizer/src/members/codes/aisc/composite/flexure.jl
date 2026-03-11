@@ -38,7 +38,10 @@ end
 """Concrete slab area within effective width (solid slab)."""
 _Ac(slab::SolidSlabOnBeam, b_eff) = b_eff * slab.t_slab
 
-"""Concrete slab area within effective width (deck slab — above deck only per I3.2c(2))."""
+"""
+Concrete slab area within effective width for deck slab (AISC I3.2c(2)).
+Only concrete above the top of the deck ribs participates in the stress block.
+"""
 _Ac(slab::DeckSlabOnBeam, b_eff) = b_eff * slab.t_slab
 
 """Maximum possible Cf (full composite)."""
@@ -119,28 +122,42 @@ function _solve_pna(section::ISymmSection, material, slab::AbstractSlabOnBeam,
     fc′_085 = 0.85 * fc′
     As_Fy = As * Fy
 
+    # Compute stress block depth. For deck slabs, Cf is already limited by
+    # _Ac (above-deck concrete), so a should not exceed t_slab in normal
+    # situations. We clamp defensively.
+    a_raw = Cf / (fc′_085 * b)
+    a = min(a_raw, t_s)
+
+    # Gap between top of steel and bottom of concrete (0 for solid slab, hr for deck)
+    gap = uconvert(u"m", _gap_above_steel(slab))
+
+    # Total distance from top of slab to top of steel
+    t_s_total = t_s + gap
+
     if Cf >= As_Fy
         # --- Case A: PNA in the slab (entire steel section in tension) ---
-        a = Cf / (fc′_085 * b)
-        y_pna = a
+        y_pna = a  # PNA at bottom of stress block, from slab top
 
-        arm = (t_s - a / 2) + d / 2
+        # Concrete resultant at a/2 from slab top; steel centroid at t_s_total + d/2
+        arm = (t_s_total + d / 2) - a / 2
         Mn = Cf * arm
         return (; y_pna=y_pna, Mn=uconvert(u"N*m", Mn))
 
     else
         # --- Case B: PNA in the steel section ---
-        a = Cf / (fc′_085 * b)
         C_slab = Cf
         A_steel_comp = (As_Fy - Cf) / (2 * Fy)
 
-        return _pna_in_steel_si(d, bf, tw, tf, h_w, t_s, Fy, C_slab, A_steel_comp, a)
+        return _pna_in_steel_si(d, bf, tw, tf, h_w, t_s_total, Fy, C_slab, A_steel_comp, a)
     end
 end
 
 """
 Locate PNA within the steel section and compute Mn.
 All inputs are already in SI (m, Pa, N).
+
+`t_s` is the total distance from the top of the slab to the top of the steel
+section (= slab thickness for solid slab, = t_slab + hr for deck slab).
 """
 function _pna_in_steel_si(d, bf, tw, tf, h_w, t_s, Fy, C_slab, A_steel_comp, a)
     Af = bf * tf
@@ -163,12 +180,17 @@ end
 
 """
 Sum of force × lever arm about the PNA. All inputs in SI (m, Pa, N).
+
+`t_s` is the total distance from slab top to steel top (includes deck rib
+height for deck slabs). The concrete resultant is at `a/2` from the slab
+top. The PNA is at `y_pna` from the slab top.
 """
 function _moments_about_pna_si(d, bf, tw, tf, h_w, t_s, Fy,
                                 C_slab, y_pna, y_in_part, a, pna_location::Symbol)
     Mn = 0.0u"N*m"
 
     # 1. Concrete slab compression — resultant at a/2 from top of slab
+    # (the slab concrete sits above the deck ribs; its centroid is at a/2 from the slab top)
     Mn += C_slab * (y_pna - a / 2)
 
     # 2. Top flange

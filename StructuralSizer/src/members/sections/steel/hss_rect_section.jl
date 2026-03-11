@@ -107,6 +107,7 @@ function HSSRectSection(name, H, B, t, A, Ix, Iy, Sx, Sy, Zx, Zy, J, rx, ry, is_
     )
 end
 
+"""Return a shallow copy of the rectangular HSS section."""
 function Base.copy(s::HSSRectSection)
     HSSRectSection(
         s.name, s.H, s.B, s.t,
@@ -117,13 +118,19 @@ function Base.copy(s::HSSRectSection)
     )
 end
 
-# --- Section interface ---
+"""Gross cross-sectional area (in²)."""
 section_area(s::HSSRectSection) = s.A
+"""Outside height `H` (in)."""
 section_depth(s::HSSRectSection) = s.H
+"""Outside width `B` (in)."""
 section_width(s::HSSRectSection) = s.B
+"""Strong-axis moment of inertia (in⁴)."""
 Ix(s::HSSRectSection) = s.Ix
+"""Weak-axis moment of inertia (in⁴)."""
 Iy(s::HSSRectSection) = s.Iy
+"""Strong-axis elastic section modulus (in³)."""
 Sx(s::HSSRectSection) = s.Sx
+"""Weak-axis elastic section modulus (in³)."""
 Sy(s::HSSRectSection) = s.Sy
 
 # --- Geometry computation ---

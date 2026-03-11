@@ -1,6 +1,15 @@
 # AISC 360 Chapter G - Design of Members for Shear
 
-"""Web shear coefficient Cv1 (G2.1)."""
+"""
+    get_Cv1(s::ISymmSection, mat::Metal; kv=5.34, rolled=true) -> Float64
+
+Web shear coefficient Cv1 per AISC 360-16 Section G2.1.
+For rolled I-shapes, `ϕ_v = 1.0` when h/tw ≤ 2.24√(E/Fy).
+
+# Arguments
+- `kv`: Plate buckling coefficient (default 5.34 for unstiffened webs)
+- `rolled`: `true` for rolled shapes, `false` for built-up
+"""
 function get_Cv1(s::ISymmSection, mat::Metal; kv=5.34, rolled=true)
     E, Fy = mat.E, mat.Fy
     λ_w = s.λ_w
@@ -15,7 +24,17 @@ function get_Cv1(s::ISymmSection, mat::Metal; kv=5.34, rolled=true)
     return Cv1
 end
 
-"""Nominal shear strength (G2.1 Strong Axis / G7 Weak Axis)."""
+"""
+    get_Vn(s::ISymmSection, mat::Metal; axis=:strong, kv=5.34, rolled=true) -> Force
+
+Nominal shear strength per AISC 360-16: Chapter G2.1 (strong axis, web shear)
+or Chapter G7 (weak axis, flange shear).
+
+# Arguments
+- `axis`: `:strong` (web shear, G2.1) or `:weak` (flange shear, G7)
+- `kv`: Plate buckling coefficient
+- `rolled`: `true` for rolled shapes, `false` for built-up
+"""
 function get_Vn(s::ISymmSection, mat::Metal; axis=:strong, kv=5.34, rolled=true)
     if axis == :strong
         # G2.1: Shear in Web
@@ -32,7 +51,13 @@ function get_Vn(s::ISymmSection, mat::Metal; axis=:strong, kv=5.34, rolled=true)
     end
 end
 
-"""Design shear strength (LRFD). ϕ=1.0 for most rolled I-shapes (Strong), ϕ=0.9 for Weak."""
+"""
+    get_ϕVn(s::ISymmSection, mat::Metal; axis=:strong, kv=5.34, rolled=true, ϕ=nothing) -> Force
+
+Design shear strength ϕVn per AISC 360-16 (LRFD).
+Defaults: `ϕ = 1.0` for strong-axis rolled I-shapes (G2.1(a)),
+`ϕ = 0.9` for weak-axis (G7/G1).
+"""
 function get_ϕVn(s::ISymmSection, mat::Metal; axis=:strong, kv=5.34, rolled=true, ϕ=nothing)
     if axis == :strong
         # G2.1(a): ϕ=1.0 for rolled I-shapes satisfying h/tw limit (most do)

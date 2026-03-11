@@ -12,33 +12,43 @@
 #
 # εcu = 0.003 is the standard ACI 318-11 value for normal concrete.
 
-"""ACI 318-11 §8.5.1: Ec = 57000√f'c psi (normal weight concrete)."""
+"""
+    _aci_Ec(fc′) -> Unitful.Pressure
+
+Compute elastic modulus per ACI 318-11 §8.5.1: Ec = 57000√f'c [psi].
+"""
 _aci_Ec(fc′) = 57000 * sqrt(ustrip(u"psi", fc′)) * u"psi"
 
 # ==============================================================================
 # Standard OPC Concrete (by compressive strength in psi)
 # ==============================================================================
 
+"""Normal-weight concrete, f'c = 3000 psi, OPC (ECC = 0.130 kgCO₂e/kg)."""
 const NWC_3000 = let fc = 3000u"psi"
     Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.130)
 end
 
+"""Normal-weight concrete, f'c = 4000 psi, OPC (ECC = 0.138 kgCO₂e/kg)."""
 const NWC_4000 = let fc = 4000u"psi"
     Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.138)
 end
 
+"""Normal-weight concrete, f'c = 5000 psi, OPC (ECC = 0.155 kgCO₂e/kg)."""
 const NWC_5000 = let fc = 5000u"psi"
     Concrete(_aci_Ec(fc), fc, 2385.0u"kg/m^3", 0.20, 0.155)
 end
 
+"""Normal-weight concrete, f'c = 6000 psi, OPC (ECC = 0.173 kgCO₂e/kg)."""
 const NWC_6000 = let fc = 6000u"psi"
     Concrete(_aci_Ec(fc), fc, 2385.0u"kg/m^3", 0.20, 0.173)
 end
 
+"""Normal-weight concrete, f'c = 4000 psi, 50% GGBS replacement (ECC = 0.099 kgCO₂e/kg)."""
 const NWC_GGBS = let fc = 4000u"psi"
     Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.099)
 end
 
+"""Normal-weight concrete, f'c = 4000 psi, 30% PFA replacement (ECC = 0.112 kgCO₂e/kg)."""
 const NWC_PFA = let fc = 4000u"psi"
     Concrete(_aci_Ec(fc), fc, 2380.0u"kg/m^3", 0.20, 0.112)
 end
@@ -49,25 +59,25 @@ end
 # Common combinations of concrete + rebar grades.
 # Uses RebarSteel presets from steel.jl (Rebar_60, Rebar_75, etc.)
 
-# Standard: 3000 psi concrete + Grade 60 rebar
+"""Reinforced concrete: 3000 psi + Grade 60 rebar."""
 const RC_3000_60 = ReinforcedConcreteMaterial(NWC_3000, Rebar_60)
 
-# Standard: 4000 psi concrete + Grade 60 rebar
+"""Reinforced concrete: 4000 psi + Grade 60 rebar."""
 const RC_4000_60 = ReinforcedConcreteMaterial(NWC_4000, Rebar_60)
 
-# Standard: 5000 psi concrete + Grade 60 rebar
+"""Reinforced concrete: 5000 psi + Grade 60 rebar."""
 const RC_5000_60 = ReinforcedConcreteMaterial(NWC_5000, Rebar_60)
 
-# High-strength: 6000 psi concrete + Grade 60 rebar
+"""Reinforced concrete: 6000 psi + Grade 60 rebar."""
 const RC_6000_60 = ReinforcedConcreteMaterial(NWC_6000, Rebar_60)
 
-# High-strength: 5000 psi concrete + Grade 75 rebar
+"""Reinforced concrete: 5000 psi + Grade 75 rebar."""
 const RC_5000_75 = ReinforcedConcreteMaterial(NWC_5000, Rebar_75)
 
-# High-strength: 6000 psi concrete + Grade 75 rebar
+"""Reinforced concrete: 6000 psi + Grade 75 rebar."""
 const RC_6000_75 = ReinforcedConcreteMaterial(NWC_6000, Rebar_75)
 
-# Low-carbon: GGBS concrete + Grade 60 rebar
+"""Reinforced concrete: GGBS 4000 psi + Grade 60 rebar (low-carbon)."""
 const RC_GGBS_60 = ReinforcedConcreteMaterial(NWC_GGBS, Rebar_60)
 
 # ==============================================================================
@@ -78,6 +88,7 @@ const RC_GGBS_60 = ReinforcedConcreteMaterial(NWC_GGBS, Rebar_60)
 # fc' estimated as E/1000 (typical for earthen materials).
 # ECC values are approximate - earthen materials have very low embodied carbon.
 
+"""Earthen material, E = 500 MPa (unfired earth, very low ECC)."""
 const Earthen_500 = Concrete(
     0.5u"GPa",          # E = 500 MPa
     0.5u"MPa",          # fc' (conservative estimate)
@@ -87,6 +98,7 @@ const Earthen_500 = Concrete(
     εcu = 0.002
 )
 
+"""Earthen material, E = 1000 MPa."""
 const Earthen_1000 = Concrete(
     1.0u"GPa",          # E = 1000 MPa
     1.0u"MPa",          # fc'
@@ -96,6 +108,7 @@ const Earthen_1000 = Concrete(
     εcu = 0.002
 )
 
+"""Earthen material, E = 2000 MPa (stabilized earth)."""
 const Earthen_2000 = Concrete(
     2.0u"GPa",          # E = 2000 MPa
     2.0u"MPa",          # fc'
@@ -105,6 +118,7 @@ const Earthen_2000 = Concrete(
     εcu = 0.002
 )
 
+"""Earthen material, E = 4000 MPa (compressed earth blocks)."""
 const Earthen_4000 = Concrete(
     4.0u"GPa",          # E = 4000 MPa
     4.0u"MPa",          # fc'
@@ -114,6 +128,7 @@ const Earthen_4000 = Concrete(
     εcu = 0.002
 )
 
+"""Earthen material, E = 8000 MPa (fired clay brick)."""
 const Earthen_8000 = Concrete(
     8.0u"GPa",          # E = 8000 MPa
     8.0u"MPa",          # fc'
@@ -146,12 +161,13 @@ register_material!(RC_5000_75, "RC_5000_75")
 register_material!(RC_6000_75, "RC_6000_75")
 register_material!(RC_GGBS_60, "RC_GGBS_60")
 
-# Fallback display names for unregistered materials
+"""_fallback_material_name for unregistered `Concrete`: formats as "Concrete (XXXX psi)"."""
 function _fallback_material_name(mat::Concrete)
     fc_psi = round(Int, ustrip(psi, mat.fc′))
     "Concrete ($(fc_psi) psi)"
 end
 
+"""_fallback_material_name for unregistered `ReinforcedConcreteMaterial`: formats as "Concrete + GrXX"."""
 function _fallback_material_name(mat::ReinforcedConcreteMaterial)
     conc = material_name(mat.concrete)
     fy = round(Int, ustrip(ksi, mat.rebar.Fy))

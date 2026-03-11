@@ -31,6 +31,17 @@ end
 # Story
 # =============================================================================
 
+"""
+    Story{T}
+
+One floor level in the building skeleton.
+
+# Fields
+- `elevation::T`: Height of this story above the datum
+- `vertices::Vector{Int}`: Skeleton vertex indices at this level
+- `edges::Vector{Int}`: Skeleton edge indices at this level
+- `faces::Vector{Int}`: Skeleton face indices at this level
+"""
 mutable struct Story{T}
     elevation::T
     vertices::Vector{Int}
@@ -38,6 +49,7 @@ mutable struct Story{T}
     faces::Vector{Int}
 end
 
+"""Create an empty `Story` at the given elevation."""
 Story{T}(elev::T) where T = Story{T}(elev, Int[], Int[], Int[])
 
 """Grouping of geometrically identical cells (for slab sizing optimization)."""
@@ -46,6 +58,7 @@ mutable struct CellGroup
     cell_indices::Vector{Int}
 end
 
+"""Create an empty `CellGroup` with the given hash key."""
 CellGroup(hash::UInt64) = CellGroup(hash, Int[])
 
 # =============================================================================
@@ -72,6 +85,11 @@ mutable struct Cell{T, A, P}
     position::Symbol          # :corner, :edge, or :interior
 end
 
+"""
+    Cell(face_idx, area, spans, sdl, live_load; position=:interior) -> Cell
+
+Construct a `Cell` with zero self-weight and `:unknown` floor type (set later during initialization).
+"""
 function Cell(face_idx::Int, area::A, spans::SpanInfo{T}, 
               sdl::P, live_load::P; position::Symbol=:interior) where {T, A, P}
     Cell{T, A, P}(face_idx, area, spans, sdl, live_load, zero(P), :unknown, position)
@@ -127,6 +145,11 @@ mutable struct Slab{T}
     design_details::Union{Nothing, NamedTuple}  # NamedTuple from size_flat_plate!, or nothing
 end
 
+"""
+    Slab(cell_indices, result, spans; floor_type, position, group_id, volumes, drop_panel, design_details) -> Slab
+
+Construct a `Slab` from cell indices, a floor sizing result, and governing spans.
+"""
 function Slab(cell_indices::Vector{Int}, result::AbstractFloorResult, spans::SpanInfo; 
               floor_type=:one_way, position::Symbol=:interior, group_id=nothing,
               volumes::MaterialVolumes=MaterialVolumes(),
@@ -136,7 +159,7 @@ function Slab(cell_indices::Vector{Int}, result::AbstractFloorResult, spans::Spa
     Slab{T}(cell_indices, result, floor_type, spans_T, position, group_id, volumes, drop_panel, design_details)
 end
 
-# Single-cell slab convenience
+"""Single-cell slab convenience: wraps the cell index in a vector."""
 Slab(cell_idx::Int, result::AbstractFloorResult, spans::SpanInfo; kwargs...) = 
     Slab([cell_idx], result, spans; kwargs...)
 

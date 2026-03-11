@@ -399,8 +399,10 @@ struct PMInteractionDiagram{S<:AbstractSection, M}
     control_points::Dict{Symbol, Int}
 end
 
-# Type aliases for convenience
+"""Type alias: P-M interaction diagram for rectangular RC column sections."""
 const PMDiagramRect = PMInteractionDiagram{RCColumnSection}
+
+"""Type alias: P-M interaction diagram for circular RC column sections."""
 const PMDiagramCircular = PMInteractionDiagram{RCCircularSection}
 
 """
@@ -574,7 +576,14 @@ function generate_PM_diagram(section::RCColumnSection, mat; n_intermediate::Int=
     return PMInteractionDiagram(section, mat, points, control_indices)
 end
 
-"""Find c value for pure bending (Pn ≈ 0) using bisection."""
+"""
+    _find_pure_bending_c(section::RCColumnSection, mat; tol=0.1) -> Float64
+
+Find neutral axis depth c where Pn ≈ 0 (pure bending) using bisection.
+
+Brackets between a small c (tension-dominated) and c = d (compression-dominated),
+then iterates up to 50 times until |Pn| < `tol` (kip).
+"""
 function _find_pure_bending_c(section::RCColumnSection, mat; tol::Float64=0.1)
     h = to_inches(section.h)
     d = to_inches(effective_depth(section))
@@ -611,7 +620,12 @@ function _find_pure_bending_c(section::RCColumnSection, mat; tol::Float64=0.1)
     return (c_low + c_high) / 2
 end
 
-"""Add intermediate points between control points for smooth curve."""
+"""
+    _add_intermediate_points(section, mat, control_points, n_per_segment) -> Vector{PMDiagramPoint}
+
+Insert `n_per_segment` evenly-spaced intermediate P-M points between the largest and
+smallest finite control-point c values for a smooth strong-axis interaction curve.
+"""
 function _add_intermediate_points(
     section::RCColumnSection, 
     mat, 
@@ -661,26 +675,42 @@ end
 # Diagram Access Functions
 # ==============================================================================
 
-"""Get nominal P-M points as (Pn, Mn) arrays."""
+"""
+    get_nominal_curve(diagram::PMInteractionDiagram) -> NamedTuple{(:Pn, :Mn)}
+
+Return vectors of nominal axial (kip) and moment (kip-ft) capacities from all diagram points.
+"""
 function get_nominal_curve(diagram::PMInteractionDiagram)
     Pn = [pt.Pn for pt in diagram.points]
     Mn = [pt.Mn for pt in diagram.points]
     return (Pn=Pn, Mn=Mn)
 end
 
-"""Get factored P-M points as (φPn, φMn) arrays."""
+"""
+    get_factored_curve(diagram::PMInteractionDiagram) -> NamedTuple{(:φPn, :φMn)}
+
+Return vectors of factored axial (kip) and moment (kip-ft) capacities from all diagram points.
+"""
 function get_factored_curve(diagram::PMInteractionDiagram)
     φPn = [pt.φPn for pt in diagram.points]
     φMn = [pt.φMn for pt in diagram.points]
     return (φPn=φPn, φMn=φMn)
 end
 
-"""Get control points only (non-intermediate points)."""
+"""
+    get_control_points(diagram::PMInteractionDiagram) -> Vector{PMDiagramPoint}
+
+Return only the named ACI control points (excludes intermediate interpolation points).
+"""
 function get_control_points(diagram::PMInteractionDiagram)
     return filter(pt -> pt.control_type != INTERMEDIATE, diagram.points)
 end
 
-"""Get a specific control point by name."""
+"""
+    get_control_point(diagram::PMInteractionDiagram, name::Symbol) -> PMDiagramPoint
+
+Retrieve a named control point (e.g. `:balanced`, `:pure_bending`). Throws on unknown name.
+"""
 function get_control_point(diagram::PMInteractionDiagram, name::Symbol)
     idx = get(diagram.control_points, name, nothing)
     if isnothing(idx)
@@ -814,7 +844,12 @@ end
 # Interpolation Helpers
 # ==============================================================================
 
-"""Interpolate moment capacity at a given axial load."""
+"""
+    _interpolate_moment_at_P(φPn, φMn, Pu) -> Float64
+
+Linearly interpolate factored moment capacity φMn (kip-ft) at a given axial load Pu (kip)
+along the P-M interaction curve.
+"""
 function _interpolate_moment_at_P(φPn::Vector, φMn::Vector, Pu::Real)
     n = length(φPn)
     
@@ -859,7 +894,12 @@ function _interpolate_moment_at_P(φPn::Vector, φMn::Vector, Pu::Real)
     return φMn[best_idx]
 end
 
-"""Interpolate axial capacity at a given moment."""
+"""
+    _interpolate_axial_at_M(φPn, φMn, Mu) -> Float64
+
+Linearly interpolate factored axial capacity φPn (kip) at a given moment Mu (kip-ft)
+along the P-M interaction curve. Returns the maximum φPn when multiple intersections exist.
+"""
 function _interpolate_axial_at_M(φPn::Vector, φMn::Vector, Mu::Real)
     n = length(φMn)
     
@@ -1210,7 +1250,12 @@ function generate_PM_diagram(section::RCColumnSection, mat, ::WeakAxis; n_interm
     return PMInteractionDiagram(section, mat, points, control_indices)
 end
 
-"""Add intermediate points for weak-axis P-M diagram."""
+"""
+    _add_intermediate_points(section, mat, control_points, n_per_segment, ::WeakAxis) -> Vector{PMDiagramPoint}
+
+Insert `n_per_segment` evenly-spaced intermediate P-M points between the largest and
+smallest finite control-point c values for a smooth weak-axis interaction curve.
+"""
 function _add_intermediate_points(
     section::RCColumnSection, 
     mat, 

@@ -223,7 +223,8 @@ end
 # P-M Interaction Diagram for Circular Sections
 # ==============================================================================
 # Uses parametric PMInteractionDiagram{RCCircularSection} from column_pm_rect.jl
-# Legacy type alias for backward compatibility:
+
+"""Legacy type alias for backward compatibility with `PMInteractionDiagram{RCCircularSection}`."""
 const PMInteractionDiagramCircular = PMInteractionDiagram{RCCircularSection}
 
 """
@@ -404,7 +405,14 @@ function generate_PM_diagram(section::RCCircularSection, mat; n_intermediate::In
     return PMInteractionDiagram(section, mat, points, control_indices)
 end
 
-"""Find c value for pure bending (Pn ≈ 0) for circular sections."""
+"""
+    _find_pure_bending_c_circular(section::RCCircularSection, mat; tol=0.1) -> Float64
+
+Find neutral axis depth c where Pn ≈ 0 (pure bending) for a circular section using bisection.
+
+Brackets between a small c (tension-dominated) and c = d (compression-dominated),
+then iterates up to 50 times until |Pn| < `tol` (kip).
+"""
 function _find_pure_bending_c_circular(section::RCCircularSection, mat; tol::Float64=0.1)
     D = to_inches(section.D)
     d = extreme_tension_depth(section)
@@ -439,7 +447,12 @@ function _find_pure_bending_c_circular(section::RCCircularSection, mat; tol::Flo
     return (c_low + c_high) / 2
 end
 
-"""Add intermediate points for circular sections while preserving all control points."""
+"""
+    _add_intermediate_points_circular(section, mat, control_points, n_per_segment) -> Vector{PMDiagramPoint}
+
+Insert intermediate P-M points between consecutive finite control points for a smooth
+circular-section interaction curve. Points are distributed proportionally among segments.
+"""
 function _add_intermediate_points_circular(
     section::RCCircularSection,
     mat,

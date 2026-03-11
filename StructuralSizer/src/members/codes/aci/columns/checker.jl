@@ -60,8 +60,7 @@ end
 # Capacity Cache
 # ==============================================================================
 
-"""Union type for P-M diagrams (rectangular or circular)."""
-# Use broader type to handle parametric material types
+"""Union type covering all `PMInteractionDiagram` parametrisations (rectangular or circular)."""
 const PMDiagram = PMInteractionDiagram{<:AbstractSection}
 
 """
@@ -85,6 +84,11 @@ mutable struct ACIColumnCapacityCache <: AbstractCapacityCache
     εcu::Float64                            # Concrete ultimate strain
 end
 
+"""
+    ACIColumnCapacityCache(n_sections::Int)
+
+Construct a cache pre-sized for `n_sections` column section candidates.
+"""
 function ACIColumnCapacityCache(n_sections::Int)
     ACIColumnCapacityCache(
         Vector{PMDiagram}(undef, n_sections),
@@ -99,7 +103,11 @@ function ACIColumnCapacityCache(n_sections::Int)
     )
 end
 
-"""Create a checker-specific cache."""
+"""
+    create_cache(::ACIColumnChecker, n_sections::Int) -> ACIColumnCapacityCache
+
+Allocate a fresh capacity cache for the ACI column checker with room for `n_sections` entries.
+"""
 create_cache(::ACIColumnChecker, n_sections::Int) = ACIColumnCapacityCache(n_sections)
 
 # ==============================================================================
@@ -137,7 +145,11 @@ function precompute_capacities!(
     _precompute_diagrams!(checker, cache, catalog, material, mat, objective, n)
 end
 
-# Overload for ReinforcedConcreteMaterial - uses embedded rebar properties
+"""
+    precompute_capacities!(checker, cache, catalog, material::ReinforcedConcreteMaterial, objective)
+
+Overload that extracts rebar properties from the embedded `ReinforcedConcreteMaterial`.
+"""
 function precompute_capacities!(
     checker::ACIColumnChecker,
     cache::ACIColumnCapacityCache,
@@ -159,7 +171,13 @@ function precompute_capacities!(
     _precompute_diagrams!(checker, cache, catalog, material.concrete, mat, objective, n)
 end
 
-# Internal helper to avoid code duplication
+"""
+    _precompute_diagrams!(checker, cache, catalog, concrete, mat, objective, n)
+
+Internal helper shared by both `Concrete` and `ReinforcedConcreteMaterial` overloads.
+Generates P-M diagrams, y-axis diagrams (when biaxial is enabled), and objective
+coefficients for all `n` sections in `catalog`. Thread-parallelised.
+"""
 function _precompute_diagrams!(
     checker::ACIColumnChecker,
     cache::ACIColumnCapacityCache,
@@ -198,7 +216,12 @@ function _precompute_diagrams!(
     end
 end
 
-# Helper to check if section is square and generate y-axis diagram if needed
+"""
+    _check_square_and_generate_y_diagram(section::RCColumnSection, mat, include_biaxial) -> Tuple{Bool, Union{PMDiagram, Nothing}}
+
+Return `(is_square, diagram_y)`. For non-square rectangular sections with biaxial
+enabled, a weak-axis P-M diagram is generated; otherwise `nothing`.
+"""
 function _check_square_and_generate_y_diagram(section::RCColumnSection, mat, include_biaxial::Bool)
     b = ustrip(u"inch", section.b)
     h = ustrip(u"inch", section.h)
@@ -216,23 +239,28 @@ function _check_square_and_generate_y_diagram(section::RCColumnSection, mat, inc
     return is_square, diagram_y
 end
 
-# Circular sections are always "square" (axisymmetric)
+"""Circular sections are axisymmetric; always returns `(true, nothing)`."""
 function _check_square_and_generate_y_diagram(section::RCCircularSection, mat, include_biaxial::Bool)
     return true, nothing
 end
 
-# Helper to extract section depth in meters (works for both section types)
+"""Return section depth in metres (h for rectangular)."""
 _section_depth_m(section::RCColumnSection) = ustrip(u"m", section.h)
+
+"""Return section depth in metres (D for circular)."""
 _section_depth_m(section::RCCircularSection) = ustrip(u"m", section.D)
 
 """
-    is_feasible(checker, cache, j, section, material, demand, geometry) -> Bool
+    is_feasible(checker::ACIColumnChecker, cache, j, section::RCColumnSection, material, demand, geometry) -> Bool
 
-Check if an RC column section satisfies ACI 318 requirements for the given demand.
+Check if a rectangular RC column section satisfies ACI 318 requirements.
+
 Checks:
 1. Depth constraint
 2. Uniaxial P-M interaction (with slenderness magnification if enabled)
 3. Biaxial interaction (if enabled and Muy > 0)
+
+Delegates to [`_is_feasible_rc_column`](@ref).
 """
 function is_feasible(
     checker::ACIColumnChecker,
@@ -246,6 +274,11 @@ function is_feasible(
     _is_feasible_rc_column(checker, cache, j, section, material, demand, geometry)
 end
 
+"""
+    is_feasible(checker::ACIColumnChecker, cache, j, section::RCCircularSection, material, demand, geometry) -> Bool
+
+Dispatch for circular sections — delegates to [`_is_feasible_rc_column`](@ref).
+"""
 function is_feasible(
     checker::ACIColumnChecker,
     cache::ACIColumnCapacityCache,
@@ -258,7 +291,14 @@ function is_feasible(
     _is_feasible_rc_column(checker, cache, j, section, material, demand, geometry)
 end
 
-# Generic implementation for both section types
+"""
+    _is_feasible_rc_column(checker, cache, j, section, material, demand, geometry) -> Bool
+
+Shared implementation for rectangular and circular columns. Checks:
+1. Depth constraint against `checker.max_depth`.
+2. Slenderness-magnified uniaxial P-M interaction (x-axis).
+3. Bresler load-contour biaxial interaction (if enabled and Muy > 0).
+"""
 function _is_feasible_rc_column(
     checker::ACIColumnChecker,
     cache::ACIColumnCapacityCache,
@@ -337,12 +377,20 @@ function _is_feasible_rc_column(
     return true
 end
 
-"""Get the objective coefficient for section j."""
+"""
+    get_objective_coeff(checker::ACIColumnChecker, cache::ACIColumnCapacityCache, j::Int) -> Float64
+
+Return the precomputed per-metre objective coefficient for section index `j`.
+"""
 function get_objective_coeff(checker::ACIColumnChecker, cache::ACIColumnCapacityCache, j::Int)::Float64
     cache.obj_coeffs[j]
 end
 
-"""Generate error message for infeasible groups."""
+"""
+    get_feasibility_error_msg(checker::ACIColumnChecker, demand, geometry) -> String
+
+Generate a human-readable message describing why no section in the catalog satisfied the demand.
+"""
 function get_feasibility_error_msg(
     checker::ACIColumnChecker,
     demand::RCColumnDemand,
@@ -377,62 +425,59 @@ function objective_value(
     return uconvert(u"m^3", Ag * length)
 end
 
+"""Minimum-weight objective for a rectangular RC column (kN)."""
 function objective_value(
     ::MinWeight,
     section::RCColumnSection,
     material::Concrete,
     length::Length
 )
-    # Cross-sectional area
     Ag = section.b * section.h
-    # Weight = volume × density × gravity
     return uconvert(u"kN", Ag * length * material.ρ * 1u"gn")
 end
 
+"""Minimum-cost objective for a rectangular RC column (m³ volume proxy)."""
 function objective_value(
     ::MinCost,
     section::RCColumnSection,
     material::Concrete,
     length::Length
 )
-    # Simplified cost: use volume as proxy
-    # (more concrete & rebar = more cost)
     Ag = section.b * section.h
     return uconvert(u"m^3", Ag * length)
 end
 
-# Circular section objective values
+"""Minimum-volume objective for a circular RC column (m³)."""
 function objective_value(
     ::MinVolume,
     section::RCCircularSection,
     material::Concrete,
     length::Length
 )
-    # Volume = area × length
     return uconvert(u"m^3", section.Ag * length)
 end
 
+"""Minimum-weight objective for a circular RC column (kN)."""
 function objective_value(
     ::MinWeight,
     section::RCCircularSection,
     material::Concrete,
     length::Length
 )
-    # Weight = volume × density × gravity
     return uconvert(u"kN", section.Ag * length * material.ρ * 1u"gn")
 end
 
+"""Minimum-cost objective for a circular RC column (m³ volume proxy)."""
 function objective_value(
     ::MinCost,
     section::RCCircularSection,
     material::Concrete,
     length::Length
 )
-    # Simplified cost: use volume as proxy
     return uconvert(u"m^3", section.Ag * length)
 end
 
-# MinCarbon: Embodied carbon = mass × ECC (kgCO₂e/kg)
+"""Minimum-carbon objective for a rectangular RC column (kgCO₂e)."""
 function objective_value(
     ::MinCarbon,
     section::RCColumnSection,
@@ -440,12 +485,12 @@ function objective_value(
     length::Length
 )
     Ag = section.b * section.h
-    # Mass = volume × density, embodied carbon = mass × ecc
     volume = uconvert(u"m^3", Ag * length)
     mass_kg = ustrip(volume) * ustrip(u"kg/m^3", material.ρ)
     return mass_kg * material.ecc  # kgCO₂e
 end
 
+"""Minimum-carbon objective for a circular RC column (kgCO₂e)."""
 function objective_value(
     ::MinCarbon,
     section::RCCircularSection,

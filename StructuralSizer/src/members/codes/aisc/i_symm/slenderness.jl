@@ -1,6 +1,14 @@
 # AISC 360 Table B4.1b - Slenderness Limits for Flexure
 
-"""Slenderness ratios and limits for flanges and web (Flexure)."""
+"""
+    get_slenderness(s::ISymmSection, mat::Metal) -> NamedTuple
+
+Flange and web slenderness classification for flexure per AISC 360-16 Table B4.1b.
+
+# Returns
+- `λ_f`, `λp_f`, `λr_f`, `class_f`: Flange slenderness, limits, and class (Case 10)
+- `λ_w`, `λp_w`, `λr_w`, `class_w`: Web slenderness, limits, and class (Case 15)
+"""
 function get_slenderness(s::ISymmSection, mat::Metal)
     λ_f, λ_w = s.λ_f, s.λ_w
     E, Fy = mat.E, mat.Fy
@@ -19,7 +27,16 @@ function get_slenderness(s::ISymmSection, mat::Metal)
             λ_w=λ_w, λp_w=λp_w, λr_w=λr_w, class_w=class_w)
 end
 
-"""Slenderness limits for Compression (Table B4.1a). Returns Qs, Qa."""
+"""
+    get_compression_factors(s::ISymmSection, mat::Metal) -> NamedTuple(:Qs, :Qa, :Q)
+
+Slender element reduction factors for compression per AISC 360-16 Table B4.1a / Section E7.
+
+# Returns
+- `Qs`: Unstiffened element factor (flanges, E7-4 through E7-6)
+- `Qa`: Stiffened element factor (webs, E7 effective width)
+- `Q`:  Combined factor Qs × Qa
+"""
 function get_compression_factors(s::ISymmSection, mat::Metal)
     λ_f, λ_w = s.λ_f, s.λ_w
     E, Fy = mat.E, mat.Fy
@@ -108,7 +125,12 @@ function _calc_Qa_web(s::ISymmSection, mat::Metal, λ_w::Real, λr_w::Real)
     return max(Qa, 0.0)  # Ensure non-negative
 end
 
-"""Check if section is compact in both flange and web (Flexure)."""
+"""
+    is_compact(s::ISymmSection, mat::Metal) -> Bool
+
+Check whether the section is compact in both flange and web for flexure
+per AISC 360-16 Table B4.1b.
+"""
 function is_compact(s::ISymmSection, mat::Metal)
     sl = get_slenderness(s, mat)
     return sl.class_f == :compact && sl.class_w == :compact

@@ -913,11 +913,21 @@ function size_steel_members!(
         deflection_limit=deflection_limit,
     )
     
-    result = StructuralSizer.optimize_discrete(
-        checker, demands, geometries, catalog, material;
-        n_max_sections=n_max_sections,
-        optimizer=optimizer,
-    )
+    # Choose solver: binary search (fast, per-group optimal) when there are no
+    # shared-section constraints; MIP when n_max_sections is active.
+    if n_max_sections > 0
+        result = StructuralSizer.optimize_discrete(
+            checker, demands, geometries, catalog, material;
+            n_max_sections=n_max_sections,
+            optimizer=optimizer,
+        )
+        solver_name = "MIP"
+    else
+        result = StructuralSizer.optimize_binary_search(
+            checker, demands, geometries, catalog, material,
+        )
+        solver_name = "binary search"
+    end
 
     # Apply results to member groups + ASAP elements + individual members
     for (g_idx, gid) in enumerate(group_ids)
@@ -959,7 +969,7 @@ function size_steel_members!(
     end
 
     defl_str = isnothing(deflection_limit) ? "none" : "L/$(Int(round(1/deflection_limit)))"
-    @info "Sized $(length(group_ids)) steel member groups via MIP" optimizer=optimizer n_max_sections=n_max_sections deflection_limit=defl_str
+    @info "Sized $(length(group_ids)) steel member groups via $solver_name" n_max_sections=n_max_sections deflection_limit=defl_str
     return struc
 end
 
@@ -1117,6 +1127,11 @@ function size_beams!(
         struc.design_parameters.beams
     else
         StructuralSizer.SteelBeamOptions()
+    end
+
+    # Apply collinear grouping if enabled in design parameters
+    if !isnothing(struc.design_parameters) && struc.design_parameters.collinear_grouping
+        group_collinear_members!(struc; member_type=:beams)
     end
 
     _size_beams_impl!(struc, effective_opts, Val(method);
@@ -1662,6 +1677,11 @@ function size_columns!(
         struc.design_parameters.columns
     else
         StructuralSizer.SteelColumnOptions()
+    end
+    
+    # Apply collinear grouping if enabled in design parameters
+    if !isnothing(struc.design_parameters) && struc.design_parameters.collinear_grouping
+        group_collinear_members!(struc; member_type=:columns)
     end
     
     _size_columns_impl!(struc, effective_opts; resolution, reanalyze, gravity_factor)

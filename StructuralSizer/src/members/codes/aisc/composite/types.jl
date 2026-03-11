@@ -64,13 +64,18 @@ end
 """
     DeckSlabOnBeam <: AbstractSlabOnBeam
 
-Metal-deck composite slab on steel beam (stub — not yet implemented).
+Metal-deck composite slab on steel beam per AISC 360-16 Section I3.2c.
+
+The concrete area `Ac` used for crushing capacity is the concrete *above*
+the top of the deck ribs: `Ac = b_eff × t_slab` (AISC I3.2c(2) for
+perpendicular deck). For parallel deck with `wr/hr ≥ 1.5`, the full depth
+is used. In all cases `t_slab` is concrete thickness above the deck top.
 
 # Fields
-- `t_slab`: Concrete above deck top
-- `fc′`:    Concrete compressive strength
+- `t_slab`: Concrete thickness **above** deck ribs
+- `fc′`:    Concrete compressive strength (28-day)
 - `Ec`:     Concrete modulus of elasticity
-- `wc`:     Concrete unit weight
+- `wc`:     Concrete unit weight (density)
 - `n`:      Modular ratio Es/Ec
 - `hr`:     Nominal rib height
 - `wr`:     Average rib width
@@ -90,6 +95,22 @@ struct DeckSlabOnBeam{T_P<:Pressure, T_D<:Density} <: AbstractSlabOnBeam
     beam_spacing_right::typeof(1.0u"m")
     edge_dist_left::Union{typeof(1.0u"m"), Nothing}
     edge_dist_right::Union{typeof(1.0u"m"), Nothing}
+end
+
+function DeckSlabOnBeam(t_slab, fc′, Ec, wc, Es,
+                        hr, wr, deck_orientation,
+                        beam_spacing_left, beam_spacing_right;
+                        edge_dist_left=nothing, edge_dist_right=nothing)
+    deck_orientation in (:perpendicular, :parallel) ||
+        throw(ArgumentError("deck_orientation must be :perpendicular or :parallel, got :$deck_orientation"))
+    n = ustrip(u"Pa", Es) / ustrip(u"Pa", Ec)
+    edl = edge_dist_left  === nothing ? nothing : uconvert(u"m", edge_dist_left)
+    edr = edge_dist_right === nothing ? nothing : uconvert(u"m", edge_dist_right)
+    DeckSlabOnBeam(uconvert(u"m", t_slab), fc′, Ec, wc, n,
+                   uconvert(u"m", hr), uconvert(u"m", wr), deck_orientation,
+                   uconvert(u"m", beam_spacing_left),
+                   uconvert(u"m", beam_spacing_right),
+                   edl, edr)
 end
 
 # ==============================================================================
@@ -184,3 +205,25 @@ function CompositeContext(slab, anchor, L_beam;
     CompositeContext(slab, anchor, uconvert(u"m", L_beam), shored,
                      uconvert(u"m", Lb_const), Asr, Fysr, neg_moment)
 end
+
+# ==============================================================================
+# Slab geometry helpers
+# ==============================================================================
+
+"""
+    _gap_above_steel(slab) -> Length
+
+Gap between the top of the steel beam flange and the bottom of the concrete
+slab. Zero for solid slabs, `hr` (rib height) for deck slabs.
+"""
+_gap_above_steel(::SolidSlabOnBeam) = 0.0u"m"
+_gap_above_steel(slab::DeckSlabOnBeam) = slab.hr
+
+"""
+    _total_slab_depth(slab) -> Length
+
+Total distance from top of steel section to top of concrete slab.
+For solid slabs this equals `t_slab`. For deck slabs this equals `hr + t_slab`.
+"""
+_total_slab_depth(slab::SolidSlabOnBeam) = slab.t_slab
+_total_slab_depth(slab::DeckSlabOnBeam) = slab.hr + slab.t_slab

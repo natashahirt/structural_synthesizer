@@ -1,6 +1,15 @@
 # AISC 360 Chapter F - Design of Members for Flexure
 
-"""Limiting unbraced lengths for LTB (F2-5, F2-6). Returns (Lp, Lr, c)."""
+"""
+    get_Lp_Lr(s::ISymmSection, mat::Metal) -> NamedTuple(:Lp, :Lr, :c)
+
+Limiting unbraced lengths for lateral-torsional buckling per AISC 360-16.
+
+# Returns
+- `Lp`: Limiting laterally unbraced length for yielding (Eq. F2-5)
+- `Lr`: Limiting laterally unbraced length for inelastic LTB (Eq. F2-6)
+- `c`: LTB modification factor (1.0 for doubly symmetric I-shapes)
+"""
 function get_Lp_Lr(s::ISymmSection, mat::Metal)
     E, Fy = mat.E, mat.Fy
     ry, J, Sx, ho, rts = s.ry, s.J, s.Sx, s.ho, s.rts
@@ -14,7 +23,15 @@ function get_Lp_Lr(s::ISymmSection, mat::Metal)
     return (Lp=Lp, Lr=Lr, c=c)
 end
 
-"""Critical stress for elastic LTB (F2-4)."""
+"""
+    get_Fcr_LTB(s::ISymmSection, mat::Metal, Lb; Cb=1.0) -> Pressure
+
+Critical stress for elastic lateral-torsional buckling per AISC 360-16 Eq. F2-4.
+
+# Arguments
+- `Lb`: Laterally unbraced length
+- `Cb`: Lateral-torsional buckling modification factor (default 1.0)
+"""
 function get_Fcr_LTB(s::ISymmSection, mat::Metal, Lb; Cb=1.0)
     E = mat.E
     J, Sx, ho, rts = s.J, s.Sx, s.ho, s.rts
@@ -23,7 +40,23 @@ function get_Fcr_LTB(s::ISymmSection, mat::Metal, Lb; Cb=1.0)
     return Cb * π^2 * E / lb_rts^2 * sqrt(1 + 0.078 * (J * c) / (Sx * ho) * lb_rts^2)
 end
 
-"""Nominal flexural strength (Chapter F2 / F6). Considers yielding, LTB, and FLB."""
+"""
+    get_Mn(s::ISymmSection, mat::Metal; Lb, Cb=1.0, axis=:strong) -> Moment
+
+Nominal flexural strength per AISC 360-16 Chapter F.
+
+Strong axis (F2): considers yielding, lateral-torsional buckling, and
+flange local buckling. Weak axis (F6): considers yielding and flange
+local buckling.
+
+# Arguments
+- `Lb`: Laterally unbraced length (default 0 = full bracing)
+- `Cb`: LTB modification factor (default 1.0)
+- `axis`: `:strong` (F2) or `:weak` (F6)
+
+# Returns
+- `Mn`: Nominal moment capacity, taking the minimum of all applicable limit states
+"""
 function get_Mn(s::ISymmSection, mat::Metal; Lb=zero(s.d), Cb=1.0, axis=:strong)
     E, Fy = mat.E, mat.Fy
     
@@ -90,6 +123,10 @@ function get_Mn(s::ISymmSection, mat::Metal; Lb=zero(s.d), Cb=1.0, axis=:strong)
     end
 end
 
-"""Design flexural strength (LRFD)."""
+"""
+    get_ϕMn(s::ISymmSection, mat::Metal; Lb, Cb=1.0, axis=:strong, ϕ=0.9) -> Moment
+
+Design flexural strength ϕMn per AISC 360-16 (LRFD). `ϕ_b = 0.9` per Section F1.
+"""
 get_ϕMn(s::ISymmSection, mat::Metal; Lb=zero(s.d), Cb=1.0, axis=:strong, ϕ=0.9) = 
     ϕ * get_Mn(s, mat; Lb=Lb, Cb=Cb, axis=axis)

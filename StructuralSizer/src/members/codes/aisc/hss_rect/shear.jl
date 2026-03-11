@@ -41,7 +41,12 @@ function get_Vn(s::HSSRectSection, mat::Metal; axis=:strong, kv=5.0, rolled=fals
     return 0.6 * Fy * Aw * Cv2
 end
 
-"""Design shear strength (LRFD)."""
+"""
+    get_ϕVn(s::HSSRectSection, mat::Metal; axis=:strong, kv=5.0, rolled=false, ϕ=nothing) -> Force
+
+Design shear strength ϕVn for rectangular HSS per AISC 360-16 Section G4 (LRFD).
+Default `ϕ_v = 0.9` per G1.
+"""
 get_ϕVn(s::HSSRectSection, mat::Metal; axis=:strong, kv=5.0, rolled=false, ϕ=nothing) =
     (isnothing(ϕ) ? 0.9 : ϕ) * get_Vn(s, mat; axis=axis, kv=kv, rolled=rolled)
 

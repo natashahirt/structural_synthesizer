@@ -365,9 +365,10 @@ function _multistart_ipopt(problem::AbstractNLPProblem, objective::AbstractObjec
 end
 
 """
-NLopt solver via Optimization.jl.
+    _optimize_nlopt(problem, objective; maxiter, tol, verbose)
 
-Requires: `using Optimization, OptimizationNLopt`
+NLopt solver via Optimization.jl (not yet implemented).
+Requires: `using Optimization, OptimizationNLopt`.
 """
 function _optimize_nlopt(problem, objective; maxiter, tol, verbose)
     error("""
@@ -382,9 +383,10 @@ function _optimize_nlopt(problem, objective; maxiter, tol, verbose)
 end
 
 """
-NonConvex.jl meta-solver with autodiff support.
+    _optimize_nonconvex(problem, objective; maxiter, tol, verbose)
 
-Requires: `using NonConvex, Ipopt` (or other backend)
+NonConvex.jl meta-solver with autodiff support (not yet implemented).
+Requires: `using NonConvex, Ipopt`.
 """
 function _optimize_nonconvex(problem, objective; maxiter, tol, verbose)
     error("""
@@ -528,33 +530,36 @@ end
 # ==============================================================================
 
 """
-Convert volume-based objective to requested objective type.
+    _convert_objective(objective, problem, volume) -> Float64
 
-`evaluate()` returns volume as the base objective. For MinWeight/MinCarbon,
-we scale by density/ECC rather than recomputing arc length.
+Convert a volume-based base objective to the requested objective type by
+scaling with density, ECC, or cost. Avoids recomputing expensive analyses.
 """
 function _convert_objective(objective::MinVolume, ::AbstractNLPProblem, volume::Float64)
     volume
 end
 
+"""_convert_objective for MinWeight: volume × ρ."""
 function _convert_objective(objective::MinWeight, problem::AbstractNLPProblem, volume::Float64)
     density = ustrip(u"kg/m^3", problem.material.ρ)
     volume * density
 end
 
+"""_convert_objective for MinCarbon: volume × ρ × ecc."""
 function _convert_objective(objective::MinCarbon, problem::AbstractNLPProblem, volume::Float64)
     density = ustrip(u"kg/m^3", problem.material.ρ)
     ecc = problem.material.ecc
     volume * density * ecc
 end
 
+"""_convert_objective for MinCost: volume × ρ × cost."""
 function _convert_objective(objective::MinCost, problem::AbstractNLPProblem, volume::Float64)
     isnan(problem.material.cost) && error("MinCost requires material.cost to be set (material has cost=NaN)")
     density = ustrip(u"kg/m^3", problem.material.ρ)
-    volume * density * problem.material.cost  # m³ × kg/m³ × $/kg = $
+    volume * density * problem.material.cost
 end
 
-# Fallback for custom objectives (will recompute - less efficient)
+"""_convert_objective fallback: recomputes via `objective_value` (less efficient)."""
 function _convert_objective(objective::AbstractObjective, problem::AbstractNLPProblem, volume::Float64, x::Vector{Float64})
     objective_value(objective, problem, x)
 end
@@ -563,7 +568,11 @@ end
 # Grid Search Functions
 # ==============================================================================
 
-"""1D grid search (parallelized over grid points)."""
+"""
+    _search_1d(problem, objective, lb, ub, n_points) -> (best_x, best_obj, best_result, feasible, evals)
+
+One-dimensional grid search, parallelized over grid points.
+"""
 function _search_1d(problem, objective, lb, ub, n_points)
     grid = collect(range(lb, ub, length=n_points))
     n = length(grid)
@@ -599,7 +608,11 @@ function _search_1d(problem, objective, lb, ub, n_points)
     return best_x, best_obj, best_result, best_feasible, n
 end
 
-"""2D grid search (parallelized over grid points)."""
+"""
+    _search_2d(problem, objective, lb, ub, n_points) -> (best_x, best_obj, best_result, feasible, evals)
+
+Two-dimensional grid search, parallelized over grid points.
+"""
 function _search_2d(problem, objective, lb, ub, n_points)
     grid_x1 = collect(range(lb[1], ub[1], length=n_points))
     grid_x2 = collect(range(lb[2], ub[2], length=n_points))

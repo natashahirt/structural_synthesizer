@@ -66,7 +66,7 @@ end
 # Internal helpers — kip/inch arithmetic (avoids Unitful overflow)
 # ==============================================================================
 
-"""Convert section to raw-number tuple in inches."""
+"""Extract torsion-relevant section properties as raw numbers in inch units."""
 function _torsion_props_in(s::ISymmSection)
     d_in   = ustrip(u"inch", s.d)
     bf_in  = ustrip(u"inch", s.bf)

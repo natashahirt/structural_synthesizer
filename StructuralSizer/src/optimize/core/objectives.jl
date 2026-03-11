@@ -24,7 +24,7 @@ Minimize total cost.
 struct MinCost{T} <: AbstractObjective
     unit_cost::T
 end
-"""Construct a `MinCost` with an explicit unit cost [\\$/kg]."""
+"""Construct a `MinCost` with an explicit unit cost (USD/kg)."""
 MinCost(c::Real) = MinCost{typeof(c)}(c)
 
 """Construct a `MinCost` that uses the material's built-in cost field."""

@@ -38,6 +38,7 @@ end
 # 1. Header
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print the report header: timestamp, materials, unfactored loads, and building geometry."""
 function _report_header(io::IO, design::BuildingDesign)
     params = design.params
     struc = design.structure
@@ -92,6 +93,7 @@ end
 # 2. Slabs
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print slab panel tables (geometry, loading, reinforcement, punching, deflection)."""
 function _report_slabs(io::IO, design::BuildingDesign)
     struc = design.structure
     params = design.params
@@ -114,6 +116,7 @@ function _report_slabs(io::IO, design::BuildingDesign)
     end
 end
 
+"""Print a single flat-plate panel: spans, loading breakdown, M₀, reinforcement, punching, and deflection."""
 function _report_flat_plate_panel(io::IO, design::BuildingDesign,
                                    s_idx::Int, slab, r)
     struc = design.structure
@@ -177,6 +180,7 @@ function _report_flat_plate_panel(io::IO, design::BuildingDesign,
     println(io)
 end
 
+"""Print the reinforcement schedule table for column and middle strips."""
 function _report_slab_reinforcement(io::IO, r, h_in, d_in)
     println(io, "  │  REINFORCEMENT  (h = $(h_in) in, d = $(d_in) in)")
     Printf.@printf(io, "  │  %-13s %-8s %8s %11s %11s %4s %5s %3s %12s %5s\n",
@@ -196,6 +200,7 @@ function _report_slab_reinforcement(io::IO, r, h_in, d_in)
     println(io, "  │")
 end
 
+"""Print one row of the reinforcement schedule (Mu, As_req, bar size, spacing, As_provided)."""
 function _print_reinf_row(io::IO, strip_name::String, sr)
     loc = string(sr.location)
     Mu_kipft = round(ustrip(kip * u"ft", sr.Mu); digits=1)
@@ -211,6 +216,7 @@ function _print_reinf_row(io::IO, strip_name::String, sr)
         strip_name, loc, Mu_kipft, As_req, As_min, bar_str, s_in, n_bars, As_prov, ratio)
 end
 
+"""Print the punching shear schedule per column (b₀, vu, φvc, stud requirement)."""
 function _report_slab_punching(io::IO, struc, r, h_in, d_in, fc_psi)
     pc = r.punching_check
     isempty(pc.details) && return
@@ -245,6 +251,7 @@ function _report_slab_punching(io::IO, struc, r, h_in, d_in, fc_psi)
     println(io, "  │")
 end
 
+"""Print the slab deflection check table (Δ, limit, L/Δ, long-term total)."""
 function _report_slab_deflection(io::IO, r, l1_ft)
     dc = r.deflection_check
     hasproperty(dc, :Δ_check) || return
@@ -276,6 +283,7 @@ end
 # 3. Columns
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print the column schedule (section, loads, axial/P-M/punching ratios)."""
 function _report_columns(io::IO, design::BuildingDesign)
     struc = design.structure
     params = design.params
@@ -366,6 +374,7 @@ end
 # 4. Foundations
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print the foundation schedule (reactions, dimensions, bearing/punching/flexure ratios)."""
 function _report_foundations(io::IO, design::BuildingDesign)
     struc = design.structure
     params = design.params
@@ -420,6 +429,7 @@ end
 # 5. Material Takeoff
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print the material takeoff (concrete volumes, floor area, embodied carbon)."""
 function _report_takeoff(io::IO, design::BuildingDesign)
     struc = design.structure
     params = design.params
@@ -477,6 +487,7 @@ end
 # 6. Overall Status
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""Print the overall pass/fail status and critical element."""
 function _report_status(io::IO, design::BuildingDesign)
     s = design.summary
 

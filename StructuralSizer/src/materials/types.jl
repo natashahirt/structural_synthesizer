@@ -16,6 +16,7 @@
 # Maps material instances to display names via objectid lookup.
 # register_material! is called after each const preset definition.
 
+"""Global registry mapping `objectid(material)` → display name string."""
 const MATERIAL_NAME_REGISTRY = Dict{UInt, String}()
 
 """Register a material preset with its display name."""
@@ -32,9 +33,18 @@ end
 # Metal (Steel)
 # =============================================================================
 
-# Type tags for dispatch (structural steel vs rebar)
+"""
+    MetalType
+
+Abstract tag type for dispatch between structural steel and reinforcing steel.
+Subtypes: [`StructuralSteelType`](@ref), [`RebarType`](@ref).
+"""
 abstract type MetalType end
+
+"""Tag type indicating structural (rolled/welded) steel."""
 struct StructuralSteelType <: MetalType end
+
+"""Tag type indicating reinforcing bar steel."""
 struct RebarType <: MetalType end
 
 """
@@ -68,12 +78,16 @@ struct Metal{K<:MetalType, T_P, T_D} <: AbstractMaterial
     cost::Float64 # Unit cost [$/kg] (NaN = not set)
 end
 
-# Type aliases for convenience
+"""Alias for `Metal{StructuralSteelType}` — rolled/welded structural steel."""
 const StructuralSteel{T_P, T_D} = Metal{StructuralSteelType, T_P, T_D}
+
+"""Alias for `Metal{RebarType}` — reinforcing bar steel."""
 const RebarSteel{T_P, T_D} = Metal{RebarType, T_P, T_D}
 
-# Constructors (cost is keyword-only, defaults to NaN)
+"""Construct a `StructuralSteel` from elastic constants, strengths, density, and ECC."""
 StructuralSteel(E, G, Fy, Fu, ρ, ν, ecc; cost=NaN) = Metal{StructuralSteelType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc), Float64(cost))
+
+"""Construct a `RebarSteel` from elastic constants, strengths, density, and ECC."""
 RebarSteel(E, G, Fy, Fu, ρ, ν, ecc; cost=NaN) = Metal{RebarType, typeof(E), typeof(ρ)}(E, G, Fy, Fu, ρ, Float64(ν), Float64(ecc), Float64(cost))
 
 # =============================================================================
@@ -124,6 +138,12 @@ struct Concrete{T_P, T_D} <: AbstractMaterial
     aggregate_type::AggregateType  # Aggregate type for fire resistance (ACI 216.1)
 end
 
+"""
+    Concrete(E, fc′, ρ, ν, ecc; εcu=0.003, cost=NaN, λ=1.0, aggregate_type=siliceous)
+
+Construct a `Concrete` material from elastic modulus, strength, density, Poisson's
+ratio, and embodied carbon coefficient.
+"""
 function Concrete(E, fc′, ρ, ν, ecc; εcu::Real=0.003, cost::Real=NaN, λ::Real=1.0,
                   aggregate_type::AggregateType=siliceous)
     Concrete{typeof(E), typeof(ρ)}(E, fc′, ρ, Float64(ν), Float64(εcu), Float64(ecc),
@@ -164,7 +184,11 @@ struct ReinforcedConcreteMaterial{C<:Concrete, R<:RebarSteel} <: AbstractMateria
     transverse::R
 end
 
-# Convenience constructor (same rebar for longitudinal and transverse)
+"""
+    ReinforcedConcreteMaterial(concrete, rebar)
+
+Construct with the same `RebarSteel` for both longitudinal and transverse reinforcement.
+"""
 function ReinforcedConcreteMaterial(concrete::Concrete, rebar::RebarSteel)
     ReinforcedConcreteMaterial(concrete, rebar, rebar)
 end
@@ -206,19 +230,31 @@ struct FiberReinforcedConcrete{C<:Concrete} <: AbstractMaterial
     fiber_ecc::Float64     # embodied carbon of fiber [kgCO₂e/kg-fiber]
 end
 
+"""
+    FiberReinforcedConcrete(concrete, fiber_dosage, fR1, fR3; fiber_ecc=1.4)
+
+Construct an FRC material from a base `Concrete`, fiber dosage [kg/m³],
+residual tensile strengths [MPa], and optional fiber embodied carbon.
+"""
 function FiberReinforcedConcrete(concrete::Concrete, fiber_dosage::Real, fR1::Real, fR3::Real;
                                   fiber_ecc::Real=1.4)
     FiberReinforcedConcrete(concrete, Float64(fiber_dosage), Float64(fR1), Float64(fR3),
                             Float64(fiber_ecc))
 end
 
-# Property delegation to inner Concrete
+"""Delegate property access on `FiberReinforcedConcrete` to the inner `Concrete`."""
 Base.getproperty(m::FiberReinforcedConcrete, s::Symbol) = _frc_getproperty(m, Val(s))
+"""_frc_getproperty: return the `concrete` field."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{:concrete}) = getfield(m, :concrete)
+"""_frc_getproperty: return the `fiber_dosage` field."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fiber_dosage}) = getfield(m, :fiber_dosage)
+"""_frc_getproperty: return the `fR1` field."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fR1}) = getfield(m, :fR1)
+"""_frc_getproperty: return the `fR3` field."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fR3}) = getfield(m, :fR3)
+"""_frc_getproperty: return the `fiber_ecc` field."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{:fiber_ecc}) = getfield(m, :fiber_ecc)
+"""_frc_getproperty fallback: delegate to the inner `Concrete`."""
 _frc_getproperty(m::FiberReinforcedConcrete, ::Val{s}) where {s} = getproperty(getfield(m, :concrete), s)
 
 # =============================================================================
@@ -261,6 +297,11 @@ struct Timber{T_P<:Pressure, T_D<:Density} <: AbstractMaterial
     cost::Float64        # Unit cost [$/kg] (NaN = not set)
 end
 
+"""
+    Timber(species, grade, E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, ecc; cost=NaN)
+
+Construct a `Timber` material from NDS reference design values and species/grade identifiers.
+"""
 function Timber(species::Symbol, grade::Symbol, E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, ecc; cost::Real=NaN)
     Timber{typeof(E), typeof(ρ)}(species, grade, E, Emin, Fb, Ft, Fv, Fc, Fc_perp, ρ, Float64(ecc), Float64(cost))
 end

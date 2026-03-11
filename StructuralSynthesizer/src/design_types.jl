@@ -343,6 +343,12 @@ Base.@kwdef mutable struct DesignParameters
     # ─── Foundation Options ───
     foundation_options::Union{FoundationParameters, Nothing} = nothing
     
+    # ─── Member Grouping ───
+    # When true, detect collinear beams (sharing a node with aligned direction)
+    # and assign them the same group_id before sizing. Forces the optimizer to
+    # assign the same section to all members along a continuous line.
+    collinear_grouping::Bool = false
+    
     # ─── Design Targets ───
     deflection_limit::Symbol = :L_360        # :L_240, :L_360, :L_480
     optimize_for::Symbol = :weight           # :weight, :carbon, :cost

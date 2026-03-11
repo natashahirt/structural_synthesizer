@@ -45,6 +45,12 @@ function _Se_rect_hss(s::HSSRectSection, mat::Metal; axis::Symbol)
     return Se
 end
 
+"""
+    get_Mn(s::HSSRectSection, mat::Metal; Lb, Cb=1.0, axis=:strong) -> Moment
+
+Nominal flexural strength for rectangular HSS per AISC 360-16 Section F7.
+Considers compact (F7-1), noncompact (F7-2), and slender (F7-3) limit states.
+"""
 function get_Mn(s::HSSRectSection, mat::Metal; Lb=zero(s.H), Cb=1.0, axis=:strong)
     Fy = mat.Fy
     Z = axis === :weak ? s.Zy : s.Zx
@@ -77,6 +83,11 @@ function get_Mn(s::HSSRectSection, mat::Metal; Lb=zero(s.H), Cb=1.0, axis=:stron
     end
 end
 
+"""
+    get_ϕMn(s::HSSRectSection, mat::Metal; Lb, Cb=1.0, axis=:strong, ϕ=0.9) -> Moment
+
+Design flexural strength ϕMn for rectangular HSS per AISC 360-16 (LRFD).
+"""
 get_ϕMn(s::HSSRectSection, mat::Metal; Lb=zero(s.H), Cb=1.0, axis=:strong, ϕ=0.9) =
     ϕ * get_Mn(s, mat; Lb=Lb, Cb=Cb, axis=axis)
 

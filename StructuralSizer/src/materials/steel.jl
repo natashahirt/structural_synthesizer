@@ -4,7 +4,7 @@
 # Steel, section: 1.61
 # Steel, rebar: 1.72
 
-# ASTM A992 Steel (USA)
+"""ASTM A992 structural steel (Fy = 50 ksi, Fu = 65 ksi, ECC = 1.61 kgCO₂e/kg)."""
 const A992_Steel = StructuralSteel(
     200.0u"GPa",        # E  (29000 ksi ≈ 200 GPa)
     77.2u"GPa",         # G  (11500 ksi ≈ 77.2 GPa)
@@ -15,7 +15,7 @@ const A992_Steel = StructuralSteel(
     1.61                # ecc [kgCO₂e/kg]
 )
 
-# S355 Steel (European)
+"""EN S355 structural steel (Fy = 355 MPa, Fu = 510 MPa, ECC = 1.61 kgCO₂e/kg)."""
 const S355_Steel = StructuralSteel(
     210.0u"GPa",        # E
     80.7u"GPa",         # G
@@ -26,15 +26,20 @@ const S355_Steel = StructuralSteel(
     1.61                # ecc [kgCO₂e/kg]
 )
 
-# ASTM A615 Rebar Steel Grades (portlandbolt.com)
-const Rebar_40 = RebarSteel(200.0u"GPa", 77.2u"GPa", 276.0u"MPa", 414.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=40ksi, Fu=60ksi
-const Rebar_60 = RebarSteel(200.0u"GPa", 77.2u"GPa", 414.0u"MPa", 620.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=60ksi, Fu=90ksi
-const Rebar_75 = RebarSteel(200.0u"GPa", 77.2u"GPa", 517.0u"MPa", 689.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=75ksi, Fu=100ksi
-const Rebar_80 = RebarSteel(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=80ksi, Fu=105ksi
+"""ASTM A615 Grade 40 rebar (Fy = 40 ksi, Fu = 60 ksi, ECC = 1.72 kgCO₂e/kg)."""
+const Rebar_40 = RebarSteel(200.0u"GPa", 77.2u"GPa", 276.0u"MPa", 414.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)
 
-# ASTM A1044 Headed Shear Stud Steel (for punching shear reinforcement)
-# Reference: Ancon Shearfix Design Manual (adapted to ACI 318-11)
-const Stud_51 = RebarSteel(200.0u"GPa", 77.2u"GPa", 351.6u"MPa", 448.2u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)  # Fy=51ksi, Fu=65ksi
+"""ASTM A615 Grade 60 rebar (Fy = 60 ksi, Fu = 90 ksi, ECC = 1.72 kgCO₂e/kg)."""
+const Rebar_60 = RebarSteel(200.0u"GPa", 77.2u"GPa", 414.0u"MPa", 620.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)
+
+"""ASTM A615 Grade 75 rebar (Fy = 75 ksi, Fu = 100 ksi, ECC = 1.72 kgCO₂e/kg)."""
+const Rebar_75 = RebarSteel(200.0u"GPa", 77.2u"GPa", 517.0u"MPa", 689.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)
+
+"""ASTM A615 Grade 80 rebar (Fy = 80 ksi, Fu = 105 ksi, ECC = 1.72 kgCO₂e/kg)."""
+const Rebar_80 = RebarSteel(200.0u"GPa", 77.2u"GPa", 552.0u"MPa", 724.0u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)
+
+"""ASTM A1044 headed shear stud steel (Fy = 51 ksi, Fu = 65 ksi, ECC = 1.72 kgCO₂e/kg)."""
+const Stud_51 = RebarSteel(200.0u"GPa", 77.2u"GPa", 351.6u"MPa", 448.2u"MPa", 7850.0u"kg/m^3", 0.30, 1.72)
 
 # ==============================================================================
 # Registry
@@ -48,6 +53,8 @@ register_material!(Rebar_75, "Gr75")
 register_material!(Rebar_80, "Gr80")
 register_material!(Stud_51, "Stud51")
 
-# Fallback display names for unregistered materials
+"""_fallback_material_name for unregistered `StructuralSteel`: formats as "Steel (Fy=XX ksi)"."""
 _fallback_material_name(mat::StructuralSteel) = "Steel (Fy=$(round(Int, ustrip(ksi, mat.Fy))) ksi)"
+
+"""_fallback_material_name for unregistered `RebarSteel`: formats as "Rebar (Fy=XX ksi)"."""
 _fallback_material_name(mat::RebarSteel) = "Rebar (Fy=$(round(Int, ustrip(ksi, mat.Fy))) ksi)"
