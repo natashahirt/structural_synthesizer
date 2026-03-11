@@ -60,8 +60,8 @@ const SS_PKGID = Base.PkgId(Base.UUID("fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"), "
         mod = Base.require(SS_PKGID)
         println(stdout, "[bootstrap] @async: require done, calling register_routes!...")
         flush(stdout)
-        mod.register_routes!()
-        STATUS_FN[] = () -> mod.status_string(mod.SERVER_STATUS)
+        Base.invokelatest(mod.register_routes!)
+        STATUS_FN[] = () -> Base.invokelatest(mod.status_string, mod.SERVER_STATUS)
         println(stdout, "[bootstrap] @async: fully loaded")
         flush(stdout)
         @info "StructuralSynthesizer loaded; POST /design, /validate, GET /schema ready"
