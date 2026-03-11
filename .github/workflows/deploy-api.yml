@@ -15,6 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   AWS_REGION: ${{ vars.AWS_REGION }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
   APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
@@ -135,6 +136,7 @@ jobs:
           echo "Timed out waiting for App Runner operation to finish"
           exit 1
 
+      # Smoke checks run only when repo variable APP_URL is set (e.g. https://xxx.us-east-1.awsapprunner.com).
       - name: Smoke check /health
         if: ${{ env.APP_URL != '' }}
         run: |
