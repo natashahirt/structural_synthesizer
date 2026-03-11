@@ -1,7 +1,7 @@
 import JuMP
 import HiGHS
 
-# Optional Gurobi import (accelerator). Keep HiGHS as the baseline open-source solver.
+"""Whether Gurobi.jl is available in the current environment."""
 const _HAS_GUROBI = Ref(false)
 try
     import Gurobi
@@ -10,9 +10,10 @@ catch
     _HAS_GUROBI[] = false
 end
 
-# Thread-local Gurobi environment pool.
-# Each thread gets its own Env to avoid contention when parallel solves run.
+"""Thread-local Gurobi environment pool (one `Env` per thread)."""
 const _GUROBI_ENV_POOL = Dict{Int, Any}()
+
+"""Lock guarding `_GUROBI_ENV_POOL` access."""
 const _GUROBI_ENV_LOCK = ReentrantLock()
 
 """

@@ -4,21 +4,38 @@
 # Abstract Hierarchy
 # =============================================================================
 
+"""Supertype for all foundation types (shallow and deep)."""
 abstract type AbstractFoundation end
 
 # --- Shallow Foundations ---
+
+"""Supertype for shallow foundation types (spread, combined, strip, mat)."""
 abstract type AbstractShallowFoundation <: AbstractFoundation end
 
+"""Singleton type for spread (isolated) footing dispatch."""
 struct SpreadFooting <: AbstractShallowFoundation end
+
+"""Singleton type for combined footing dispatch."""
 struct CombinedFooting <: AbstractShallowFoundation end
+
+"""Singleton type for strip (continuous) footing dispatch."""
 struct StripFooting <: AbstractShallowFoundation end
+
+"""Singleton type for mat (raft) foundation dispatch."""
 struct MatFoundation <: AbstractShallowFoundation end
 
 # --- Deep Foundations ---
+
+"""Supertype for deep foundation types (piles, shafts, micropiles)."""
 abstract type AbstractDeepFoundation <: AbstractFoundation end
 
+"""Singleton type for driven pile dispatch."""
 struct DrivenPile <: AbstractDeepFoundation end
+
+"""Singleton type for drilled shaft (caisson) dispatch."""
 struct DrilledShaft <: AbstractDeepFoundation end
+
+"""Singleton type for micropile dispatch."""
 struct Micropile <: AbstractDeepFoundation end
 
 # =============================================================================
@@ -51,14 +68,18 @@ struct Soil{T_P, T_D}
     ks::Union{T_D, Nothing}  # Modulus of subgrade reaction (force/length³, same dim as γ)
 end
 
+"""
+    Soil(qa, γ, ϕ, c, Es; qs=nothing, qp=nothing, ks=nothing) → Soil
+
+Convenience constructor that infers parametric types from `qa` (pressure)
+and `γ` (force/volume). Pile-specific fields `qs`, `qp`, and Winkler
+modulus `ks` are optional.
+"""
 function Soil(qa, γ, ϕ, c, Es; qs=nothing, qp=nothing, ks=nothing)
     Soil{typeof(qa), typeof(γ)}(qa, γ, Float64(ϕ), c, Es, qs, qp, ks)
 end
 
-# Common soil presets
-# ks values from Bowles (1996) Table 9-1 and ACI 336.2R
-# Note: ks (modulus of subgrade reaction) has dimension force/length³ = same as γ.
-#       Express in kN/m³ to match γ's Unitful type (T_D).
+"""Preset: loose sand — qa = 75 kPa, ks = 5 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const loose_sand = Soil(
     75.0u"kPa",         # qa
     16.0u"kN/m^3",      # γ
@@ -68,6 +89,7 @@ const loose_sand = Soil(
     ks = 5000.0u"kN/m^3"  # Bowles Table 9-1: loose sand
 )
 
+"""Preset: medium sand — qa = 150 kPa, ks = 25 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const medium_sand = Soil(
     150.0u"kPa",        # qa
     18.0u"kN/m^3",      # γ
@@ -77,6 +99,7 @@ const medium_sand = Soil(
     ks = 25000.0u"kN/m^3"  # Bowles Table 9-1: medium sand
 )
 
+"""Preset: dense sand — qa = 300 kPa, ks = 100 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const dense_sand = Soil(
     300.0u"kPa",        # qa
     20.0u"kN/m^3",      # γ
@@ -86,6 +109,7 @@ const dense_sand = Soil(
     ks = 100000.0u"kN/m^3"  # Bowles Table 9-1: dense sand
 )
 
+"""Preset: soft clay — qa = 50 kPa, ks = 12 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const soft_clay = Soil(
     50.0u"kPa",         # qa
     16.0u"kN/m^3",      # γ
@@ -95,6 +119,7 @@ const soft_clay = Soil(
     ks = 12000.0u"kN/m^3"  # Bowles Table 9-1: soft clay
 )
 
+"""Preset: stiff clay — qa = 150 kPa, ks = 50 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const stiff_clay = Soil(
     150.0u"kPa",        # qa
     19.0u"kN/m^3",      # γ
@@ -104,6 +129,7 @@ const stiff_clay = Soil(
     ks = 50000.0u"kN/m^3"  # Bowles Table 9-1: stiff clay
 )
 
+"""Preset: hard clay — qa = 300 kPa, ks = 150 000 kN/m³ (Bowles 1996 Table 9-1)."""
 const hard_clay = Soil(
     300.0u"kPa",        # qa
     21.0u"kN/m^3",      # γ
@@ -117,6 +143,7 @@ const hard_clay = Soil(
 # Result Types
 # =============================================================================
 
+"""Supertype for all foundation design result structs."""
 abstract type AbstractFoundationResult end
 
 """
@@ -258,19 +285,25 @@ concrete_volume(r::AbstractFoundationResult) = r.concrete_volume
 """Steel/rebar volume of foundation."""
 steel_volume(r::AbstractFoundationResult) = r.steel_volume
 
-"""Overall footprint area."""
+"""Overall footprint area (length²)."""
 footprint_area(r::SpreadFootingResult) = r.B * r.L_ftg
+"""Overall footprint area (length²)."""
 footprint_area(r::CombinedFootingResult) = r.B * r.L_ftg
+"""Overall footprint area (length²)."""
 footprint_area(r::StripFootingResult) = r.B * r.L_ftg
+"""Overall footprint area (length²)."""
 footprint_area(r::MatFootingResult) = r.B * r.L_ftg
+"""Overall footprint area of pile cap (length²)."""
 footprint_area(r::PileCapResult) = r.cap_B * r.cap_L
 
 """Footing length (plan dimension)."""
 footing_length(r::AbstractFoundationResult) = r.L_ftg
+"""Pile cap length (plan dimension)."""
 footing_length(r::PileCapResult) = r.cap_L
 
 """Footing width (plan dimension)."""
 footing_width(r::AbstractFoundationResult) = r.B
+"""Pile cap width (plan dimension)."""
 footing_width(r::PileCapResult) = r.cap_B
 
 """Utilization ratio (demand/capacity)."""
@@ -310,6 +343,12 @@ struct FoundationDemand{F, M, L}
     shape::Symbol   # :rectangular or :circular
 end
 
+"""
+    FoundationDemand(idx; Pu, Mux, Muy, Vux, Vuy, Ps, c1, c2, shape) → FoundationDemand
+
+Keyword constructor with SI defaults. Column dimensions default to
+18 in × 18 in rectangular.
+"""
 function FoundationDemand(idx::Int;
                           Pu=0.0u"kN", Mux=0.0u"kN*m", Muy=0.0u"kN*m",
                           Vux=0.0u"kN", Vuy=0.0u"kN", Ps=0.0u"kN",
@@ -322,6 +361,7 @@ end
 # Symbol ↔ Type Mapping
 # =============================================================================
 
+"""Symbol → foundation singleton lookup table (e.g. `:spread` → `SpreadFooting()`)."""
 const foundation_type_map = Dict{Symbol, AbstractFoundation}(
     :spread => SpreadFooting(),
     :combined => CombinedFooting(),
@@ -332,6 +372,7 @@ const foundation_type_map = Dict{Symbol, AbstractFoundation}(
     :micropile => Micropile(),
 )
 
+"""Concrete type → Symbol reverse lookup (e.g. `SpreadFooting` → `:spread`)."""
 const foundation_symbol_map = Dict{Type, Symbol}(
     typeof(v) => k for (k, v) in pairs(foundation_type_map)
 )

@@ -10,6 +10,7 @@
 # Mat Analysis Method Types
 # =============================================================================
 
+"""Supertype for mat analysis method dispatch (rigid, Shukla AFM, Winkler FEA)."""
 abstract type AbstractMatMethod end
 
 """Rigid mat: uniform/linear pressure, strip statics. No k_s required."""

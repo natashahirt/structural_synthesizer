@@ -1,0 +1,88 @@
+# IS Code Foundation Design
+
+> ```julia
+> using StructuralSizer
+> demand = FoundationDemand(1; Pu=200u"kN", c1=300u"mm", c2=300u"mm")
+> result = design_footing(SpreadFooting(), demand, stiff_clay,
+>             concrete, rebar; pier_width=300u"mm")
+> footprint_area(result)
+> ```
+
+## Overview
+
+The Indian Standard (IS 456) foundation module provides spread footing design
+using limit state principles adapted from IS 456 and SP-16.  The implementation
+follows ACI 318 structural provisions for flexure and shear while using IS-style
+checks for bearing and punching.
+
+**Source:** `StructuralSizer/src/foundations/codes/is/`
+
+## Key Types
+
+```@docs
+SpreadFooting
+SpreadFootingResult
+Soil
+```
+
+## Functions
+
+### Design
+
+```@docs
+design_footing
+check_spread_footing
+```
+
+## Implementation Details
+
+### IS Spread Footing Design
+
+The `design_footing(::SpreadFooting, demand, soil, concrete, rebar; ...)` workflow:
+
+1. **Bearing sizing**: ``B = \sqrt{P_s / (q_a \cdot \text{SF})}`` where SF is the
+   safety factor (default 1.0 for allowable stress input)
+2. **Punching shear**: Nominal shear stress capacity ``\tau_c \approx 0.25\sqrt{f'_c}``
+   at the critical section ``d/2`` from the column face
+3. **One-way (beam) shear**: ``\tau_{\text{beam}} \approx 0.17\sqrt{f'_c}`` at ``d``
+   from the column face
+4. **Flexure**: Cantilever moment at column face; standard reinforcement calculation
+5. **Minimum steel**: Per IS 456 provisions
+
+### Post-Design Check
+
+`check_spread_footing(result, demand, soil, concrete; SF, ϕ_shear)` re-evaluates
+bearing and punching checks on an existing result, useful for verification or
+when loads change.
+
+### Differences from ACI
+
+| Aspect | ACI 318 | IS 456 |
+|:-------|:--------|:-------|
+| Punching capacity | Three-equation minimum | ``0.25\sqrt{f'_c}`` simplified |
+| Beam shear | ``2\lambda\sqrt{f'_c}`` | ``0.17\sqrt{f'_c}`` |
+| Partial safety factors | ``\phi`` factors | Load factors on demand side |
+
+## Options & Configuration
+
+The IS footing design accepts keyword arguments rather than an options struct:
+
+| Parameter | Default | Description |
+|:----------|:--------|:------------|
+| `pier_width` | required | Column/pier width |
+| `rebar_dia` | 12 mm | Rebar diameter |
+| `cover` | 75 mm | Clear cover |
+| `SF` | 1.0 | Bearing safety factor |
+| `ϕ_flexure` | 0.87 | Flexure strength reduction |
+| `ϕ_shear` | 0.75 | Shear strength reduction |
+| `min_depth` | 300 mm | Minimum footing depth |
+
+## Limitations & Future Work
+
+- Only spread footings are implemented for IS code; strip and mat foundations
+  use the ACI module.
+- IS 456 provisions for combined footings and raft foundations are not
+  implemented.
+- Seismic detailing per IS 13920 is not included.
+- The implementation uses ACI-style Whitney stress block rather than the IS 456
+  parabolic-rectangular stress block—results are slightly conservative.

@@ -1,0 +1,105 @@
+# StructuralSizer — Overview
+
+> ```julia
+> using StructuralSizer
+> combo = strength_1_2D_1_6L
+> p_u   = factored_pressure(combo, 100.0psf, 50.0psf)  # → 200 psf
+> ```
+
+## Overview
+
+**StructuralSizer** is the component-level structural design and sizing library. It provides material definitions, load combinations, section catalogs, design code checks (AISC 360, ACI 318, fib MC2010, NDS), slab sizing, foundation design, and optimization solvers. StructuralSynthesizer depends on StructuralSizer for all structural calculations.
+
+## Architecture
+
+StructuralSizer is organized around an abstract type hierarchy that enables multiple dispatch across section types, material types, and design codes:
+
+```
+AbstractMaterial
+├── Metal{K, T_P, T_D}  (aliases: StructuralSteel, RebarSteel)
+├── Concrete{T_P, T_D}
+├── ReinforcedConcreteMaterial{C, R}
+├── FiberReinforcedConcrete{C}
+└── Timber{T_P, T_D}
+
+AbstractSection
+├── SteelSection  (ISymmSection, HSSRectSection, HSSRoundSection, ...)
+└── ConcreteSection  (RCColumnSection, RCBeamSection, ...)
+
+AbstractDesignCode
+├── AISC_360
+├── ACI_318
+├── fib_MC2010
+└── NDS
+```
+
+Design functions dispatch on `(section_type, material_type, code)` triples, so the same `check_capacity` call routes to the correct implementation for an AISC W-shape vs. an ACI RC column.
+
+## Module Organization
+
+The source tree mirrors the type hierarchy:
+
+```
+StructuralSizer/src/
+├── StructuralSizer.jl      # Module definition, exports, precompilation
+├── types.jl                 # AbstractMaterial, AbstractSection, AbstractDesignCode
+├── Constants.jl             # Physical constants
+├── loads/
+│   ├── combinations.jl      # ASCE 7-22 load combinations
+│   ├── gravity.jl           # GravityLoads presets (office, residential, ...)
+│   └── pattern_loading.jl   # ACI 318 §13.7.6 pattern loading
+├── materials/
+│   ├── types.jl             # Material type definitions + registry
+│   ├── steel.jl             # A992, S355, Rebar grades, Stud_51
+│   ├── concrete.jl          # NWC presets, RC presets, Earthen materials
+│   ├── frc.jl               # Fiber reinforced concrete (fib MC2010)
+│   ├── timber.jl            # Timber material (stub)
+│   └── fire_protection.jl   # SFRM, intumescent, custom coatings
+├── members/
+│   ├── sections/            # Section catalogs (steel W/HSS/Pipe, RC columns/beams)
+│   └── codes/               # AISC 360, ACI 318, NDS, fib MC2010 checkers
+├── slabs/                   # Flat plate, waffle, hollow core, steel deck, vaults
+├── foundations/             # Spread footings, pile foundations
+├── optimize/                # MIP solvers (Gurobi/HiGHS), objective functions
+│   └── solvers/             # Binary search, catalog search, MIP formulations
+└── visualization/           # Plotting utilities (optional)
+```
+
+## Dependency on Asap
+
+StructuralSizer depends on [Asap](https://github.com/keithjlee/Asap.jl) for:
+
+- **Units**: Re-exports Unitful quantities — `kip`, `ksi`, `psf`, `ksf`, `pcf`, and `GRAVITY`
+- **FEM**: `Asap.Model`, `Asap.solve!` for frame analysis in EFM and member sizing
+- **Type aliases**: `Pressure`, `Force`, `Length`, `Density`, etc.
+
+All unit quantities flow through Unitful.jl, so mixed-unit inputs are handled automatically:
+
+```julia
+GravityLoads(floor_LL = 2.4u"kPa", floor_SDL = 15.0psf)  # mixed units are fine
+```
+
+## Dispatch Model
+
+Functions dispatch on section type + material type + design code. For example:
+
+```julia
+# AISC 360 capacity check for a W-shape
+check_flexure(section::ISymmSection, mat::StructuralSteel, ::AISC_360)
+
+# ACI 318 capacity check for an RC column
+check_pm_interaction(section::RCColumnSection, mat::ReinforcedConcreteMaterial, ::ACI_318)
+```
+
+This pattern allows the same high-level API (`check_capacity`, `size_member!`) to work across steel, concrete, timber, and FRC sections without conditional branching.
+
+## Key Types
+
+- `LoadCombination` — named load combination with factors for dead, live, snow, wind, and seismic loads per ASCE 7-22. Predefined constants include `strength_1_2D_1_6L`, `strength_1_4D`, etc.
+- `GravityLoads` — gravity load specification for a floor or roof, carrying `floor_DL`, `floor_LL`, `floor_SDL`, `roof_DL`, `roof_LL`, and `roof_SDL` as `Pressure` values.
+
+## Limitations & Future Work
+
+- **Timber**: Material type and NDS reference values are defined, but the NDS checker is minimal. Full NDS 2018 implementation is planned.
+- **Composite sections**: AISC 360 composite beam/column checks are in development.
+- **Seismic detailing**: Current code checks cover gravity/wind strength. Seismic detailing (ACI 318 Chapter 18) is not yet implemented.

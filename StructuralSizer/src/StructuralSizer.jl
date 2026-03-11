@@ -136,6 +136,7 @@ export AggregateType, siliceous, carbonate, sand_lightweight, lightweight
 # --- Fire protection ---
 export FireProtection, NoFireProtection, SFRM, IntumescentCoating, CustomCoating
 export SurfaceCoating, coating_weight_per_foot
+export exposed_perimeter, coating_volume, coating_mass, coating_ec, ECC_SFRM
 
 # --- Fire resistance (ACI 216.1) ---
 export min_thickness_fire, min_cover_fire_slab, min_cover_fire_beam
@@ -207,6 +208,20 @@ export get_Fcr_torsion, check_combined_torsion_interaction, can_neglect_torsion
 export dg9_Wno, dg9_Sw1, dg9_torsional_parameter
 export torsion_case3_derivatives, torsion_case1_derivatives
 export torsional_stresses_ksi, check_torsion_yielding, design_w_torsion
+
+# --- AISC 360-16 Chapter I: Composite Members ---
+export AbstractSlabOnBeam, AbstractSteelAnchor
+export SolidSlabOnBeam, DeckSlabOnBeam
+export HeadedStudAnchor, stud_mass
+export CompositeContext
+export get_b_eff
+export get_Qn, validate_stud_diameter, validate_stud_length, check_stud_spacing
+export get_Cf, get_Mn_composite, get_ϕMn_composite
+export find_required_ΣQn, get_Mn_negative
+export check_construction
+export get_I_transformed, get_I_LB, check_composite_deflection
+export extract_parallel_Asr, beam_direction_from_vectors
+export composite_stud_contribution
 
 # --- ACI 318: material utilities ---
 export beta1, Ec, Ec_ksi, fr, fc_ksi, fy_ksi, Es_ksi, εcu, β1
@@ -285,7 +300,7 @@ export TendonDeviationResult, pf_tendon_deviation_force
 export get_rebar_fy, get_transverse_rebar, get_transverse_bar_diameter
 
 # --- Optimization: discrete (MIP) ---
-export optimize_discrete, expand_catalog_with_materials
+export optimize_discrete, optimize_binary_search, expand_catalog_with_materials
 export size_columns, size_beams, size_members
 export to_steel_demands, to_rc_demands
 export to_steel_geometry, to_concrete_geometry, convert_geometries

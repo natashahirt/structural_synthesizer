@@ -53,7 +53,16 @@ mutable struct HSSRoundSection <: AbstractRoundHollowSection
     is_preferred::Bool
 end
 
-# Constructor from basic dimensions (computes all properties)
+"""
+    HSSRoundSection(OD, t; name=nothing, material=nothing, is_preferred=false) -> HSSRoundSection
+
+Construct a round HSS section from outside diameter and wall thickness.
+All section properties (A, I, S, Z, J, r) are computed analytically.
+
+# Arguments
+- `OD::Length` — outside diameter (in)
+- `t::Length`  — design wall thickness (in)
+"""
 function HSSRoundSection(OD, t; name=nothing, material=nothing, is_preferred=false)
     props = compute_hss_round_properties(OD, t)
     HSSRoundSection(
@@ -65,7 +74,12 @@ function HSSRoundSection(OD, t; name=nothing, material=nothing, is_preferred=fal
     )
 end
 
-# Constructor from catalog (with database values for I, S, Z, J, r)
+"""
+    HSSRoundSection(name, OD, ID, t, A, I, S, Z, J, r, is_preferred; material=nothing) -> HSSRoundSection
+
+Construct a round HSS section from AISC database (catalog) values.
+Derived geometry (Dm, rm, D_t) is computed; section properties are taken as given.
+"""
 function HSSRoundSection(name, OD, ID, t, A, I, S, Z, J, r, is_preferred; material=nothing)
     # Compute derived geometry
     Dm = OD - t
@@ -81,6 +95,7 @@ function HSSRoundSection(name, OD, ID, t, A, I, S, Z, J, r, is_preferred; materi
     )
 end
 
+"""Return a shallow copy of the round HSS section."""
 function Base.copy(s::HSSRoundSection)
     HSSRoundSection(
         s.name, s.OD, s.t,
@@ -91,19 +106,28 @@ function Base.copy(s::HSSRoundSection)
     )
 end
 
-# --- Section interface ---
+"""Gross cross-sectional area (in²)."""
 section_area(s::HSSRoundSection) = s.A
+"""Outside diameter `OD` (in)."""
 section_depth(s::HSSRoundSection) = s.OD
+"""Outside diameter `OD` (in) — symmetric section, same as depth."""
 section_width(s::HSSRoundSection) = s.OD
 
-# Symmetric properties aliases
+"""Strong-axis moment of inertia (= `I`, symmetric) (in⁴)."""
 Ix(s::HSSRoundSection) = s.I
+"""Weak-axis moment of inertia (= `I`, symmetric) (in⁴)."""
 Iy(s::HSSRoundSection) = s.I
+"""Strong-axis elastic section modulus (= `S`, symmetric) (in³)."""
 Sx(s::HSSRoundSection) = s.S
+"""Weak-axis elastic section modulus (= `S`, symmetric) (in³)."""
 Sy(s::HSSRoundSection) = s.S
+"""Strong-axis plastic section modulus (= `Z`, symmetric) (in³)."""
 Zx(s::HSSRoundSection) = s.Z
+"""Weak-axis plastic section modulus (= `Z`, symmetric) (in³)."""
 Zy(s::HSSRoundSection) = s.Z
+"""Strong-axis radius of gyration (= `r`, symmetric) (in)."""
 rx(s::HSSRoundSection) = s.r
+"""Weak-axis radius of gyration (= `r`, symmetric) (in)."""
 ry(s::HSSRoundSection) = s.r
 
 # --- Geometry computation ---
@@ -143,5 +167,5 @@ end
 """Get the D/t slenderness ratio."""
 slenderness(s::HSSRoundSection) = s.D_t
 
-# Type alias for backward compatibility (PIPE → HSSRound)
+"""Type alias: `PipeSection = HSSRoundSection` for backward compatibility."""
 const PipeSection = HSSRoundSection

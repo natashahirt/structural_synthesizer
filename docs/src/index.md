@@ -1,30 +1,57 @@
 # Structural Synthesizer
 
-End-to-end building generation and structural design workflow.
+> ```julia
+> using StructuralSynthesizer
+> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> struc    = BuildingStructure(skeleton)
+> result   = design_building(struc, DesignParameters(loads = office_loads))
+> ```
 
-## Quick Start
+## Overview
 
-```julia
-using StructuralSynthesizer
+**Structural Synthesizer** is an end-to-end building generation and structural design platform. It produces fully sized structural systems — beams, columns, slabs, and foundations — from a parametric building skeleton, complete with embodied carbon accounting and fire protection sizing.
 
-# Generate a medium office building
-skel = gen_medium_office(54.0u"ft", 42.0u"ft", 10.0u"ft", 3, 3, 1)
-struc = BuildingStructure(skel)
+The platform consists of two Julia packages plus an HTTP API:
 
-# Design the building
-params = DesignParameters(name = "example", max_iterations = 3)
-design = design_building(struc, params)
-```
+| Package | Purpose | Key Entry Points |
+|:--------|:--------|:-----------------|
+| **StructuralSynthesizer** | Building-level workflows: geometry generation, tributary analysis, design pipelines, post-processing, and the HTTP API | `gen_medium_office`, `design_building`, `DesignParameters` |
+| **StructuralSizer** | Component-level structural design: materials, loads, sections, design code checks (AISC 360, ACI 318, NDS), slab design, foundation design, and optimization | `A992_Steel`, `LoadCombination`, `FlatPlateOptions` |
+| **Asap** | Units, type aliases, and finite element analysis (FEM) | `kip`, `ksi`, `psf`, `Model`, `solve!` |
 
-## Packages
+## How It Works
 
-| Package | Purpose |
-|---------|---------|
-| **StructuralSynthesizer** | Building generation, design workflow, visualization |
-| **StructuralSizer** | Materials, sections, code checks, optimization |
-| **Asap** | FEM analysis, units |
+1. **Generate** a building skeleton (`BuildingSkeleton`) with plan dimensions, bay counts, and story heights.
+2. **Wrap** the skeleton in a `BuildingStructure` that holds cells, members, slabs, and analysis caches.
+3. **Design** the structure with `design_building`, which runs a multi-stage pipeline: initialize cells, estimate column sizes, build the FEM model, size beams/columns/slabs/foundations, and compute embodied carbon.
+4. **Inspect** the returned `BuildingDesign` for member sizes, slab thicknesses, foundation dimensions, total weight, and embodied carbon breakdown.
 
-## Documentation
+## Documentation Sections
 
-- [User Guide](@ref) — Capabilities, types, workflows
-- [API Reference](@ref) — Function and type documentation
+- **[Getting Started](getting_started.md)** — installation, first design, running the API
+- **StructuralSizer**
+  - [Overview](sizer/overview.md) — architecture, module organization, dispatch model
+  - Materials — [Steel](sizer/materials/steel.md), [Concrete](sizer/materials/concrete.md), [FRC](sizer/materials/frc.md), [Timber](sizer/materials/timber.md), [Fire Protection](sizer/materials/fire_protection.md)
+  - Loads — [Combinations](sizer/loads/combinations.md), [Gravity Loads](sizer/loads/gravity.md), [Pattern Loading](sizer/loads/pattern_loading.md)
+  - Members — sections, design code checks, optimization
+  - Slabs — flat plate, waffle, hollow core, steel deck, vaults
+  - Foundations — spread footings, piles
+  - Optimization — solvers, objectives
+- **StructuralSynthesizer**
+  - Overview — building types, design workflow, tributary analysis
+  - Generate — DOE building generators
+  - Analyze — FEM integration, member/slab/foundation analysis
+  - Post-Processing — embodied carbon, reports
+- **[HTTP API](api/overview.md)** — endpoints, schema, deployment
+- **Reference** — design codes index, type hierarchy
+
+## Safety-Critical Software
+
+!!! warning "Structural Engineering Code"
+    This codebase is used for **structural engineering design**. Incorrect code can lead to
+    unsafe designs. Every calculation is treated as safety-critical:
+
+    - All design code implementations cite specific clause numbers (e.g., AISC 360-16 §F2, ACI 318-19 §22.2).
+    - Unit consistency is enforced via [Unitful.jl](https://github.com/PainterQubits/Unitful.jl) throughout.
+    - Embodied carbon coefficients are sourced from the ICE Database v4.1.
+    - Results should always be verified by a licensed professional engineer.

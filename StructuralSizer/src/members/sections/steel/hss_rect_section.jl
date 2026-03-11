@@ -61,7 +61,17 @@ mutable struct HSSRectSection <: AbstractRectHollowSection
     is_preferred::Bool
 end
 
-# Constructor from basic dimensions (computes all properties)
+"""
+    HSSRectSection(H, B, t; name=nothing, material=nothing, is_preferred=false) -> HSSRectSection
+
+Construct a rectangular HSS section from outside dimensions and wall thickness.
+All section properties (A, Ix, Iy, Sx, Sy, Zx, Zy, J, rx, ry) are computed analytically.
+
+# Arguments
+- `H::Length` — outside height (in)
+- `B::Length` — outside width (in)
+- `t::Length` — design wall thickness (in)
+"""
 function HSSRectSection(H, B, t; name=nothing, material=nothing, is_preferred=false)
     props = compute_hss_rect_properties(H, B, t)
     HSSRectSection(
@@ -73,7 +83,12 @@ function HSSRectSection(H, B, t; name=nothing, material=nothing, is_preferred=fa
     )
 end
 
-# Constructor from catalog (with database values)
+"""
+    HSSRectSection(name, H, B, t, A, Ix, Iy, Sx, Sy, Zx, Zy, J, rx, ry, is_preferred; material=nothing) -> HSSRectSection
+
+Construct a rectangular HSS section from AISC database (catalog) values.
+Derived geometry (h, b, λ_f, λ_w, H_t, B_t) is computed; section properties are taken as given.
+"""
 function HSSRectSection(name, H, B, t, A, Ix, Iy, Sx, Sy, Zx, Zy, J, rx, ry, is_preferred; material=nothing)
     # Compute derived geometry
     h = H - 3t

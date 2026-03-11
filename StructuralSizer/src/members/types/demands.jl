@@ -50,7 +50,18 @@ struct MemberDemand{T} <: AbstractDemand
     transverse_load::Bool  # Whether transverse loading between supports
 end
 
-# Flexible constructor with defaults
+"""
+    MemberDemand(idx; Pu_c=0.0, Pu_t=0.0, Mux=0.0, Muy=0.0,
+                 M1x=nothing, M2x=nothing, M1y=nothing, M2y=nothing,
+                 Vu_strong=0.0, Vu_weak=0.0, Tu=0.0,
+                 δ_max=0.0, I_ref=1.0, transverse_load=false) -> MemberDemand
+
+Keyword constructor with defaults for [`MemberDemand`](@ref).
+
+When `M1x`/`M2x` (or `M1y`/`M2y`) are `nothing`, defaults to `M1=0`, `M2=Mux`
+(conservative single-curvature assumption, Cm = 0.6 per AISC 360-16 Appendix 8).
+The type parameter `T` is inferred via `promote_type` over all numeric arguments.
+"""
 function MemberDemand(idx::Int; 
     Pu_c=0.0, Pu_t=0.0, Mux=0.0, Muy=0.0,
     M1x=nothing, M2x=nothing, M1y=nothing, M2y=nothing,
@@ -135,6 +146,17 @@ struct RCColumnDemand{T} <: AbstractDemand
     βdns::Float64   # Sustained load ratio (for slenderness) - always Float64
 end
 
+"""
+    RCColumnDemand(idx; Pu=0.0, Mux=nothing, Muy=nothing,
+                   M1x=0.0, M2x=nothing, M1y=0.0, M2y=nothing,
+                   βdns=0.6) -> RCColumnDemand
+
+Keyword constructor with defaults for [`RCColumnDemand`](@ref).
+
+When `Mux`/`Muy` are `nothing`, they are computed as `max(|M1|, |M2|)`.
+When `M2x`/`M2y` are `nothing`, they default to `Mux`/`Muy`.
+`βdns` defaults to 0.6 (60 % sustained load, typical for gravity per ACI 318-11 §10.10.6.2).
+"""
 function RCColumnDemand(idx::Int;
     Pu = 0.0,
     Mux = nothing,  # If nothing, computed from M1x/M2x
@@ -221,6 +243,14 @@ struct RCBeamDemand{T} <: AbstractDemand
     Tu::T           # Factored torsion (0 = no torsion)
 end
 
+"""
+    RCBeamDemand(idx; Mu=0.0, Vu=0.0, Nu=0.0, Tu=0.0) -> RCBeamDemand
+
+Keyword constructor with defaults for [`RCBeamDemand`](@ref).
+
+The type parameter `T` is inferred via `promote_type`. Mixed `Unitful` dimensions
+fall back to `Any` (the checker handles unit conversions internally).
+"""
 function RCBeamDemand(idx::Int; Mu=0.0, Vu=0.0, Nu=0.0, Tu=0.0)
     all_vals = (Mu, Vu, Nu, Tu)
     T = promote_type(typeof.(all_vals)...)

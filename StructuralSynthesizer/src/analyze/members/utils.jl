@@ -442,6 +442,166 @@ function is_exterior_support(col::Column, span_direction::Symbol)::Bool
 end
 
 """
+    group_collinear_members!(struc::BuildingStructure; 
+                             member_type::Symbol=:beams, tol::Real=1e-3)
+
+Detect collinear beams (sharing a node with the same direction vector) and assign
+them the same `group_id` so the optimizer sizes them with the same section.
+
+This enforces the constructability constraint that you don't splice a different
+section mid-span along a continuous line.
+
+Two edges are collinear if they share a vertex and `|sin(θ)| < tol` where θ is
+the angle between their direction vectors (cross product test).
+
+# Arguments
+- `member_type`: `:beams`, `:columns`, or `:struts`
+- `tol`: Cross-product tolerance for collinearity (default 1e-3 ≈ 0.06°)
+
+# Effects
+- Sets `member.base.group_id` for all members in detected collinear chains
+- Members not part of any chain keep their existing `group_id`
+"""
+function group_collinear_members!(struc::BuildingStructure{T};
+                                   member_type::Symbol=:beams,
+                                   tol::Real=1e-3) where T
+    skel = struc.skeleton
+    vc = skel.geometry.vertex_coords
+    
+    members = if member_type == :beams
+        struc.beams
+    elseif member_type == :columns
+        struc.columns
+    elseif member_type == :struts
+        struc.struts
+    else
+        throw(ArgumentError("Unknown member_type: $member_type"))
+    end
+    
+    isempty(members) && return struc
+    
+    # Build a mapping: vertex_idx → list of (member_idx, other_vertex_idx, direction_2d)
+    # Only considers the first segment of each member for endpoint detection
+    vertex_members = Dict{Int, Vector{@NamedTuple{m_idx::Int, other_v::Int, dir::NTuple{2,Float64}}}}()
+    
+    for (m_idx, m) in enumerate(members)
+        seg_indices_list = segment_indices(m)
+        isempty(seg_indices_list) && continue
+        
+        # Collect all edge endpoints for this member
+        first_edge = struc.segments[seg_indices_list[1]].edge_idx
+        last_edge = struc.segments[seg_indices_list[end]].edge_idx
+        
+        v1_first, v2_first = skel.edge_indices[first_edge]
+        v1_last, v2_last = skel.edge_indices[last_edge]
+        
+        # Member endpoints are the outermost vertices of the segment chain
+        # For single-segment members: the two endpoints of that edge
+        # For multi-segment (chain): first vertex of first edge, last vertex of last edge
+        # We need the overall direction
+        all_verts = Set{Int}()
+        for si in seg_indices_list
+            e = struc.segments[si].edge_idx
+            a, b = skel.edge_indices[e]
+            push!(all_verts, a, b)
+        end
+        
+        # Find the two endpoints: vertices that appear in only one edge
+        vert_count = Dict{Int,Int}()
+        for si in seg_indices_list
+            e = struc.segments[si].edge_idx
+            a, b = skel.edge_indices[e]
+            vert_count[a] = get(vert_count, a, 0) + 1
+            vert_count[b] = get(vert_count, b, 0) + 1
+        end
+        endpoints = [v for (v, c) in vert_count if c == 1]
+        length(endpoints) == 2 || continue
+        
+        ep1, ep2 = endpoints
+        dx = vc[ep2, 1] - vc[ep1, 1]
+        dy = vc[ep2, 2] - vc[ep1, 2]
+        L = hypot(dx, dy)
+        L < 1e-9 && continue
+        dir = (dx / L, dy / L)
+        
+        # Register at both endpoints
+        entry1 = (m_idx=m_idx, other_v=ep2, dir=dir)
+        entry2 = (m_idx=m_idx, other_v=ep1, dir=(-dir[1], -dir[2]))
+        push!(get!(Vector{@NamedTuple{m_idx::Int, other_v::Int, dir::NTuple{2,Float64}}}, vertex_members, ep1), entry1)
+        push!(get!(Vector{@NamedTuple{m_idx::Int, other_v::Int, dir::NTuple{2,Float64}}}, vertex_members, ep2), entry2)
+    end
+    
+    # Find collinear pairs: two members sharing a vertex with parallel directions
+    visited = Set{Int}()
+    chains = Vector{Vector{Int}}()
+    
+    for (m_idx, _) in enumerate(members)
+        m_idx in visited && continue
+        
+        chain = Int[m_idx]
+        push!(visited, m_idx)
+        _grow_collinear_chain!(chain, visited, m_idx, members, vertex_members, 
+                               struc.segments, skel, vc, tol)
+        
+        if length(chain) > 1
+            push!(chains, chain)
+        end
+    end
+    
+    # Assign group IDs to collinear chains
+    n_grouped = 0
+    for chain in chains
+        gid = UInt64(hash((:collinear_group, member_type, sort(chain))))
+        for m_idx in chain
+            set_group_id!(members[m_idx], gid)
+        end
+        n_grouped += length(chain)
+    end
+    
+    @info "Collinear grouping" member_type=member_type chains=length(chains) grouped_members=n_grouped total_members=length(members)
+    return struc
+end
+
+"""Recursively grow a collinear chain from a seed member by following shared vertices."""
+function _grow_collinear_chain!(chain, visited, seed_idx, members, vertex_members, 
+                                 segments, skel, vc, tol)
+    m = members[seed_idx]
+    seg_list = segment_indices(m)
+    isempty(seg_list) && return
+    
+    # Get endpoints of this member
+    vert_count = Dict{Int,Int}()
+    for si in seg_list
+        e = segments[si].edge_idx
+        a, b = skel.edge_indices[e]
+        vert_count[a] = get(vert_count, a, 0) + 1
+        vert_count[b] = get(vert_count, b, 0) + 1
+    end
+    endpoints = [v for (v, c) in vert_count if c == 1]
+    
+    for ep in endpoints
+        haskey(vertex_members, ep) || continue
+        for entry in vertex_members[ep]
+            entry.m_idx in visited && continue
+            
+            # Check if the seed member also has an entry at this vertex
+            seed_entries = [e for e in vertex_members[ep] if e.m_idx == seed_idx]
+            isempty(seed_entries) && continue
+            seed_dir = seed_entries[1].dir
+            
+            # Cross product test for collinearity
+            cross = abs(seed_dir[1] * entry.dir[2] - seed_dir[2] * entry.dir[1])
+            if cross < tol
+                push!(chain, entry.m_idx)
+                push!(visited, entry.m_idx)
+                _grow_collinear_chain!(chain, visited, entry.m_idx, members, 
+                                       vertex_members, segments, skel, vc, tol)
+            end
+        end
+    end
+end
+
+"""
     classify_beam_role(skel, edge_idx) -> Symbol
 
 Classify beam role based on position in framing:

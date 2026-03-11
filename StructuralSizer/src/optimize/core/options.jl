@@ -208,26 +208,38 @@ Base.@kwdef struct ConcreteColumnOptions
     size_increment::Length = 0.5u"inch"
 end
 
-# Import ksi for use in helper functions
 using Asap: ksi
 
-# Helper to get rebar yield strength from options
+"""
+    get_rebar_fy(opts::ConcreteColumnOptions) -> Unitful.Pressure
+
+Return longitudinal rebar yield strength in ksi.
+"""
 function get_rebar_fy(opts::ConcreteColumnOptions)
     uconvert(ksi, opts.rebar_grade.Fy)
 end
 
-# Helper to get effective transverse rebar grade
+"""
+    get_transverse_rebar(opts::ConcreteColumnOptions) -> RebarSteel
+
+Return the transverse rebar grade, defaulting to the longitudinal rebar grade.
+"""
 function get_transverse_rebar(opts::ConcreteColumnOptions)
     isnothing(opts.transverse_rebar_grade) ? opts.rebar_grade : opts.transverse_rebar_grade
 end
 
-# Helper to get transverse bar diameter in inches
+"""Transverse bar diameters in inches, keyed by ASTM bar size symbol."""
 const TRANSVERSE_BAR_DIAMETERS = Dict(
     :no3 => 0.375,  # 3/8"
     :no4 => 0.500,  # 1/2"
     :no5 => 0.625,  # 5/8"
 )
 
+"""
+    get_transverse_bar_diameter(opts::ConcreteColumnOptions) -> Float64
+
+Return transverse bar diameter [inches] for the selected bar size.
+"""
 function get_transverse_bar_diameter(opts::ConcreteColumnOptions)
     get(TRANSVERSE_BAR_DIAMETERS, opts.transverse_bar_size, 0.5)
 end
@@ -329,15 +341,29 @@ Base.@kwdef struct ConcreteBeamOptions
     optimizer::Symbol = :auto
 end
 
-# Helpers for ConcreteBeamOptions (same API as column helpers)
+"""
+    get_rebar_fy(opts::ConcreteBeamOptions) -> Unitful.Pressure
+
+Return longitudinal rebar yield strength in ksi.
+"""
 function get_rebar_fy(opts::ConcreteBeamOptions)
     uconvert(ksi, opts.rebar_grade.Fy)
 end
 
+"""
+    get_transverse_rebar(opts::ConcreteBeamOptions) -> RebarSteel
+
+Return the transverse rebar grade, defaulting to the longitudinal rebar grade.
+"""
 function get_transverse_rebar(opts::ConcreteBeamOptions)
     isnothing(opts.transverse_rebar_grade) ? opts.rebar_grade : opts.transverse_rebar_grade
 end
 
+"""
+    get_transverse_bar_diameter(opts::ConcreteBeamOptions) -> Float64
+
+Return transverse bar diameter [inches] for the selected bar size.
+"""
 function get_transverse_bar_diameter(opts::ConcreteBeamOptions)
     get(TRANSVERSE_BAR_DIAMETERS, opts.transverse_bar_size, 0.5)
 end
@@ -499,6 +525,7 @@ end
 """Pixel length in mm (bare Float64) from PixelFrameBeamOptions."""
 _pf_pixel_mm(opts::PixelFrameBeamOptions) = _to_mm(opts.pixel_length)
 
+"""Compact display for `PixelFrameBeamOptions`."""
 function Base.show(io::IO, opts::PixelFrameBeamOptions)
     n_fc = length(opts.fc_values)
     λs = join(string.(opts.λ_values), ",")
@@ -640,6 +667,7 @@ end
 """Pixel length in mm (bare Float64) from PixelFrameColumnOptions."""
 _pf_pixel_mm(opts::PixelFrameColumnOptions) = _to_mm(opts.pixel_length)
 
+"""Compact display for `PixelFrameColumnOptions`."""
 function Base.show(io::IO, opts::PixelFrameColumnOptions)
     n_fc = length(opts.fc_values)
     λs = join(string.(opts.λ_values), ",")
@@ -670,6 +698,7 @@ const MemberOptions = Union{SteelMemberOptions, ConcreteColumnOptions, ConcreteB
 # Display
 # ==============================================================================
 
+"""Compact display for `SteelMemberOptions`."""
 function Base.show(io::IO, opts::SteelMemberOptions)
     mat_str = material_name(opts.material)
     sec_type = uppercase(string(opts.section_type))
@@ -680,6 +709,7 @@ function Base.show(io::IO, opts::SteelMemberOptions)
     print(io, ")")
 end
 
+"""Compact display for `ConcreteColumnOptions`."""
 function Base.show(io::IO, opts::ConcreteColumnOptions)
     mat_str = material_name(opts.grade)
     shape_str = opts.section_shape == :circular ? "CIRCULAR" : "RECT"
@@ -692,6 +722,7 @@ function Base.show(io::IO, opts::ConcreteColumnOptions)
     print(io, ")")
 end
 
+"""Compact display for `ConcreteBeamOptions`."""
 function Base.show(io::IO, opts::ConcreteBeamOptions)
     mat_str = material_name(opts.grade)
     print(io, "ConcreteBeamOptions(", mat_str)
@@ -792,6 +823,7 @@ Base.@kwdef struct NLPColumnOptions
     snap::Bool = true   # Round final dimensions to dim_increment
 end
 
+"""Compact display for `NLPColumnOptions`."""
 function Base.show(io::IO, opts::NLPColumnOptions)
     mat_str = material_name(opts.grade)
     min_in = round(Int, ustrip(u"inch", opts.min_dim))
@@ -889,6 +921,7 @@ Base.@kwdef struct NLPHSSOptions
     snap::Bool = true   # Round final dimensions to outer_increment / thickness_increment
 end
 
+"""Compact display for `NLPHSSOptions`."""
 function Base.show(io::IO, opts::NLPHSSOptions)
     mat_str = material_name(opts.material)
     min_in = round(ustrip(u"inch", opts.min_outer), digits=1)
@@ -1062,6 +1095,7 @@ Base.@kwdef struct NLPBeamOptions
     snap::Bool = true
 end
 
+"""Compact display for `NLPBeamOptions`."""
 function Base.show(io::IO, opts::NLPBeamOptions)
     mat_str = material_name(opts.grade)
     bmin = round(Int, ustrip(u"inch", opts.min_width))
@@ -1074,6 +1108,7 @@ function Base.show(io::IO, opts::NLPBeamOptions)
           ", solver=:", opts.solver, ")")
 end
 
+"""Compact display for `NLPWOptions`."""
 function Base.show(io::IO, opts::NLPWOptions)
     mat_str = material_name(opts.material)
     d_min = round(Int, ustrip(u"inch", opts.min_depth))

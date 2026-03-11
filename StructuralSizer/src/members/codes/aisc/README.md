@@ -1,6 +1,6 @@
 # AISC Steel Member Design
 
-AISC 360-16 capacity checks for steel members. Covers compression, flexure, shear, tension, torsion, combined interaction, and second-order effects (B1/B2).
+AISC 360-16 capacity checks for steel members. Covers compression, flexure, shear, tension, torsion, combined interaction, second-order effects (B1/B2), and **composite beam design (Chapter I)**.
 
 ---
 
@@ -16,7 +16,9 @@ AISC 360-16 capacity checks for steel members. Covers compression, flexure, shea
 | **Built-up Sections** | E6 | Modified slenderness for built-up columns not implemented. |
 | **Single-Angle Members** | Chapter E, F | Special provisions for single angles not implemented. |
 | **Asymmetric I-Shapes** | — | Only doubly symmetric W/S shapes supported; no channels, WT, or singly symmetric I. |
-| **Composite Members** | Chapter I | No composite beams, columns, or deck design. |
+| **Composite Columns** | I2 | Composite beams (I3) are implemented; composite columns are not. |
+| **Formed Metal Deck (full)** | I3.2c | `DeckSlabOnBeam` type exists as a stub; Rg/Rp factors are implemented but deck-specific Ac and rib geometry are not fully wired. |
+| **Elastic Stress Distribution** | I3.2a(b) | When h/tw > 3.76√(E/Fy), the elastic method is required. A `NotImplementedError` is raised — only plastic stress distribution (I3.2a(a)) is implemented. |
 | **Seismic Provisions** | AISC 341 | No seismic compactness, expected strengths, or special detailing. |
 | **Fire Design** | Appendix 4 | No elevated temperature capacity reduction. |
 | **Fatigue** | Appendix 3 | No fatigue/cyclic loading checks. |
@@ -263,6 +265,67 @@ ratio = check_combined_torsion_interaction(Pr, Mr, Vr, Tr, Pc, Mc, Vc, Tc)
 can_neglect_torsion(Tr, Tc)
 ```
 
+### Chapter I — Composite Members (Beams)
+
+Composite slab-on-beam design with full and partial composite action.
+
+```julia
+using StructuralSizer
+
+section = W("W21X55")
+material = A992_Steel
+
+# Define slab (solid slab, 7.5 in. thick, 4 ksi concrete)
+slab = SolidSlabOnBeam(
+    7.5u"inch", 4.0u"ksi", 3644.0u"ksi", 145.0u"lb/ft^3", 29000.0u"ksi",
+    10.0u"ft", 10.0u"ft"  # beam spacing left/right
+)
+
+# Headed stud anchor (¾ in. × 5 in., Fu = 65 ksi)
+anchor = HeadedStudAnchor(0.75u"inch", 5.0u"inch", 65.0u"ksi", 50.0u"ksi", 7850.0u"kg/m^3")
+
+# Effective width (I3.1a)
+b_eff = get_b_eff(slab, 45.0u"ft")
+
+# Stud strength (I8.2a)
+Qn = get_Qn(anchor, slab)
+
+# Composite moment capacity (I3.2a, plastic stress distribution)
+ΣQn = 40 * Qn   # 40 studs per half-span
+result = get_ϕMn_composite(section, material, slab, b_eff, ΣQn)
+# result.ϕMn, result.Mn, result.y_pna, result.Cf, result.a
+
+# Partial composite: find minimum ΣQn for a target moment
+req = find_required_ΣQn(section, material, slab, b_eff, 500.0u"kip*ft", Qn)
+# req.ΣQn, req.n_studs_half, req.sufficient
+
+# Negative moment (I3.2b) with slab rebar
+Mn_neg = get_Mn_negative(section, material, 2.0u"inch^2", 60.0u"ksi")
+
+# Deflection check (shored vs unshored)
+defl = check_composite_deflection(section, material, slab, b_eff, ΣQn,
+    45.0u"ft", 0.5u"kip/ft", 0.8u"kip/ft"; shored=false)
+# defl.δ_DL, defl.δ_LL, defl.ok_LL
+
+# Construction-stage check (bare steel, I3.1b)
+const_check = check_construction(section, material, 200.0u"kip*ft", 50.0u"kip";
+    Lb_const=45.0u"ft")
+# const_check.flexure_ok, const_check.shear_ok
+```
+
+**Key types:**
+- `SolidSlabOnBeam` / `DeckSlabOnBeam` (stub): Slab-on-beam configurations
+- `HeadedStudAnchor`: Stud properties, including `n_per_row` for multi-row layouts
+- `CompositeContext`: Bundles slab + anchor + geometry for the checker pipeline
+
+**Equations:**
+- Effective width: I3.1a (L/8, spacing/2, edge distance)
+- Qn: I8.2a (Eq. I8-1), with Rg/Rp per User Note table
+- Cf: I3.2d (min of concrete, steel, studs — Eqs. I3-1a/b/c)
+- Mn: Plastic stress distribution (I3.2a(a)), continuous PNA solver
+- Negative Mn: I3.2b with Asr × Fysr
+- I_transformed / I_LB: Commentary I3.2, AISC Manual approach
+
 ### Appendix 8 — Second-Order Analysis (B1/B2)
 
 Moment amplification for P-δ and P-Δ effects.
@@ -347,6 +410,14 @@ aisc/
 │   ├── shear.jl          # G5 (with Lv buckling)
 │   ├── slenderness.jl    # Table B4.1a
 │   └── torsion.jl        # H3.1(a)
+├── composite/
+│   ├── _composite.jl     # Module aggregation
+│   ├── types.jl          # SolidSlabOnBeam, DeckSlabOnBeam, HeadedStudAnchor, CompositeContext
+│   ├── effective_width.jl # I3.1a — b_eff
+│   ├── stud_strength.jl  # I8.2a — Qn, Rg/Rp, validations
+│   ├── flexure.jl        # I3.2 — Cf, PNA solver, Mn, partial composite, negative moment
+│   ├── construction.jl   # I3.1b — construction-stage bare steel check
+│   └── deflection.jl     # Commentary I3.2 — I_transformed, I_LB, deflection
 └── reference/            # AISC 360-16 extracts
 ```
 
@@ -363,6 +434,19 @@ aisc/
 | `get_Vn`, `get_ϕVn` | G | Shear capacity |
 | `get_ϕPn_tension` | D | Tension capacity |
 | `get_Tn`, `get_ϕTn` | H3 | Torsional capacity (HSS) |
+| `get_Mn_composite`, `get_ϕMn_composite` | I3.2a | Composite positive flexural strength |
+| `get_Mn_negative` | I3.2b | Composite negative flexural strength |
+| `get_Cf` | I3.2d | Horizontal shear (compression force) |
+| `get_Qn` | I8.2a | Stud nominal shear strength |
+| `get_b_eff` | I3.1a | Effective slab width |
+| `get_I_transformed`, `get_I_LB` | Commentary I3.2 | Composite / lower-bound moment of inertia |
+| `check_composite_deflection` | I3 | Shored / unshored deflection |
+| `check_construction` | I3.1b | Construction-stage bare steel check |
+| `find_required_ΣQn` | I3.2d | Partial composite solver (binary search) |
+| `validate_stud_diameter` | I8.1 | Stud d_sa ≤ 2.5tf check |
+| `validate_stud_length` | I8.2 | Stud l_sa ≥ 4d_sa and cover check |
+| `check_stud_spacing` | I8.2d | Min/max longitudinal spacing |
+| `stud_mass` | — | Single stud mass (for ECC/weight objectives) |
 
 ### Interaction Functions
 

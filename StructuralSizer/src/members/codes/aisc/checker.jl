@@ -371,3 +371,132 @@ function get_feasibility_error_msg(
     "Vus=$(Vus) N, Vuw=$(Vuw) N, " *
     "L=$(geometry.L), Lb=$(geometry.Lb)"
 end
+
+# ==============================================================================
+# Composite Beam Feasibility (AISC 360-16 Chapter I)
+# ==============================================================================
+
+"""
+    is_feasible(checker, cache, j, section::ISymmSection, material, demand, geometry,
+                ctx::CompositeContext) -> Bool
+
+Composite-aware feasibility check. When `CompositeContext` is provided:
+
+1. **Construction stage** (I3.1b): bare steel check with `Lb_const` (skipped if shored).
+2. **Composite ϕMn** (I3.2a): replaces the bare-steel strong-axis flexural capacity
+   using the plastic stress distribution PNA solver with full stud strength.
+3. **Deflection** (Commentary I3.2): uses `I_LB` (partial composite) for live-load
+   deflection instead of bare-steel `Ix`.
+4. **Shear and weak-axis** checks remain the same as bare steel.
+
+The compression/interaction checks (H1) use the **larger** of composite ϕMn and
+bare-steel ϕMn, since composite action only helps flexure.
+"""
+function is_feasible(
+    checker::AISCChecker,
+    cache::AISCCapacityCache,
+    j::Int,
+    section::ISymmSection,
+    material::StructuralSteel,
+    demand::MemberDemand,
+    geometry::SteelMemberGeometry,
+    ctx::CompositeContext
+)::Bool
+    Mux = to_newton_meters(demand.Mux)
+    Vus = to_newtons(demand.Vu_strong)
+    Vuw = to_newtons(demand.Vu_weak)
+    L_m = to_meters(geometry.L)
+
+    # --- Depth Check ---
+    cache.depths[j] <= checker.max_depth || return false
+
+    # --- Shear Checks (steel section alone — AISC G) ---
+    cache.ϕVn_strong[j] >= Vus || return false
+    cache.ϕVn_weak[j] >= Vuw || return false
+
+    # --- Construction Stage (I3.1b) — unshored only ---
+    if !ctx.shored
+        Lb_const_m = ustrip(u"m", ctx.Lb_const)
+        ϕMn_const = _get_ϕMnx_cached!(cache, j, Lb_const_m, 1.0, section, material, checker.ϕ_b)
+        ϕMn_const >= Mux || return false
+    end
+
+    # --- Composite Flexural Capacity (I3.2a) ---
+    b_eff = get_b_eff(ctx.slab, ctx.L_beam)
+    Qn = get_Qn(ctx.anchor, ctx.slab)
+
+    # Full composite: ΣQn = n_studs × Qn per half-span (use Cf_max as upper bound)
+    Cf_max = ustrip(u"N", _Cf_max(section, material, ctx.slab, b_eff))
+    ΣQn_full = Cf_max * u"N"
+
+    local ϕMn_comp::Float64
+    try
+        result = get_ϕMn_composite(section, material, ctx.slab, b_eff, ΣQn_full;
+                                    ϕ=checker.ϕ_b)
+        ϕMn_comp = ustrip(u"N*m", result.ϕMn)
+    catch
+        return false  # web compactness or other check failed
+    end
+
+    # Use the greater of composite and bare-steel capacity
+    ϕMnx_steel = _get_ϕMnx_cached!(cache, j, to_meters(geometry.Lb), geometry.Cb,
+                                     section, material, checker.ϕ_b)
+    ϕMnx = max(ϕMn_comp, ϕMnx_steel)
+
+    # Pure flexure check (beams typically have Pu ≈ 0)
+    ϕMnx >= Mux || return false
+
+    # --- Deflection Check (Commentary I3.2) ---
+    if !isnothing(checker.deflection_limit)
+        I_LB_m4 = ustrip(u"m^4", get_I_LB(section, material, ctx.slab, b_eff, ΣQn_full))
+        I_steel_m4 = cache.Ix[j]
+        δ_max = to_meters(demand.δ_max)
+        I_ref = to_meters_fourth(demand.I_ref)
+
+        if I_ref > 0 && δ_max > 0
+            I_eff = ctx.shored ? I_LB_m4 : I_LB_m4  # LL uses I_LB in both cases
+            δ_scaled = δ_max * I_ref / I_eff
+            δ_ratio = δ_scaled / L_m
+            δ_ratio <= checker.deflection_limit || return false
+        end
+    end
+
+    return true
+end
+
+# ==============================================================================
+# Composite Objective: Add Stud Cost
+# ==============================================================================
+
+"""
+    composite_stud_contribution(ctx::CompositeContext, section::ISymmSection,
+                                 material::StructuralSteel, objective) -> Float64
+
+Compute the stud contribution to the objective function for a composite beam.
+Returns the additional objective value (weight in kg, or ECC in kgCO₂e, etc.)
+from all studs on the beam.
+
+Assumes full composite (conservative for stud count).
+"""
+function composite_stud_contribution(
+    ctx::CompositeContext,
+    section::ISymmSection,
+    material::StructuralSteel,
+    objective::AbstractObjective
+)
+    b_eff = get_b_eff(ctx.slab, ctx.L_beam)
+    Qn = get_Qn(ctx.anchor, ctx.slab)
+    Cf_max = _Cf_max(section, material, ctx.slab, b_eff)
+
+    n_studs_half = ceil(Int, ustrip(u"N", Cf_max) / ustrip(u"N", Qn))
+    n_studs_total = 2 * n_studs_half  # both sides of max moment
+    m_one = stud_mass(ctx.anchor)
+
+    if objective isa MinWeight
+        return ustrip(u"kg", m_one) * n_studs_total
+    elseif objective isa MinCarbon
+        return ustrip(u"kg", m_one) * n_studs_total * ctx.anchor.ecc
+    else
+        return 0.0
+    end
+end

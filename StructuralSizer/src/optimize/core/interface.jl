@@ -89,7 +89,7 @@ Useful for debugging undersized catalogs or extreme demands.
 """
 function get_feasibility_error_msg end
 
-# Default implementation
+"""Default error message when no section is feasible."""
 function get_feasibility_error_msg(::AbstractCapacityChecker, demand, geometry)
     "No feasible section found for demand=$demand"
 end
@@ -204,12 +204,16 @@ function evaluate end
 # Default Implementations
 # ==============================================================================
 
-# Default: no constraints
+"""Default: no constraints for an NLP problem."""
 n_constraints(::AbstractNLPProblem) = 0
+
+"""Default: empty constraint bounds for an unconstrained NLP problem."""
 constraint_bounds(::AbstractNLPProblem) = (Float64[], Float64[])
+
+"""Default: empty constraint vector for an unconstrained NLP problem."""
 constraint_fns(::AbstractNLPProblem, ::Vector{Float64}) = Float64[]
 
-# Default evaluate using gradient-based interface
+"""Default `evaluate` implementation using the gradient-based interface."""
 function evaluate(p::AbstractNLPProblem, x::Vector{Float64})
     obj = objective_fn(p, x)
     
@@ -225,12 +229,12 @@ function evaluate(p::AbstractNLPProblem, x::Vector{Float64})
     return (feasible, feasible ? obj : Inf, (constraints=g,))
 end
 
-# Default variable names
+"""Default variable names (`x1`, `x2`, …) for an NLP problem."""
 function variable_names(p::AbstractNLPProblem)
     ["x$i" for i in 1:n_variables(p)]
 end
 
-# Default constraint names
+"""Default constraint names (`g1`, `g2`, …) for an NLP problem."""
 function constraint_names(p::AbstractNLPProblem)
     ["g$i" for i in 1:n_constraints(p)]
 end

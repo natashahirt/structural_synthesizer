@@ -4,6 +4,20 @@
 # Abstract Hierarchy
 # =============================================================================
 
+"""
+    AbstractFloorSystem
+
+Top-level abstract type for all floor / slab systems.
+
+Every concrete subtype must implement at least `spanning_behavior` and
+`required_materials`.  The spanning trait drives tributary area computation,
+load distribution, and design-code dispatch.
+
+# Subtypes
+- `AbstractConcreteSlab` — cast-in-place and precast concrete
+- `AbstractSteelFloor`   — metal deck systems
+- `AbstractTimberFloor`  — mass-timber and joist systems
+"""
 abstract type AbstractFloorSystem end
 
 # =============================================================================
@@ -35,42 +49,85 @@ struct TwoWaySpanning <: SpanningBehavior end
 """Beamless: loads transfer directly to columns (flat plate, flat slab)."""
 struct BeamlessSpanning <: SpanningBehavior end
 
-# --- Concrete floors ---
+"""
+    AbstractConcreteSlab <: AbstractFloorSystem
+
+Abstract type for all concrete floor systems (cast-in-place and precast).
+"""
 abstract type AbstractConcreteSlab <: AbstractFloorSystem end
 
-# CIP concrete subtypes (used for min_thickness dispatch)
+"""One-way reinforced concrete slab (ACI 318 Table 7.3.1.1)."""
 struct OneWay <: AbstractConcreteSlab end
-struct TwoWay <: AbstractConcreteSlab end
-struct FlatPlate <: AbstractConcreteSlab end
-struct FlatSlab <: AbstractConcreteSlab end      # with drop panels
-struct PTBanded <: AbstractConcreteSlab end
-struct Waffle <: AbstractConcreteSlab end
-struct Grade <: AbstractConcreteSlab end         # slab on grade (ground floor)
 
-# Precast concrete
+"""Two-way reinforced concrete slab (ACI 318 §8.3)."""
+struct TwoWay <: AbstractConcreteSlab end
+
+"""Flat plate — two-way beamless slab supported directly on columns (ACI 318 §8.2.4)."""
+struct FlatPlate <: AbstractConcreteSlab end
+
+"""Flat slab — flat plate with drop panels at columns (ACI 318 §8.2.4)."""
+struct FlatSlab <: AbstractConcreteSlab end
+
+"""Post-tensioned banded slab (two-way PT with banded tendons)."""
+struct PTBanded <: AbstractConcreteSlab end
+
+"""Waffle slab — two-way joist system with ribbed soffit (ACI 318 §9.8)."""
+struct Waffle <: AbstractConcreteSlab end
+
+"""Slab on grade (ground floor, not elevated)."""
+struct Grade <: AbstractConcreteSlab end
+
+"""Precast hollow-core plank (PCI standard profiles)."""
 struct HollowCore <: AbstractConcreteSlab end
 
-# Special concrete (has structural effects)
+"""Unreinforced concrete vault — parabolic shell transferring load by compression."""
 struct Vault <: AbstractConcreteSlab end
 
-# --- Steel floors ---
+"""
+    AbstractSteelFloor <: AbstractFloorSystem
+
+Abstract type for steel floor/roof deck systems.
+"""
 abstract type AbstractSteelFloor <: AbstractFloorSystem end
 
+"""Composite metal deck with concrete fill (one-way spanning)."""
 struct CompositeDeck <: AbstractSteelFloor end
+
+"""Non-composite metal deck without concrete fill (one-way spanning)."""
 struct NonCompositeDeck <: AbstractSteelFloor end
+
+"""Open-web steel joist with roof deck (one-way spanning)."""
 struct JoistRoofDeck <: AbstractSteelFloor end
 
-# --- Timber floors ---
+"""
+    AbstractTimberFloor <: AbstractFloorSystem
+
+Abstract type for mass-timber and timber-joist floor systems.
+"""
 abstract type AbstractTimberFloor <: AbstractFloorSystem end
 
+"""Cross-laminated timber panel (CLT, one-way spanning)."""
 struct CLT <: AbstractTimberFloor end
+
+"""Dowel-laminated timber panel (DLT, one-way spanning)."""
 struct DLT <: AbstractTimberFloor end
+
+"""Nail-laminated timber panel (NLT, one-way spanning)."""
 struct NLT <: AbstractTimberFloor end
+
+"""Mass-timber joist floor (glulam or LVL joists with sheathing)."""
 struct MassTimberJoist <: AbstractTimberFloor end
 
-# --- Custom/Shaped ---
+"""
+    ShapedSlab <: AbstractConcreteSlab
+
+User-defined slab geometry with a custom sizing function.
+
+# Fields
+- `sizing_fn::Function`: `(span_x, span_y, load, material) → ShapedSlabResult`
+"""
 struct ShapedSlab <: AbstractConcreteSlab
-    sizing_fn::Function  # (span_x, span_y, load, material) → ShapedSlabResult
+    sizing_fn::Function
 end
 
 # =============================================================================
@@ -126,11 +183,23 @@ requires_column_tributaries(ft::AbstractFloorSystem) = is_beamless(ft)
 # Support Conditions
 # =============================================================================
 
+"""
+    SupportCondition
+
+End-support condition for one-way/two-way slab span sizing.
+Controls minimum thickness coefficients per ACI 318 Table 7.3.1.1.
+
+# Values
+- `SIMPLE` — simply supported
+- `ONE_END_CONT` — one end continuous
+- `BOTH_ENDS_CONT` — both ends continuous
+- `CANTILEVER` — cantilever
+"""
 @enum SupportCondition begin
-    SIMPLE          # simply supported
-    ONE_END_CONT    # one end continuous
-    BOTH_ENDS_CONT  # both ends continuous
-    CANTILEVER      # cantilever
+    SIMPLE
+    ONE_END_CONT
+    BOTH_ENDS_CONT
+    CANTILEVER
 end
 
 # =============================================================================
@@ -534,6 +603,12 @@ RuleOfThumb() = RuleOfThumb(DDM(:simplified))
 # Result Types (parametric for unit flexibility)
 # =============================================================================
 
+"""
+    AbstractFloorResult
+
+Abstract type for floor sizing results. Every concrete subtype stores at least
+`self_weight` and provides `total_depth`, `volume_per_area`, and `materials`.
+"""
 abstract type AbstractFloorResult end
 
 """CIP concrete slab result."""
@@ -646,7 +721,7 @@ struct VaultResult{L, P, F} <: AbstractFloorResult
     convergence_check::NamedTuple{(:converged, :iterations), Tuple{Bool, Int}}
 end
 
-# Accessors
+"""Total horizontal thrust at supports (dead + live)."""
 total_thrust(r::VaultResult) = r.thrust_dead + r.thrust_live
 
 """Check if vault design passes all checks."""
@@ -1009,7 +1084,7 @@ function FlatPlatePanelResult(
     )
 end
 
-# Interface accessors
+"""Total depth of a flat plate panel (equal to slab thickness)."""
 total_depth(r::FlatPlatePanelResult) = r.thickness
 
 """Quick check: does deflection pass?"""
@@ -1180,13 +1255,21 @@ apply_effects!(::AbstractFloorSystem, struc, slab) = nothing
 # =============================================================================
 
 """
-Describes how a floor system transfers loads to its boundary.
+    LoadDistributionType
+
+How a floor system transfers gravity loads to its boundary.
+
+# Values
+- `DISTRIBUTION_ONE_WAY`  — to edges perpendicular to span axis
+- `DISTRIBUTION_TWO_WAY`  — to all surrounding edges
+- `DISTRIBUTION_POINT`    — to specific support points (columns)
+- `DISTRIBUTION_CUSTOM`   — user-defined distribution
 """
 @enum LoadDistributionType begin
-    DISTRIBUTION_ONE_WAY    # Distribute to edges perpendicular to span axis
-    DISTRIBUTION_TWO_WAY    # Distribute to all surrounding edges
-    DISTRIBUTION_POINT      # Distribute to specific support points (e.g. columns)
-    DISTRIBUTION_CUSTOM     # User defined
+    DISTRIBUTION_ONE_WAY
+    DISTRIBUTION_TWO_WAY
+    DISTRIBUTION_POINT
+    DISTRIBUTION_CUSTOM
 end
 
 """
@@ -1236,13 +1319,14 @@ default_tributary_axis(::OneWaySpanning, spans) = spans.axis     # Use span dire
 default_tributary_axis(::TwoWaySpanning, spans) = nothing        # Isotropic
 default_tributary_axis(::BeamlessSpanning, spans) = nothing      # Isotropic (for edge tribs)
 
-# Convenience: no options → use floor type default
+"""Resolve tributary axis (convenience: no options → floor type default)."""
 resolve_tributary_axis(ft::AbstractFloorSystem, spans) = default_tributary_axis(ft, spans)
 
 # =============================================================================
 # Material Requirements
 # =============================================================================
 
+"""Material symbols required by a floor type (used for EC and cost calculations)."""
 required_materials(::AbstractConcreteSlab) = (:concrete,)
 required_materials(::CompositeDeck) = (:steel, :concrete)
 required_materials(::NonCompositeDeck) = (:steel,)
@@ -1254,6 +1338,7 @@ required_materials(::ShapedSlab) = ()  # user-defined
 # Symbol ↔ Type Mapping
 # =============================================================================
 
+"""Registry mapping `Symbol` → singleton `AbstractFloorSystem` instance."""
 const floor_type_map = Dict{Symbol, AbstractFloorSystem}(
     :one_way => OneWay(),
     :two_way => TwoWay(),
@@ -1273,6 +1358,7 @@ const floor_type_map = Dict{Symbol, AbstractFloorSystem}(
     :grade => Grade(),
 )
 
+"""Reverse registry mapping concrete `Type` → `Symbol`."""
 const floor_symbol_map = Dict{Type, Symbol}(
     typeof(v) => k for (k, v) in pairs(floor_type_map)
 )

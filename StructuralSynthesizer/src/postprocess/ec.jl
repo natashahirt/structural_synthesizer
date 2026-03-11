@@ -60,6 +60,7 @@ struct BuildingECResult
     slab_ec::Float64
     member_ec::Float64
     foundation_ec::Float64
+    fireproofing_ec::Float64
     total_ec::Float64
     # Intensity metrics
     floor_area::typeof(1.0u"m^2")
@@ -104,11 +105,14 @@ function compute_building_ec(struc::BuildingStructure)
     
     fdn_results = [compute_element_ec(f, :foundation, i) for (i, f) in enumerate(struc.foundations) if !isempty(f.volumes)]
     
+    # Fireproofing EC (steel members with ISymmSection + SurfaceCoating)
+    fp_ec = _compute_fireproofing_ec(struc)
+    
     # Sum by system
     slab_ec = sum(r.ec for r in slab_results; init=0.0)
     member_ec = sum(r.ec for r in member_results; init=0.0)
     fdn_ec = sum(r.ec for r in fdn_results; init=0.0)
-    total_ec = slab_ec + member_ec + fdn_ec
+    total_ec = slab_ec + member_ec + fdn_ec + fp_ec
     
     # Floor area (sum of cell areas)
     floor_area = sum(c.area for c in struc.cells; init=0.0u"m^2")
@@ -116,9 +120,61 @@ function compute_building_ec(struc::BuildingStructure)
     
     BuildingECResult(
         slab_results, member_results, fdn_results,
-        slab_ec, member_ec, fdn_ec, total_ec,
+        slab_ec, member_ec, fdn_ec, fp_ec, total_ec,
         floor_area, ec_intensity
     )
+end
+
+"""
+    _compute_fireproofing_ec(struc) -> Float64
+
+Compute total embodied carbon (kgCO₂e) for fire protection coatings on steel members.
+
+Iterates over beams, columns, and struts. For each member with an `ISymmSection`,
+computes the coating volume from the section's exposed perimeter (PA for beams,
+PB for columns) and the design parameters' fire protection specification.
+"""
+function _compute_fireproofing_ec(struc::BuildingStructure)
+    params = struc.design_parameters
+    isnothing(params) && return 0.0
+    
+    fp = params.fire_protection
+    (fp isa StructuralSizer.NoFireProtection) && return 0.0
+    
+    fire_rating = params.fire_rating
+    fire_rating <= 0 && return 0.0
+    
+    total_ec = 0.0
+    
+    for (members, exposure) in ((struc.beams, :three_sided),
+                                 (struc.columns, :four_sided),
+                                 (struc.struts, :four_sided))
+        for m in members
+            sec = section(m)
+            isnothing(sec) && continue
+            sec isa StructuralSizer.ISymmSection || continue
+            
+            # Extract steel material from member volumes
+            vols = volumes(m)
+            isempty(vols) && continue
+            mat = first(keys(vols))
+            mat isa StructuralSizer.StructuralSteel || continue
+            
+            W_plf = ustrip(u"lb/ft", StructuralSizer.weight_per_length(sec, mat))
+            P_in = ustrip(u"inch", exposure === :four_sided ? sec.PB : sec.PA)
+            coating = StructuralSizer.compute_surface_coating(fp, fire_rating, W_plf, P_in)
+            coating.thickness_in ≤ 0 && continue
+            
+            L_raw = sum(struc.segments[i].L for i in segment_indices(m))
+            L = L_raw isa Unitful.Quantity ? L_raw : L_raw * u"m"
+            
+            total_ec += StructuralSizer.coating_ec(sec, coating, L;
+                                                    exposure=exposure,
+                                                    ecc=StructuralSizer.ECC_SFRM)
+        end
+    end
+    
+    return total_ec
 end
 
 """Compute EC for a member (uses volumes accessor)."""
@@ -149,11 +205,16 @@ function ec_summary(struc::BuildingStructure; du::DisplayUnits=imperial)
     
     # System breakdown
     println("System Breakdown:")
-    Printf.@printf("  Slabs:       %10.1f kgCO₂e  (%4.1f%%)\n", ec.slab_ec, 100*ec.slab_ec/ec.total_ec)
-    Printf.@printf("  Members:     %10.1f kgCO₂e  (%4.1f%%)\n", ec.member_ec, 100*ec.member_ec/ec.total_ec)
-    Printf.@printf("  Foundations: %10.1f kgCO₂e  (%4.1f%%)\n", ec.foundation_ec, 100*ec.foundation_ec/ec.total_ec)
+    total = ec.total_ec
+    pct(v) = total > 0 ? 100*v/total : 0.0
+    Printf.@printf("  Slabs:        %10.1f kgCO₂e  (%4.1f%%)\n", ec.slab_ec, pct(ec.slab_ec))
+    Printf.@printf("  Members:      %10.1f kgCO₂e  (%4.1f%%)\n", ec.member_ec, pct(ec.member_ec))
+    Printf.@printf("  Foundations:  %10.1f kgCO₂e  (%4.1f%%)\n", ec.foundation_ec, pct(ec.foundation_ec))
+    if ec.fireproofing_ec > 0
+        Printf.@printf("  Fireproofing: %10.1f kgCO₂e  (%4.1f%%)\n", ec.fireproofing_ec, pct(ec.fireproofing_ec))
+    end
     println("─" ^ 50)
-    Printf.@printf("  TOTAL:       %10.1f kgCO₂e\n", ec.total_ec)
+    Printf.@printf("  TOTAL:        %10.1f kgCO₂e\n", ec.total_ec)
     println()
     
     # Intensity

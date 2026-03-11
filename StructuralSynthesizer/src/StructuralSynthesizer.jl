@@ -136,6 +136,7 @@ export slab_conflict_coloring, compute_slab_parallel_batches!
 
 # --- Member sizing ---
 export build_member_groups!, member_group_demands
+export group_collinear_members!
 export size_steel_members!
 export size_beams!, size_columns!, size_members!
 export estimate_column_sizes!

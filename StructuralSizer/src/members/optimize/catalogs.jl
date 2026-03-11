@@ -101,7 +101,11 @@ function rc_column_catalog(section_shape::Symbol, catalog::Symbol)
     end
 end
 
-# Legacy single-argument version (defaults to rectangular standard)
+"""
+    rc_column_catalog(catalog) -> Vector{<:AbstractSection}
+
+Legacy single-argument form — delegates to `rc_column_catalog(:rect, catalog)`.
+"""
 function rc_column_catalog(catalog::Symbol)
     rc_column_catalog(:rect, catalog)
 end

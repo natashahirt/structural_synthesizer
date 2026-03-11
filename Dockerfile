@@ -35,8 +35,17 @@ COPY StructuralVisualization/src ./StructuralVisualization/src
 COPY external/Asap/src ./external/Asap/src
 COPY scripts/api ./scripts/api
 
-# Precompile only Oxygen + HTTP so the bootstrap binds quickly (no StructuralSynthesizer).
+# Precompile Oxygen + HTTP so the bootstrap binds quickly.
 RUN julia --project=StructuralSynthesizer -e 'using Oxygen; using HTTP'
+
+# Precompile StructuralSynthesizer + register routes so runtime startup is fast.
+# This layer is cached until source or Project.toml files change.
+# Timeout after 30 min: if it hangs (e.g. InteractiveUtils), the build fails.
+RUN timeout 1800 julia --project=StructuralSynthesizer -e '\
+  using StructuralSynthesizer; \
+  Base.invokelatest(register_routes!); \
+  @info "Build-time warmup complete"' \
+  || { echo "ERROR: build-time warmup timed out or failed"; exit 1; }
 
 # Expose port (AWS App Runner sets PORT env var)
 EXPOSE 8080

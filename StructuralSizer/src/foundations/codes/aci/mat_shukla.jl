@@ -32,19 +32,23 @@ using SpecialFunctions: besselk
 # Two curves: fine-grained and coarse-grained soils.
 # Data loaded from StructuralSizer/src/foundations/data/k_dataset.csv.
 
+"""Shukla (1984) chart x-axis data for fine-grained soils (q_u / 2000)."""
 const _SHUKLA_FINE_X = [1.0101301484811500, 1.28307800146931, 1.6827639196867300,
     2.164845756188960, 2.5516314054822800, 2.957363061016790,
     3.3437038734506500, 3.7680580175104000, 4.002507262298730]
 
+"""Shukla (1984) chart y-axis data for fine-grained soils (k_v1 / 2000)."""
 const _SHUKLA_FINE_Y = [25.936684887004700, 44.33506999440580, 75.4989249775897,
     114.6428836212420, 148.97451623991500, 186.49077637511900,
     229.5523323605340, 276.6022551880780, 300.53582621706700]
 
+"""Shukla (1984) chart x-axis data for coarse-grained soils (q_u / 2000)."""
 const _SHUKLA_COARSE_X = [0.9713080225653610, 1.1996306506076100, 1.3835302522764200,
     1.6561950272631100, 1.9668326941611800, 2.328100883607760,
     2.644703408393940, 3.031044220827800, 3.3600617379641300,
     3.663763993826200, 3.859835949558200]
 
+"""Shukla (1984) chart y-axis data for coarse-grained soils (k_v1 / 2000)."""
 const _SHUKLA_COARSE_Y = [37.82090598440370, 56.98933065532550, 72.9596479048858,
     96.91343879112210, 125.64922591646500, 160.76100802728300,
     197.43645909859900, 240.49801508401300, 283.5292412835570,
@@ -110,23 +114,28 @@ end
 #
 # All accept dimensionless real arguments.
 
+"""Rotation factor exp(iπ/4) for Kelvin-Bessel function evaluation."""
 const _KELVIN_ROT = exp(im * π / 4)
 
+"""Kelvin function Z₃(x) = -(2/π) kei(x) — Shukla (1984) Eq. 1."""
 function _Z3(x::Real)
     x = Float64(x)
     return -(2 / π) * imag(besselk(0, x * _KELVIN_ROT))
 end
 
+"""Derivative Z₃′(x) via d/dx K₀(z) = -K₁(z)·dz/dx — Shukla (1984)."""
 function _Z3_prime(x::Real)
     x = Float64(x)
     return -(2 / π) * imag(-_KELVIN_ROT * besselk(1, x * _KELVIN_ROT))
 end
 
+"""Kelvin function Z₄(x) = -(2/π) ker(x) — Shukla (1984) Eq. 2."""
 function _Z4(x::Real)
     x = Float64(x)
     return -(2 / π) * real(besselk(0, x * _KELVIN_ROT))
 end
 
+"""Derivative Z₄′(x) via d/dx K₀(z) = -K₁(z)·dz/dx — Shukla (1984)."""
 function _Z4_prime(x::Real)
     x = Float64(x)
     return -(2 / π) * real(-_KELVIN_ROT * besselk(1, x * _KELVIN_ROT))
