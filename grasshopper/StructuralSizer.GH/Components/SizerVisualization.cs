@@ -555,8 +555,8 @@ namespace StructuralSizer.GH.Components
                     sectionPts.Add(sectionPts[0]);
                 }
                 
-                // Create closed section curve
-                var sectionCurve = new PolylineCurve(sectionPts);
+                // Create closed section curve (use Curve so we can assign NurbsCurve when closing)
+                Curve sectionCurve = new PolylineCurve(sectionPts);
                 if (!sectionCurve.IsClosed)
                 {
                     sectionCurve = sectionCurve.ToNurbsCurve();

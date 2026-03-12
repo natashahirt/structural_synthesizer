@@ -73,6 +73,7 @@ namespace StructuralSizer.GH.Components
                 "SizerParams from the DesignParams component",
                 GH_ParamAccess.item);
 
+            // Default Server URL: for AWS deployment, ask the user for the AWS server URL and set it here.
             pManager.AddTextParameter("Server URL", "URL",
                 "Julia API server URL",
                 GH_ParamAccess.item, "http://localhost:8080");
@@ -128,6 +129,9 @@ namespace StructuralSizer.GH.Components
             if (!DA.GetData(1, ref paramsGoo) || paramsGoo?.Value == null) return;
             DA.GetData(2, ref url);
             DA.GetData(3, ref run);
+
+            if (string.IsNullOrWhiteSpace(url))
+                url = "http://localhost:8080";
 
             // ── 2. If async work just finished, harvest the result ──
             if (_state == RunState.Done)

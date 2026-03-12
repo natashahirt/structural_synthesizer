@@ -51,7 +51,7 @@ The GitHub Actions workflow triggers on pushes to `main` and `workflow_dispatch`
 |:-------|:------------|
 | `APP_RUNNER_SERVICE_ARN` | ARN of the App Runner service |
 | `ECR_REPOSITORY` | ECR repository name |
-| `APP_URL` | Public URL of the deployed service |
+| `APP_URL` | Public URL of the deployed service (e.g. `https://xxx.us-east-1.awsapprunner.com`). Use this as the **Server URL** in the Grasshopper SizerRun component. |
 
 ## Bootstrap vs Service Mode
 
