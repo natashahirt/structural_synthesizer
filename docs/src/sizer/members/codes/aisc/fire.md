@@ -36,7 +36,9 @@ The coating calculation functions (`sfrm_thickness_x772`, `intumescent_thickness
 
 `sfrm_thickness_x772(fire_rating, W_D)` — SFRM thickness per UL X772 assembly:
 
-`h = R / (1.05 × W/D + 0.61)`
+```math
+h = \frac{R}{1.05\,(W/D) + 0.61}
+```
 
 where `R` is the fire rating in hours and `W/D` is in lb/ft per inch. The result is clamped to a minimum of 0.25 inches per UL listing requirements.
 

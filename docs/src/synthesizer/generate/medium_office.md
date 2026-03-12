@@ -1,9 +1,10 @@
 # Medium Office Generator
 
 > ```julia
-> skel = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
-> skel = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5;
->     irregular = :trapezoid, offset = 3ft)
+> using Unitful
+> skel = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
+> skel = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5;
+>     irregular = :trapezoid, offset = 3.0u"ft")
 > length(skel.vertices)  # grid points
 > length(skel.stories)   # 5 stories + roof
 > ```
@@ -31,7 +32,7 @@ gen_medium_office(x, y, floor_height, x_bays, y_bays, n_stories;
 
 | Argument | Description |
 |:---------|:------------|
-| `x` | Bay width in X direction (e.g., `30ft`) |
+| `x` | Bay width in X direction (e.g., `30.0u"ft"`) |
 | `y` | Bay width in Y direction |
 | `floor_height` | Story height |
 | `x_bays` | Number of bays in X |
@@ -67,8 +68,8 @@ The generator is designed for parametric studies:
 
 ```julia
 designs = []
-for x_bay in [25ft, 30ft, 35ft], n_story in [3, 5, 8]
-    skel = gen_medium_office(x_bay, x_bay, 13ft, 3, 3, n_story)
+for x_bay in [25.0u"ft", 30.0u"ft", 35.0u"ft"], n_story in [3, 5, 8]
+    skel = gen_medium_office(x_bay, x_bay, 13.0u"ft", 3, 3, n_story)
     struc = BuildingStructure(skel)
     push!(designs, design_building(struc, params))
 end

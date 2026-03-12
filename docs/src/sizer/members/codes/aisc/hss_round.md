@@ -81,7 +81,17 @@ V_n = \frac{F_{cr}\,A_g}{2} \leq \frac{0.6\,F_y\,A_g}{2} \qquad\text{(G5-1)}
 
 `get_ϕTn(s::HSSRoundSection, mat; L=nothing, ϕ=0.90)` — design torsional strength.
 
-`get_Tn(s::HSSRoundSection, mat; L=nothing)` — nominal torsional strength per H3-1: `Tn = Fcr × C` where `C = J / rm` for round sections.
+`get_Tn(s::HSSRoundSection, mat; L=nothing)` — nominal torsional strength per H3-1, where:
+
+```math
+T_n = F_{cr}\,C
+```
+
+and for round sections:
+
+```math
+C = J/r_m
+```
 
 ```@docs
 torsional_constant_round_hss
@@ -93,25 +103,27 @@ torsional_constant_round_hss
 
 `get_Fcr_torsion(s::HSSRoundSection, mat; L=nothing)` — torsional critical stress per H3-2a/H3-2b:
 
-- `Fcr = max(1.23 E / (√(L/D) × (D/t)^(5/4)), 0.60 E / (D/t)^(3/2))`
-- Capped at `0.6 Fy`
+- ```math
+  F_{cr} = \max\!\left(\frac{1.23\,E}{\sqrt{L/D}\,(D/t)^{5/4}},\;\; \frac{0.60\,E}{(D/t)^{3/2}}\right)
+  ```
+- Capped at ``0.6\,F_y``
 
 ### Slenderness (Table B4.1)
 
 `get_slenderness` dispatches on `HSSRoundSection` for round-specific slenderness classification. See [AISC — HSS Rect](hss_rect.md) for the generic `@docs` entry.
 
 `get_slenderness(s::HSSRoundSection, mat)` — classifies the D/t ratio for flexure per Table B4.1b:
-- Compact: `D/t ≤ 0.07 E/Fy`
-- Noncompact: `0.07 E/Fy < D/t ≤ 0.31 E/Fy`
-- Slender: `D/t > 0.31 E/Fy`
+- Compact: ``D/t \le 0.07\,E/F_y``
+- Noncompact: ``0.07\,E/F_y < D/t \le 0.31\,E/F_y``
+- Slender: ``D/t > 0.31\,E/F_y``
 
-Compression slenderness limit per Table B4.1a: `D/t ≤ 0.11 E/Fy`.
+Compression slenderness limit per Table B4.1a: ``D/t \le 0.11\,E/F_y``.
 
 ## Implementation Details
 
 ### Axial Symmetry
 
-Since round HSS have identical properties about all axes (`Ix = Iy = I`, `rx = ry = r`), the `axis` keyword argument in compression is effectively ignored — the same buckling load governs regardless of axis. The functions still accept the argument for interface compatibility.
+Since round HSS have identical properties about all axes (``I_x = I_y = I``, ``r_x = r_y = r``), the `axis` keyword argument in compression is effectively ignored — the same buckling load governs regardless of axis. The functions still accept the argument for interface compatibility.
 
 ### Shear Length Parameter
 
