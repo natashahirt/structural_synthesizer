@@ -27,14 +27,14 @@ curl http://localhost:8080/health
 
 ### GET /status
 
-Server state endpoint. In bootstrap mode it reports `"warming"` until full routes are loaded; after load it reports full-service states (`"idle"`, `"running"`, `"queued"`).
+Server state endpoint. Once the full API is loaded it returns one of: `"idle"`, `"running"`, `"queued"`.
 
 ```bash
 curl http://localhost:8080/status
 ```
 
 ```json
-{"status":"warming","message":"Full API not ready yet"}
+{"status":"idle"}
 ```
 
 ### GET /schema
@@ -61,7 +61,7 @@ curl -X POST http://localhost:8080/validate \
 
 ### POST /design
 
-Run the full design pipeline. Returns an `APIOutput` with sized elements, summary, and optional visualization.
+Run the full design pipeline. Returns an `APIOutput` with sized elements, summary, and visualization data.
 
 ```bash
 curl -X POST http://localhost:8080/design \
@@ -85,7 +85,9 @@ curl -X POST http://localhost:8080/design \
   "slabs": [...],
   "columns": [...],
   "beams": [...],
-  "foundations": [...]
+  "foundations": [...],
+  "geometry_hash": "…",
+  "visualization": {...}
 }
 ```
 
@@ -108,6 +110,12 @@ julia --project=StructuralSynthesizer scripts/api/sizer_bootstrap.jl
 
 Bootstrap mode starts a lightweight HTTP server immediately with `/health`, `/status`, and `/debug` endpoints. It then loads `StructuralSynthesizer` in a background task. Once loaded, it registers the full route set (`/design`, `/validate`, `/schema`). This provides fast cold starts for container deployments while the heavy package precompilation happens in the background.
 
+In bootstrap mode (before the full API is loaded), `GET /status` returns:
+
+```json
+{"status":"warming","message":"Full API not ready yet"}
+```
+
 ### Full Service Mode (Development)
 
 ```bash
@@ -123,9 +131,8 @@ APIInput
 APIOutput
 APIParams
 APIError
+StructuralSynthesizer.APISummary
 ```
-
-**`APISummary`** — A summary of the design results including pass/fail status, total material quantities (concrete volume, steel weight, rebar weight), embodied carbon, and the governing demand-to-capacity ratio with its associated element.
 
 ## Functions
 
@@ -141,17 +148,16 @@ register_routes!
 |:---------|:------------|:--------|
 | `PORT` / `SIZER_PORT` | HTTP listen port | `8080` |
 | `SIZER_HOST` | Bind address | `0.0.0.0` |
-| `SS_ENABLE_VISUALIZATION` | Include visualization data in output | `false` |
-| `SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD` | Run precompilation workload on startup | `false` |
+| `SS_ENABLE_VISUALIZATION` | Toggle heavy visualization dependencies (e.g., GLMakie) in interactive tooling; does not currently control JSON `visualization` output | `false` |
+| `SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD` | Run precompilation workload on startup | `false` (API scripts set this) |
 
 ### Request Queuing
 
-If the server is already processing a design request, incoming requests are queued and processed FIFO:
+If the server is already processing a design request, it keeps a **single-slot queue** (the most recent queued request wins):
 
 1. `POST /design` → `try_start!(server_status)`
 2. If busy → `enqueue!(server_status, input)` and return `{"status": "queued"}`
-3. Client polls `GET /status` until `"idle"`
-4. Client retries `POST /design`
+3. The client should poll `GET /status` until `"idle"`, then retry `POST /design`
 
 ### Geometry Caching
 

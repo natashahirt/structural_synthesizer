@@ -45,15 +45,15 @@ compute_geometry_hash
 | `floor_type` | `"flat_slab"` | `FlatSlabOptions(...)` |
 | `floor_type` | `"one_way"` | `OneWayOptions(...)` |
 | `floor_type` | `"vault"` | `VaultOptions(...)` |
-| `column_type` | `"rc_rect"` | `ConcreteColumnOptions(section_shape=:rect)` |
-| `column_type` | `"rc_circular"` | `ConcreteColumnOptions(section_shape=:circular)` |
-| `column_type` | `"steel_w"` | `SteelColumnOptions(...)` |
-| `column_type` | `"steel_hss"` | `SteelColumnOptions(section_type=:hss)` |
-| `column_type` | `"steel_pipe"` | `SteelColumnOptions(section_type=:pipe)` |
-| `beam_type` | `"steel_w"` | `SteelBeamOptions(section_type=:w)` |
-| `beam_type` | `"steel_hss"` | `SteelBeamOptions(section_type=:hss)` |
-| `beam_type` | `"rc_rect"` | `ConcreteBeamOptions(include_flange=false)` |
-| `beam_type` | `"rc_tbeam"` | `ConcreteBeamOptions(include_flange=true)` |
+| `column_type` | `"rc_rect"` | `ConcreteColumnOptions(grade=concrete, rebar_grade=rebar, section_shape=:rect)` |
+| `column_type` | `"rc_circular"` | `ConcreteColumnOptions(grade=concrete, rebar_grade=rebar, section_shape=:circular)` |
+| `column_type` | `"steel_w"` | `SteelColumnOptions(material=steel, section_type=:w)` |
+| `column_type` | `"steel_hss"` | `SteelColumnOptions(material=steel, section_type=:hss)` |
+| `column_type` | `"steel_pipe"` | `SteelColumnOptions(material=steel, section_type=:pipe)` |
+| `beam_type` | `"steel_w"` | `SteelBeamOptions(material=steel, section_type=:w)` |
+| `beam_type` | `"steel_hss"` | `SteelBeamOptions(material=steel, section_type=:hss)` |
+| `beam_type` | `"rc_rect"` | `ConcreteBeamOptions(grade=concrete, rebar_grade=rebar, include_flange=false)` |
+| `beam_type` | `"rc_tbeam"` | `ConcreteBeamOptions(grade=concrete, rebar_grade=rebar, include_flange=true)` |
 | `materials.concrete` | `"NWC_4000"` | `NWC_4000` |
 | `materials.concrete` | `"NWC_5000"` | `NWC_5000` |
 | `materials.steel` | `"A992"` | `A992_Steel` |
@@ -67,6 +67,10 @@ compute_geometry_hash
 | `floor_options.method` | `"EFM_HARDY_CROSS"` | `EFM(solver=:hardy_cross)` |
 | `floor_options.method` | `"FEA"` | `FEA()` |
 | `foundation_soil` | `"medium_sand"` | `FoundationParameters(soil=medium_sand)` when `size_foundations=true` |
+
+Notes:
+- Unknown `floor_type` strings fall back to `FlatPlateOptions(...)` with the resolved analysis settings.
+- `unit_system` controls `DesignParameters.display_units` (`DisplayUnits(:imperial)` or `DisplayUnits(:metric)`), but the current JSON output is still imperial.
 
 ### design_to_json
 
@@ -96,7 +100,7 @@ The hash is used to detect when two requests share the same geometry, enabling s
 
 - Unit conversion assumes all input is in consistent units; mixing units within a single input is not supported.
 - Custom material definitions beyond the preset names require extending the `json_to_params` mapping.
-- Serialization of visualization data is the most expensive part; it can be disabled via `SS_ENABLE_VISUALIZATION=false`.
+- Serialization of visualization data is the most expensive part; making it optional would require an API option (the current server always returns `visualization`).
 
 ## References
 

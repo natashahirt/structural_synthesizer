@@ -2,7 +2,8 @@
 
 > ```julia
 > using StructuralSynthesizer
-> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > struc    = BuildingStructure(skeleton)
 > result   = design_building(struc, DesignParameters(loads = office_loads))
 > ```
@@ -13,7 +14,7 @@ This guide walks through installation, running your first structural design, lau
 
 ## Prerequisites
 
-- **Julia 1.10+** (tested on 1.10 and 1.11)
+- **Julia 1.12.4** (project target; see `Dockerfile`)
 - Git (to clone the repository)
 - Optional: [Gurobi](https://www.gurobi.com/) license for mixed-integer optimization (falls back to [HiGHS](https://highs.dev/) automatically)
 
@@ -40,11 +41,12 @@ This resolves all dependencies for both `StructuralSizer` and `StructuralSynthes
 
 ```julia
 using StructuralSynthesizer
+using Unitful
 
 # 1. Generate a 3×3 bay, 5-story medium office skeleton
 skeleton = gen_medium_office(
-    30ft, 30ft,    # bay width x, y
-    13ft,          # floor-to-floor height
+    30.0u"ft", 30.0u"ft",    # bay width x, y
+    13.0u"ft",               # floor-to-floor height
     3, 3,          # bays in x, y
     5              # number of stories
 )
@@ -141,7 +143,7 @@ The optimization framework checks for a Gurobi license at startup. If Gurobi is 
 
 ### Display Units
 
-`DesignParameters` accepts a `display_units` field (`:imperial` or `:metric`) that controls how results are formatted in reports and API responses. Internal calculations always use SI units via Unitful.jl.
+`DesignParameters` accepts a `display_units` field (use `imperial` or `metric`) that controls how results are formatted in reports and API responses.
 
 ## Limitations & Future Work
 

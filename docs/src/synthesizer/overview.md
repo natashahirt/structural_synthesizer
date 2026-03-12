@@ -2,7 +2,8 @@
 
 > ```julia
 > using StructuralSynthesizer
-> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > struc    = BuildingStructure(skeleton)
 > design   = design_building(struc, DesignParameters(loads = office_loads))
 > ```
@@ -15,7 +16,7 @@ The package also depends on:
 
 | Dependency | Role |
 |:-----------|:-----|
-| **Asap** | Finite element analysis — frame models, shell elements, units (`kip`, `ksi`, `ft`) |
+| **Asap** | Finite element analysis — frame models, shell elements, units + type aliases (re-exported via `StructuralSizer`) |
 | **Meshes.jl** | Geometry primitives — `Point`, `Segment`, `Ngon` for vertices, edges, faces |
 | **Graphs.jl** | Connectivity graph of the structural skeleton |
 | **Unitful.jl** | Compile-time unit checking throughout |

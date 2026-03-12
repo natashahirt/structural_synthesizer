@@ -1,7 +1,8 @@
 # BuildingStructure
 
 > ```julia
-> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > struc = BuildingStructure(skeleton)
 > length(struc.columns)  # number of columns
 > length(struc.beams)     # number of beams
