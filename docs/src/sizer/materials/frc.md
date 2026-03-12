@@ -43,7 +43,11 @@ fc′_dosage2fR3
 - **Regression source**: `fc′_dosage2fR1` and `fc′_dosage2fR3` are linear regressions from the Wongsittikan (2024) dataset for Dramix-type hooked-end steel fibers. Valid for dosages 20–40 kg/m³ and fc′ ∈ [28, 100] MPa.
 - **Dosage levels**: Coefficients are tabulated for 0, 20, 25, 30, 35, 40 kg/m³. Non-standard dosages are linearly interpolated between bracketing levels. Dosages below 20 kg/m³ are linearly scaled from the 20 kg/m³ regression; dosages above 40 kg/m³ extrapolate from the 40 kg/m³ regression.
 - **fib MC2010 reference**: fR1 (CMOD = 0.5 mm) characterizes serviceability crack control; fR3 (CMOD = 2.5 mm) characterizes ultimate limit state behavior. These values feed into the fib MC2010 linear shear model (Eq. 7.7-5) used in the PixelFrame checker.
-- **Embodied carbon**: Fiber ECC defaults to 1.4 kgCO₂e/kg (steel fiber + tendon, from the original PixelFrame study). Total FRC embodied carbon is computed as `concrete_ecc × concrete_mass + fiber_ecc × fiber_dosage × volume`.
+- **Embodied carbon**: Fiber ECC defaults to 1.4 kgCO₂e/kg (steel fiber + tendon, from the original PixelFrame study). Total FRC embodied carbon is computed as:
+
+```math
+EC = (ecc_c)\,m_c + (ecc_f)\,d_f\,V
+```
 
 ## Limitations & Future Work
 

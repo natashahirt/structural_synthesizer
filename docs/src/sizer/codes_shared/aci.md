@@ -2,8 +2,14 @@
 
 > ```julia
 > using StructuralSizer
-> β = beta1(4000.0u"psi")           # Whitney stress block factor
-> Mcr = cracking_moment(fr(4000.0u"psi"), Ig, h)
+> using Unitful
+> fc = 4000.0u"psi"
+> h  = 24.0u"inch"
+> Ig = 1.0e4u"inch^4"
+> Icr = 2.0e3u"inch^4"
+> Ma = 200.0kip * u"ft"
+> β = beta1(fc)                        # Whitney stress block factor
+> Mcr = cracking_moment(fr(fc), Ig, h)
 > Ie = effective_moment_of_inertia(Mcr, Ma, Ig, Icr)  # Branson
 > ```
 

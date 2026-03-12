@@ -1,7 +1,9 @@
 # BuildingSkeleton
 
 > ```julia
-> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> using StructuralSynthesizer
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > length(skeleton.vertices)   # number of grid points
 > skeleton.groups_edges[:beams] # indices of beam edges
 > skeleton.stories             # Story objects by elevation
@@ -20,6 +22,8 @@ A skeleton represents a building as a half-edge mesh:
 ## Key Types
 
 ```@docs
+AbstractStructuralSynthesizer
+AbstractBuildingSkeleton
 BuildingSkeleton
 SkeletonLookup
 GeometryCache

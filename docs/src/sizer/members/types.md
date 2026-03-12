@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > demand = MemberDemand(1, 200u"kip", 0u"kip", 150u"kip*ft", 0u"kip*ft",
 >     -100u"kip*ft", 150u"kip*ft", 0u"kip*ft", 0u"kip*ft",
 >     30u"kip", 0u"kip", 0u"kip*ft", 0.5u"inch", 100u"inch^4", true)
@@ -15,6 +16,18 @@ The member types module defines the data structures that represent **demands** (
 All demand types subtype `AbstractDemand` and all geometry types subtype `AbstractMemberGeometry`, both declared in `StructuralSizer/src/types.jl`.
 
 ## Key Types
+
+```@docs
+AbstractDemand
+MemberDemand
+RCColumnDemand
+RCBeamDemand
+AbstractMemberGeometry
+SteelMemberGeometry
+ConcreteMemberGeometry
+TimberMemberGeometry
+SteelMemberOptions
+```
 
 ### Demand Types
 

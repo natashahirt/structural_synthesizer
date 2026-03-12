@@ -96,7 +96,7 @@ The hash is used to detect when two requests share the same geometry, enabling s
 
 - Unit conversion assumes all input is in consistent units; mixing units within a single input is not supported.
 - Custom material definitions beyond the preset names require extending the `json_to_params` mapping.
-- Serialization of visualization data is the most expensive part; it can be disabled via `SS_ENABLE_VISUALIZATION=false`.
+- Serialization of visualization data is the most expensive part. The current `design_to_json` implementation does not read `SS_ENABLE_VISUALIZATION`; disabling visualization output requires changing the route/serialization behavior in code.
 
 ## References
 

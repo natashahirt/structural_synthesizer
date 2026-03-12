@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > result = optimize_vault(8.0u"m", 0.5u"kPa", 2.0u"kPa";
 >             lambda_bounds=(10, 20), thickness_bounds=(0.05u"m", 0.20u"m"))
 > result.rise       # optimized arch rise

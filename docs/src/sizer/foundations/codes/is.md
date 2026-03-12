@@ -2,9 +2,10 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > demand = FoundationDemand(1; Pu=200u"kN", c1=300u"mm", c2=300u"mm")
 > result = design_footing(SpreadFooting(), demand, stiff_clay,
->             concrete, rebar; pier_width=300u"mm")
+>             NWC_4000, Rebar_60; pier_width=300u"mm")
 > footprint_area(result)
 > ```
 

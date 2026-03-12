@@ -76,6 +76,7 @@ StructuralSizer depends on [Asap](https://github.com/natashahirt/Asap.jl) (local
 All unit quantities flow through Unitful.jl, so mixed-unit inputs are handled automatically:
 
 ```julia
+using Unitful
 GravityLoads(floor_LL = 2.4u"kPa", floor_SDL = 15.0psf)  # mixed units are fine
 ```
 
@@ -121,6 +122,7 @@ StructuralSizer re-exports unit quantities from [Unitful.jl](https://github.com/
 ### Unitful Best Practices
 
 ```julia
+using Unitful
 # Store with natural units, convert when needed
 span = 6.0u"m"
 fc   = 4000u"psi"
@@ -145,6 +147,7 @@ Dead/live load factors are accessed via `LoadCombination` presets (e.g., `streng
 Functions dispatch on section type + material type + design code. For example:
 
 ```julia
+using Unitful
 # AISC steel flexural capacity
 get_ϕMn(section, A992_Steel; Lb=20.0u"ft", Cb=1.0, axis=:strong)
 
@@ -156,8 +159,24 @@ This pattern allows the same high-level APIs (`size_members`, `size_slabs!`, cap
 
 ## Key Types
 
+```@docs
+AbstractMaterial
+AbstractSection
+AbstractDesignCode
+AbstractObjective
+MinWeight
+MinVolume
+MinCost
+MinCarbon
+AbstractDemand
+MemberDemand
+AbstractMemberGeometry
+AbstractCapacityChecker
+AbstractCapacityCache
+```
+
 - `LoadCombination` — named load combination with factors for dead, live, snow, wind, and seismic loads per ASCE 7-22. Predefined constants include `strength_1_2D_1_6L`, `strength_1_4D`, etc.
-- `GravityLoads` — gravity load specification for a floor or roof, carrying `floor_DL`, `floor_LL`, `floor_SDL`, `roof_DL`, `roof_LL`, and `roof_SDL` as `Pressure` values.
+- `GravityLoads` — unfactored service gravity loads with `floor_LL`, `roof_LL`, `grade_LL`, `floor_SDL`, `roof_SDL`, and `wall_SDL` fields (all `Pressure`).
 
 ## Limitations & Future Work
 

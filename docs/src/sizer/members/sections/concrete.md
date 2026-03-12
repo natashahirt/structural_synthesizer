@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > col = RCColumnSection(b=16u"inch", h=16u"inch", bar_size=9, n_bars=8, cover=1.5u"inch")
 > beam = RCBeamSection(b=12u"inch", h=24u"inch", bar_size=8, n_bars=3, cover=1.5u"inch")
 > println("ρg = $(col.ρg), Ag = $(col.Ag)")
@@ -14,6 +15,11 @@ Concrete section types represent the geometry and reinforcement layout for reinf
 Reinforcement is modeled through `RebarLocation` objects that carry bar positions and areas, enabling P-M interaction diagram generation with arbitrary bar layouts.
 
 ## Key Types
+
+```@docs
+Rebar
+RebarLocation
+```
 
 ### RC Beam Section
 
@@ -131,7 +137,13 @@ PixelFrameSection
 
 **`rho(s)`**
 
-`rho(s)` returns the reinforcement ratio. For beams: `As / (b × d)`. For columns: the stored `ρg`.
+`rho(s)` returns the reinforcement ratio. For beams:
+
+```math
+\rho = \frac{A_s}{b d}
+```
+
+For columns, `rho(s)` returns the stored gross reinforcement ratio `ρg`.
 
 **`gross_moment_of_inertia(s)`**
 
@@ -166,6 +178,7 @@ All lengths and areas carry `Unitful` dimensions, with internal conversions to i
 Sections are typically constructed via keyword constructors:
 
 ```julia
+using Unitful
 RCColumnSection(b=16u"inch", h=16u"inch", bar_size=9, n_bars=8, cover=1.5u"inch")
 RCBeamSection(b=12u"inch", h=24u"inch", bar_size=8, n_bars=3, cover=1.5u"inch")
 ```

@@ -27,14 +27,31 @@ curl http://localhost:8080/health
 
 ### GET /status
 
-Server state endpoint. In bootstrap mode it reports `"warming"` until full routes are loaded; after load it reports full-service states (`"idle"`, `"running"`, `"queued"`).
+Server state endpoint.
+
+- In **bootstrap mode** (`scripts/api/sizer_bootstrap.jl`) it reports `"warming"` until the full routes are loaded. Once ready, it reports `"idle"`, `"running"`, or `"queued"` and includes a `"message":"ready"` field.
+- In **full service mode** (`scripts/api/sizer_service.jl`) it reports only `"idle"`, `"running"`, or `"queued"` (no message field).
 
 ```bash
 curl http://localhost:8080/status
 ```
 
+Bootstrap mode (initial warmup):
+
 ```json
 {"status":"warming","message":"Full API not ready yet"}
+```
+
+Bootstrap mode (ready):
+
+```json
+{"status":"idle","message":"ready"}
+```
+
+Full service mode:
+
+```json
+{"status":"idle"}
 ```
 
 ### GET /schema
@@ -57,6 +74,16 @@ curl -X POST http://localhost:8080/validate \
 
 ```json
 {"status": "ok", "message": "Input is valid."}
+```
+
+If validation fails:
+
+```json
+{
+  "status": "error",
+  "error": "ValidationError",
+  "errors": ["..."]
+}
 ```
 
 ### POST /design
@@ -125,7 +152,7 @@ APIParams
 APIError
 ```
 
-**`APISummary`** — A summary of the design results including pass/fail status, total material quantities (concrete volume, steel weight, rebar weight), embodied carbon, and the governing demand-to-capacity ratio with its associated element.
+**`APISummary`** — An internal schema struct used as the type of `APIOutput.summary` in JSON responses.
 
 ## Functions
 
@@ -141,7 +168,7 @@ register_routes!
 |:---------|:------------|:--------|
 | `PORT` / `SIZER_PORT` | HTTP listen port | `8080` |
 | `SIZER_HOST` | Bind address | `0.0.0.0` |
-| `SS_ENABLE_VISUALIZATION` | Include visualization data in output | `false` |
+| `SS_ENABLE_VISUALIZATION` | Reserved for optional visualization stack; not read by `design_to_json` | `false` |
 | `SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD` | Run precompilation workload on startup | `false` |
 
 ### Request Queuing
@@ -157,7 +184,7 @@ If the server is already processing a design request, incoming requests are queu
 
 Repeated requests with the same building geometry (but different design parameters) skip skeleton reconstruction:
 
-1. `compute_geometry_hash(input)` → SHA hash of vertices, edges, faces, supports, stories
+1. `compute_geometry_hash(input)` → SHA-256 hash of units, vertices, edges, supports, stories, and faces
 2. If hash matches a cached skeleton, reuse it
 3. Only `json_to_params` and `design_building` are re-run
 

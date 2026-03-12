@@ -71,6 +71,7 @@ standard_rc_columns
 Generates a catalog of RC column sections by sweeping over sizes, bar sizes, and bar counts:
 
 ```julia
+using Unitful
 standard_rc_columns(;
     sizes = 8:2:36,           # column dimension in inches
     bar_sizes = [6,7,8,9,10,11],
@@ -94,6 +95,7 @@ standard_rc_beams
 Generates a catalog of RC beam sections:
 
 ```julia
+using Unitful
 standard_rc_beams(;
     widths = [10,12,14,16,18,20,24],
     depths = [12,14,16,18,20,22,24,28,30,36],
@@ -111,6 +113,7 @@ standard_rc_tbeams
 Generates a catalog of RC T-beam sections. Requires `flange_width` and `flange_thickness` as keyword arguments (these depend on the slab geometry):
 
 ```julia
+using Unitful
 standard_rc_tbeams(;
     flange_width,              # effective flange width (from code)
     flange_thickness,          # slab thickness
@@ -175,6 +178,7 @@ All catalog functions check a module-level cache (e.g. `W_CATALOG`, `HSS_RECT_CA
 Steel catalogs are fixed by the AISC database. To filter by depth, weight, or other criteria, use standard Julia filtering:
 
 ```julia
+using Unitful
 light_w = filter(s -> section_area(s) < 20u"inch^2", all_W())
 ```
 

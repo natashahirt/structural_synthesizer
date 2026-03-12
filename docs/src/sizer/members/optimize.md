@@ -86,22 +86,40 @@ NLPColumnOptions
 | `ρ_max` | Maximum reinforcement ratio |
 | `solver` | NLP solver (e.g. Ipopt) |
 
+```@docs
+NLPBeamOptions
+NLPWOptions
+NLPHSSOptions
+```
+
 ### NLP Problem Types
 
 ```@docs
+AbstractNLPProblem
 RCColumnNLPProblem
+RCColumnNLPResult
 ```
 
 Formulates the continuous column sizing as an NLP: minimize cross-sectional area subject to P-M interaction, ACI detailing rules, and dimension bounds.
 
 ```@docs
 RCCircularNLPProblem
+RCCircularNLPResult
 ```
 
 Formulates the continuous circular column sizing as an NLP: minimize cross-sectional area subject to P-M interaction and ACI detailing rules.
 
 ```@docs
 RCBeamNLPProblem
+RCBeamNLPResult
+RCTBeamNLPProblem
+RCTBeamNLPResult
+WColumnNLPProblem
+WColumnNLPResult
+HSSColumnNLPProblem
+HSSColumnNLPResult
+SteelWBeamNLPProblem
+SteelHSSBeamNLPProblem
 ```
 
 Formulates the continuous beam sizing: minimize weight subject to flexure, shear, and deflection constraints.

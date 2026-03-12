@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > h_min = min_thickness(FlatPlate(), 7.5u"m")  # ACI Table 9.5(c)
 > h_ow  = min_thickness(OneWay(), 5.0u"m"; support=BOTH_ENDS_CONT)
 > ```

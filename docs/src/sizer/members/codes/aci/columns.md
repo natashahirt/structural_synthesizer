@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > col = RCColumnSection(b=16u"inch", h=16u"inch", bar_size=9, n_bars=8, cover=1.5u"inch")
 > mat = RC_4000_60
 > diagram = generate_PM_diagram(col, mat)
@@ -28,6 +29,7 @@ Source: `StructuralSizer/src/members/codes/aci/columns/*.jl`
 The API accepts **any Unitful quantity** — conversions are automatic:
 
 ```julia
+using Unitful
 using StructuralSizer: kip  # Asap custom unit
 
 # All equivalent — units converted internally to ACI (kip, kip·ft)
@@ -71,6 +73,14 @@ result = check_PM_capacity(diagram, 300.0, 150.0)  # Pu=300 kip, Mu=150 kip-ft
 
 ```@docs
 PMInteractionDiagram
+```
+
+```@docs
+PMDiagramPoint
+BendingAxis
+StrongAxis
+WeakAxis
+B2StoryProperties
 ```
 
 `PMInteractionDiagram{S, M}` stores the interaction diagram for a section `S` with material `M`:

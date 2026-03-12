@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > soil = medium_sand
 > demand = FoundationDemand(1; Pu=500u"kip", Mux=100u"kip*ft", c1=24u"inch", c2=24u"inch")
 > result = design_footing(SpreadFooting(), demand, soil)
@@ -46,10 +47,22 @@ AbstractFoundation
 `AbstractDeepFoundation` are the two branches.  See the tree above for the
 full hierarchy.
 
+```@docs
+AbstractFoundation
+AbstractShallowFoundation
+AbstractDeepFoundation
+Soil
+FoundationDemand
+AbstractFoundationResult
+AbstractMatMethod
+FoundationOptions
+```
+
 ### Shallow Foundation Types
 
 ```@docs
 SpreadFooting
+CombinedFooting
 StripFooting
 MatFoundation
 ```
@@ -65,6 +78,12 @@ See [ACI Foundation Design](codes/aci.md) for full docstrings.
 
 - **`DrivenPile`**, **`DrilledShaft`**, **`Micropile`** — type stubs for future
   deep foundation design (no design implementations yet).
+
+```@docs
+DrivenPile
+DrilledShaft
+Micropile
+```
 
 ### Soil Model
 
@@ -89,6 +108,14 @@ and service loads, moments, shears, and column geometry.
   see [ACI Foundation Design](codes/aci.md).
 - **`CombinedFootingResult`**, **`PileCapResult`** — defined but not yet
   produced by any design function.
+
+```@docs
+SpreadFootingResult
+CombinedFootingResult
+StripFootingResult
+MatFootingResult
+PileCapResult
+```
 
 ### Mat Analysis Methods
 
@@ -194,8 +221,8 @@ Key `SpreadFootingOptions` fields:
 | Field | Default | Description |
 |:------|:--------|:------------|
 | `cover` | 3 in. | Concrete cover to rebar |
-| `bar_size` | 5 | Rebar bar designation |
-| `pier_shape` | `:square` | Column/pier shape |
+| `bar_size` | 8 | Rebar bar designation (e.g. 8 → #8) |
+| `pier_shape` | `:rectangular` | Column/pier shape (`:rectangular` or `:circular`) |
 | `ϕ_flexure` | 0.90 | Flexure strength reduction factor |
 | `ϕ_shear` | 0.75 | Shear strength reduction factor |
 

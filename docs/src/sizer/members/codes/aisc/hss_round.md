@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > hss = HSSRound("HSS6.000X0.250")
 > mat = A992_Steel  # Fy = 50 ksi (same as A500 Gr. C for HSS)
 > ϕMn = get_ϕMn(hss, mat; Lb=8u"ft")
@@ -81,7 +82,11 @@ V_n = \frac{F_{cr}\,A_g}{2} \leq \frac{0.6\,F_y\,A_g}{2} \qquad\text{(G5-1)}
 
 `get_ϕTn(s::HSSRoundSection, mat; L=nothing, ϕ=0.90)` — design torsional strength.
 
-`get_Tn(s::HSSRoundSection, mat; L=nothing)` — nominal torsional strength per H3-1: `Tn = Fcr × C` where `C = J / rm` for round sections.
+`get_Tn(s::HSSRoundSection, mat; L=nothing)` — nominal torsional strength per H3-1:
+
+```math
+T_n = F_{cr} \, C \qquad \text{with } C = \frac{J}{r_m}
+```
 
 ```@docs
 torsional_constant_round_hss
@@ -93,7 +98,9 @@ torsional_constant_round_hss
 
 `get_Fcr_torsion(s::HSSRoundSection, mat; L=nothing)` — torsional critical stress per H3-2a/H3-2b:
 
-- `Fcr = max(1.23 E / (√(L/D) × (D/t)^(5/4)), 0.60 E / (D/t)^(3/2))`
+```math
+F_{cr} = \max\left(\frac{1.23 E}{\sqrt{L/D}\,(D/t)^{5/4}}, \frac{0.60 E}{(D/t)^{3/2}}\right)
+```
 - Capped at `0.6 Fy`
 
 ### Slenderness (Table B4.1)

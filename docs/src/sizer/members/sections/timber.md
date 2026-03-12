@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > glulam = GlulamSection(5.125u"inch", 12.0u"inch"; stress_class="24F-V4")
 > println("A = $(glulam.A), Ix = $(glulam.Ix)")
 > ```
@@ -55,9 +56,18 @@ GlulamSection(b, d; name=nothing, stress_class="24F-V4")
 ## Implementation Details
 
 Section properties are computed analytically for a solid rectangular cross-section:
-- `A = b × d`
-- `Ix = b × d³ / 12`, `Iy = d × b³ / 12`
-- `Sx = b × d² / 6`, `Sy = d × b² / 6`
+
+```math
+A = b d
+```
+
+```math
+I_x = \frac{b d^3}{12}, \quad I_y = \frac{d b^3}{12}
+```
+
+```math
+S_x = \frac{b d^2}{6}, \quad S_y = \frac{d b^2}{6}
+```
 
 Depths should be multiples of the lamination thickness (`GLULAM_LAM_THICKNESS = 1.5"`) for realistic glulam members.
 

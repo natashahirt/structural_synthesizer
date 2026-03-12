@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > demand = FoundationDemand(1; Pu=400u"kip", Mux=80u"kip*ft", c1=20u"inch", c2=20u"inch")
 > result = design_footing(SpreadFooting(), demand, medium_sand)
 > result.B               # footing width
@@ -50,7 +51,7 @@ and column positions along the strip.
 ### Mat Foundation
 
 The `design_footing(::MatFoundation, ...)` function dispatches to one of three
-analysis methods based on `MatFootingOptions.method`:
+analysis methods based on `MatFootingOptions.analysis_method`:
 
 ```@docs
 recommend_foundation_strategy
@@ -94,7 +95,7 @@ The strip footing design treats the footing as a rigid beam:
 
 ### Mat Foundation Design
 
-Three analysis methods are available, selected via `MatFootingOptions.method`:
+Three analysis methods are available, selected via `MatFootingOptions.analysis_method`:
 
 #### RigidMat (ACI 336.2R §4.2)
 

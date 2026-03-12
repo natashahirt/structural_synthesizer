@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > result = optimize_vault(8.0u"m", 0.5u"kN/m^2", 2.0u"kN/m^2";
 >                         lambda_bounds=(8.0, 15.0),
 >                         thickness_bounds=(50u"mm", 200u"mm"))
@@ -14,6 +15,7 @@
 
 ```julia
 using StructuralSizer
+using Unitful
 
 # Optimize vault geometry (finds best rise + thickness)
 result = optimize_vault(6.0u"m", 1.0u"kN/m^2", 2.0u"kN/m^2")
@@ -77,6 +79,9 @@ Find optimal vault geometry minimizing volume/weight/carbon while satisfying str
 **Rise specification** (choose one, or use default `λ ∈ (10, 20)`):
 
 ```julia
+using StructuralSizer
+using Unitful
+
 optimize_vault(span, sdl, live)                                # Default: λ ∈ (10, 20)
 optimize_vault(span, sdl, live; lambda_bounds=(8.0, 15.0))     # Custom λ range
 optimize_vault(span, sdl, live; rise_bounds=(0.5u"m", 1.5u"m")) # Absolute rise
@@ -87,6 +92,9 @@ optimize_vault(span, sdl, live; rise=0.6u"m")                  # Fixed rise, opt
 **Thickness specification**:
 
 ```julia
+using StructuralSizer
+using Unitful
+
 optimize_vault(span, sdl, live; thickness_bounds=(50u"mm", 150u"mm"))
 optimize_vault(span, sdl, live; thickness=75u"mm")  # Fixed t, optimize rise
 ```
@@ -98,6 +106,7 @@ optimize_vault(span, sdl, live; thickness=75u"mm")  # Fixed t, optimize rise
 **Returns**:
 
 ```julia
+using Unitful
 (
     rise = 0.5u"m",           # Optimal rise
     thickness = 0.075u"m",    # Optimal thickness
@@ -113,6 +122,9 @@ For evaluating a specific geometry with both rise and thickness fixed, the
 internal vault sizing path is used from the structure-level API.
 
 ```julia
+using StructuralSizer
+using Unitful
+
 opts = VaultOptions(
     lambda = 12.0,         # or rise = 0.5u"m"
     thickness = 75u"mm",
@@ -228,6 +240,9 @@ Default: **0.45 × fc'** (unreinforced concrete practice). Override with `VaultO
 See `VaultOptions` in [Slab Types & Options](../types.md) for full field documentation.
 
 ```julia
+using StructuralSizer
+using Unitful
+
 VaultOptions(
     # Rise: choose ONE (or use default lambda_bounds = (10, 20))
     lambda_bounds = (10.0, 20.0),

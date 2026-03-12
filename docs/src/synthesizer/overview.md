@@ -2,7 +2,8 @@
 
 > ```julia
 > using StructuralSynthesizer
-> skeleton = gen_medium_office(30ft, 30ft, 13ft, 3, 3, 5)
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > struc    = BuildingStructure(skeleton)
 > design   = design_building(struc, DesignParameters(loads = office_loads))
 > ```
@@ -15,7 +16,7 @@ The package also depends on:
 
 | Dependency | Role |
 |:-----------|:-----|
-| **Asap** | Finite element analysis — frame models, shell elements, units (`kip`, `ksi`, `ft`) |
+| **Asap** | Finite element analysis — frame models and shell elements (StructuralSynthesizer uses Unitful quantities such as `kip`, `ksi`, and `u"ft"`) |
 | **Meshes.jl** | Geometry primitives — `Point`, `Segment`, `Ngon` for vertices, edges, faces |
 | **Graphs.jl** | Connectivity graph of the structural skeleton |
 | **Unitful.jl** | Compile-time unit checking throughout |
@@ -65,7 +66,7 @@ The typical design workflow follows four steps:
 
 ## Implementation Details
 
-The `@reexport using StructuralSizer` directive in `StructuralSynthesizer.jl` means that all exports from `StructuralSizer` — materials, sections, load types, design code functions — are available directly from `StructuralSynthesizer`. The synthesizer extends several `StructuralSizer` functions for its own wrapper types (e.g., `self_weight`, `total_depth`, and `structural_effects` are extended for `Slab`).
+The `@reexport using StructuralSizer` directive in `StructuralSynthesizer.jl` means that all exports from `StructuralSizer` — materials, sections, load types, design code functions — are available directly from `StructuralSynthesizer`. The synthesizer also extends several `StructuralSizer` functions for its own wrapper types (e.g. `self_weight` and `total_depth` for `Slab`; `structural_effects` is extended but not exported).
 
 The design pipeline uses a snapshot/restore pattern so that `design_building` is non-destructive: the `BuildingStructure` is returned to its original state after design, while the `BuildingDesign` captures all results. This allows multiple `design_building` calls on the same structure with different parameters.
 

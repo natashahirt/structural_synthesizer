@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > result = design_beam_flexure(200u"kip*ft", 12u"inch", 20u"inch", 4000u"psi", 60000u"psi", 29000u"ksi")
 > Vc = Vc_beam(12u"inch", 20u"inch", 4000u"psi")
 > shear = design_beam_shear(50u"kip", 12u"inch", 20u"inch", 4000u"psi", 60000u"psi")

@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > # Define a custom timber material (no presets yet)
 > timber = Timber(:douglas_fir, :no1, 12.4e9u"Pa", 6.9e9u"Pa",
 >     7.6e6u"Pa", 5.2e6u"Pa", 1.0e6u"Pa", 7.6e6u"Pa", 4.3e6u"Pa",
@@ -58,7 +59,11 @@ const Southern_Pine_No2 = Timber(:southern_pine, :no2, ...)
 
 - **No presets**: The timber.jl file is a stub. Species/grade presets from NDS Supplement tables need to be added.
 - **NDS checker**: The design code checker for timber members is minimal. Full NDS 2018 implementation is planned, covering:
-  - Bending (NDS §3.3): `Fb' = Fb × CD × CM × Ct × CL × CF × Cfu × Ci × Cr`
+  - Bending (NDS §3.3):
+
+```math
+F_b' = F_b \, C_D C_M C_t C_L C_F C_{fu} C_i C_r
+```
   - Compression (NDS §3.6–3.7): Column stability factor CP
   - Combined loading (NDS §3.9): Interaction equations
   - Connections (NDS Chapter 12): Bolts, lag screws, nails

@@ -1,6 +1,9 @@
 # Beam, Column, Strut
 
 > ```julia
+> using StructuralSynthesizer
+> using Unitful
+> skeleton = gen_medium_office(30.0u"ft", 30.0u"ft", 13.0u"ft", 3, 3, 5)
 > struc = BuildingStructure(skeleton)
 > initialize!(struc; loads = office_loads, floor_type = :flat_plate)
 > col = struc.columns[1]
@@ -16,6 +19,7 @@ Beams, columns, and struts are the linear structural members of a `BuildingStruc
 ## Key Types
 
 ```@docs
+AbstractMember
 MemberBase
 Beam
 Column

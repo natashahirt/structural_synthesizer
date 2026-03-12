@@ -79,6 +79,7 @@ Each entry maps a floor group (`:grade`, `:floor`, `:roof`) to a `(live_load, SD
 - **Unit flexibility**: All fields are `Pressure` (a Unitful type alias). Mixing units is valid:
 
 ```julia
+using Unitful
 GravityLoads(floor_LL = 2.4u"kPa", floor_SDL = 15.0psf)  # SI + imperial
 ```
 

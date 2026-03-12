@@ -26,15 +26,15 @@ validate_input
 
 | Check | Description | Error Message |
 |:------|:------------|:-------------|
-| Units | `input.units` is a recognized unit string (`"feet"/"ft"`, `"inches"/"in"`, `"meters"/"m"`, `"millimeters"/"mm"`, `"centimeters"/"cm"`) | Parse error from `parse_unit` |
-| Vertices | At least 4 vertices required; each has exactly 3 coordinates | `"Need at least 4 vertices (got N)"` |
-| Edges | At least one edge; each has 2 valid, non-degenerate **1-based** vertex indices | `"Edge N: vertex index ... out of range [1, Nverts]"` |
-| Supports | At least one support; each index references a valid **1-based** vertex | `"Support N: vertex index ... out of range [1, Nverts]"` |
-| Stories Z | If provided, at least 2 elevations required | `"If provided, need at least 2 story elevations"` |
-| Faces | If provided, each face has ≥ 3 vertices with 3 coordinates each | `"Face category[j] has N vertices (need ≥ 3)"` |
-| Fire rating | `fire_rating` is one of 0, 1, 1.5, 2, 3, 4 | `"Invalid fire_rating. Must be one of: 0, 1, 1.5, 2, 3, 4"` |
-| Optimization target | `optimize_for` is `"weight"`, `"carbon"`, or `"cost"` | `"Invalid optimize_for. Must be: weight, carbon, or cost"` |
-| Material names | `params.materials.concrete`, `.rebar`, `.steel` must match resolver maps (`NWC_3000/4000/5000/6000`, `Rebar_40/60/75/80`, `A992`) | `"Unknown concrete/rebar/steel ... Options: ..."` |
+| Units | `input.units` is non-empty and recognised by `parse_unit` (`"feet"/"ft"`, `"inches"/"in"`, `"meters"/"m"`, `"millimeters"/"mm"`, `"centimeters"/"cm"`) | Missing: `Missing required field "units". Specify coordinate units: "feet", "inches", "meters", or "mm".` Invalid: `string(e)` from `parse_unit` |
+| Vertices | At least 4 vertices required; each vertex has exactly 3 coordinates | `Need at least 4 vertices (got N).` / `Vertex i has k coordinates (expected 3).` |
+| Edges | At least one edge across beams/columns/braces; each edge has 2 valid, non-degenerate **1-based** vertex indices | `No edges provided (need at least beams, columns, or braces).` / `Edge i: vertex index v out of range [1, N].` / `Edge i: degenerate edge (both indices = v).` |
+| Supports | At least one support; each index references a valid **1-based** vertex | `No support vertices specified.` / `Support i: vertex index v out of range [1, N].` |
+| Stories Z | If provided (non-empty), at least 2 elevations required | `If provided, need at least 2 story elevations (got N).` |
+| Faces | If provided, each face polyline has ≥ 3 vertices; each face vertex has 3 coordinates | `Face "category"[j] has N vertices (need ≥ 3).` / `Face "category"[j] vertex k has n coords (expected 3).` |
+| Fire rating | `fire_rating` is one of 0, 1, 1.5, 2, 3, 4 | `Invalid fire_rating r. Must be one of: 0, 1, 1.5, 2, 3, 4.` |
+| Optimization target | `optimize_for` is `"weight"`, `"carbon"`, or `"cost"` | `Invalid optimize_for "x". Must be: weight, carbon, or cost.` |
+| Material names | `params.materials.concrete`, `.rebar`, `.steel` must match resolver maps (`NWC_3000/4000/5000/6000`, `Rebar_40/60/75/80`, `A992`) | `Unknown concrete "x". Options: ...` / `Unknown rebar "x". Options: ...` / `Unknown steel "x". Options: ...` |
 
 ### Validation Response
 

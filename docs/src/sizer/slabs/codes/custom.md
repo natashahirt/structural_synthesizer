@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > sizing_fn = (span_x, span_y, load, material) -> ShapedSlabResult(0.20u"m", 5.0u"kPa")
 > slab = ShapedSlab(sizing_fn)
 > spanning_behavior(slab)        # TwoWaySpanning()

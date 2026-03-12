@@ -78,6 +78,7 @@ p_u = factored_pressure(combo, dead_load, live_load)
 Keyword form (all load types):
 
 ```julia
+using Unitful
 p_u = factored_pressure(combo; D=5.0u"kN/m^2", L=3.0u"kN/m^2", W=1.5u"kN/m^2")
 ```
 

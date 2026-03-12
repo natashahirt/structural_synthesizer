@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > opts = FlatPlateOptions(method=DDM(:full))
 > method_name(opts.method)                     # "DDM"
 > min_thickness(FlatPlate(), 20.0u"ft")        # ACI minimum thickness
@@ -11,6 +12,7 @@
 
 ```julia
 using StructuralSizer
+using Unitful
 
 # Method presets for structure-level sizing
 opts_ddm = FlatPlateOptions(method=DDM())
@@ -71,6 +73,18 @@ Phase B: Slab Design (shared)
 MomentAnalysisResult
 EFMSpanProperties
 EFMJointStiffness
+```
+
+```@docs
+DDMApplicabilityError
+EFMApplicabilityError
+EFMModelCache
+FEAModelCache
+DropPanelGeometry
+DropSectionProperties
+ColumnStripPolygon
+MiddleStripPolygon
+PanelStripGeometry
 ```
 
 See also `FlatPlatePanelResult`, `PunchingCheckResult`,
@@ -388,6 +402,7 @@ See also `FlatPlateOptions` and `FlatSlabOptions` in
 ### FlatPlateOptions
 
 ```julia
+using Unitful
 FlatPlateOptions(
     material = RC_4000_60,       # Concrete + rebar bundle
     cover = 0.75u"inch",         # Clear cover (ACI Table 20.6.1.3.1)

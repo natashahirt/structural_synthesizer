@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > ur = check_PMxMy_interaction(200u"kip", 100u"kip*ft", 50u"kip*ft",
 >     500u"kip", 300u"kip*ft", 150u"kip*ft")
 > B1 = compute_B1(200u"kip", 5000u"kip", 0.85)
@@ -19,8 +20,17 @@ Source: `StructuralSizer/src/members/codes/aisc/generic/*.jl`
 ### Tension (AISC §D2)
 
 `get_Pn_tension(s, mat; Ae_ratio=0.75)` — nominal tensile strength, minimum of:
-- **Yielding on gross section (D2-1):** `Pn = Fy × Ag`
-- **Rupture on net section (D2-2):** `Pn = Fu × Ae` where `Ae = Ag × Ae_ratio`
+- **Yielding on gross section (D2-1):**
+
+```math
+P_n = F_y A_g
+```
+
+- **Rupture on net section (D2-2):**
+
+```math
+P_n = F_u A_e, \quad A_e = A_g \, Ae\_ratio
+```
 
 The default `Ae_ratio = 0.75` is a conservative approximation; use the actual effective net area ratio when connection details are known.
 
@@ -107,7 +117,9 @@ compute_Pe_story
 
 `compute_Pe_story(H, L, ΔH, RM)` — story elastic critical buckling load (A-8-7):
 
-`Pe_story = RM × H × L / ΔH`
+```math
+P_{e,\\text{story}} = R_M \\frac{H L}{\\Delta_H}
+```
 
 where `H` is the total story shear, `L` is the story height, and `ΔH` is the first-order interstory drift.
 

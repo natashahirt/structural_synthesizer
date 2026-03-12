@@ -276,6 +276,7 @@ See [Skeleton](../synthesizer/building_types/skeleton.md) and [Structure](../syn
 The key design pattern is multiple dispatch on `(section_type, material_type)` pairs. This allows the same function name family to be used across different code provisions:
 
 ```julia
+using Unitful
 # AISC steel flexure
 get_ϕMn(w_section, A992_Steel; Lb=20.0u"ft", Cb=1.0, axis=:strong)
 

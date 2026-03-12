@@ -26,6 +26,16 @@ Reference: Wongsittikan (2024) thesis and the original `Pixelframe.jl` package.
 PixelFrameDesign
 ```
 
+```@docs
+PixelFrameBeamOptions
+PixelFrameColumnOptions
+PFDeflectionMethod
+PFSimplified
+PFThirdPointLoad
+PFSinglePointLoad
+TendonDeviationResult
+```
+
 `PixelFrameDesign` is a mutable struct representing a fully designed PixelFrame member:
 
 | Field | Description |
@@ -184,9 +194,23 @@ pf_tendon_deviation_force
 
 `pf_tendon_deviation_force(design, V_max; d_ps_support, f_ps, μ_s)` computes the additional clamping force needed at deviator points for friction-based shear transfer between pixels:
 - Tendon angle θ from eccentricity change over pixel length
-- Horizontal PT component: `A_ps × f_ps × cos(θ)`
-- Friction-required normal force: `V_max / μ_s` (default μ_s = 0.3)
-- Additional force: `N_friction − P_horizontal` (negative = PT alone suffices)
+- Horizontal PT component:
+
+```math
+P_{\text{horizontal}} = A_{ps} f_{ps} \cos\theta
+```
+
+- Friction-required normal force (default \(\mu_s = 0.3\)):
+
+```math
+N_{\text{friction}} = \frac{V_{\max}}{\mu_s}
+```
+
+- Additional required force (negative = PT alone suffices):
+
+```math
+N_{\text{add}} = N_{\text{friction}} - P_{\text{horizontal}}
+```
 
 Stored in `PixelFrameDesign.tendon_deviation`. Reference: Wongsittikan (2024), `designPixelframe.jl` lines 474–536.
 
@@ -199,9 +223,17 @@ The flexural capacity calculation uses an iterative strain compatibility approac
 1. Assume a neutral axis depth `c`
 2. Compute concrete compressive force using Whitney stress block
 3. Compute tendon stress from strain compatibility: `fps = fpe + Δfps` where `Δfps` depends on the tendon strain increment
-4. Add FRC tensile contribution from fibers in the tension zone: `Tf = fFtu × Af_tension`
+4. Add FRC tensile contribution from fibers in the tension zone:
+
+```math
+T_f = f_{Ftu}\,A_{f,\text{tension}}
+```
 5. Iterate on `c` until force equilibrium is achieved
-6. Compute `Mn = ΣF × arm`
+6. Compute:
+
+```math
+M_n = \sum F \cdot \text{arm}
+```
 
 The FRC tensile strength in the tension zone uses `fFtu = fR3/3` from the fib Model Code 2010.
 

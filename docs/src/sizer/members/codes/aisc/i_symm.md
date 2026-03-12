@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > w = W("W14X22")
 > mat = A992_Steel
 > ϕMn = get_ϕMn(w, mat; Lb=12u"ft", Cb=1.0)
@@ -32,6 +33,7 @@ Source: `StructuralSizer/src/members/codes/aisc/i_symm/*.jl`
 The API accepts **any Unitful quantity** — conversions happen internally:
 
 ```julia
+using Unitful
 using StructuralSizer: kip  # Asap custom unit
 
 # All equivalent — units converted internally to SI (N, N·m)
@@ -218,6 +220,8 @@ W shapes are open sections with low torsional rigidity. The implementation follo
 The `AISCChecker` constructor accepts all fields as keyword arguments:
 
 ```julia
+using StructuralSizer
+
 checker = AISCChecker(ϕ_b=0.9, ϕ_c=0.9, ϕ_v=1.0, deflection_limit=360.0, max_depth=24.0)
 ```
 
@@ -227,8 +231,19 @@ Set `deflection_limit` to `nothing` to skip deflection checks. The `prefer_penal
 
 Composite slab-on-beam design with full and partial composite action per Chapter I.
 
+```@docs
+AISCCapacityCache
+AbstractSlabOnBeam
+SolidSlabOnBeam
+DeckSlabOnBeam
+AbstractSteelAnchor
+HeadedStudAnchor
+CompositeContext
+```
+
 ```julia
 using StructuralSizer
+using Unitful
 
 section = W("W21X55")
 material = A992_Steel

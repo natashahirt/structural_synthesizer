@@ -1,8 +1,9 @@
 # Design Types & Parameters
 
 > ```julia
+> using StructuralSynthesizer
 > params = DesignParameters(
->     loads = GravityLoads(floor_LL = 50psf, roof_LL = 20psf),
+>     loads = GravityLoads(floor_LL = 50.0psf, roof_LL = 20.0psf),
 >     materials = MaterialOptions(concrete = NWC_4000, steel = A992_Steel),
 >     floor = FlatPlateOptions(method = DDM()),
 > )
@@ -26,6 +27,7 @@ ColumnDesignResult
 BeamDesignResult
 FoundationDesignResult
 PunchingDesignResult
+StripReinforcementDesign
 DesignSummary
 ```
 
@@ -49,20 +51,23 @@ compare_designs
 | `loads` | `GravityLoads` | Floor, roof, and grade loading |
 | `materials` | `MaterialOptions` | Material selections for concrete, rebar, steel, timber |
 | `fire_rating` | `Float64` | Required fire resistance in hours (drives ACI 216.1 checks) |
-| `fire_protection` | `FireProtection` | Fire protection type for steel members (SFRM, intumescent) |
-| `columns` | options | Column type and configuration |
-| `beams` | options | Beam type and configuration |
-| `floor` | `AbstractFloorOptions` | Floor system options (method, deflection limit, punching strategy) |
+| `fire_protection` | `FireProtection` | Fire protection coating type for steel members (ignored for concrete) |
+| `columns` | `Union{ColumnOptions, Nothing}` | Member sizing options for columns (`nothing` → defaults by material/type) |
+| `beams` | `Union{BeamOptions, Nothing}` | Member sizing options for beams (`nothing` → defaults by material/type) |
+| `floor` | `Union{AbstractFloorOptions, Nothing}` | Floor system options (`nothing` → defaults to `FlatPlateOptions()`) |
 | `tributary_axis` | `Union{Nothing, Symbol, NTuple{2,Float64}}` | Override tributary partitioning (default: `nothing` = auto) |
-| `foundation_options` | `FoundationParameters` | Soil, concrete, rebar, depth, grouping tolerance |
+| `foundation_options` | `Union{FoundationParameters, Nothing}` | Foundation sizing parameters (`nothing` → skip foundation sizing) |
 | `collinear_grouping` | `Bool` | When `true`, detect collinear members sharing a node with aligned direction and assign a shared group\_id before sizing (default `false`) |
 | `deflection_limit` | `Symbol` | Deflection limit (`:L_240`, `:L_360`, `:L_480`) |
 | `optimize_for` | `Symbol` | Optimization objective: `:weight`, `:carbon`, `:cost` |
 | `load_combinations` | `Vector{LoadCombination}` | Load combinations per ASCE 7 §2.3.1 |
-| `pattern_loading` | `Symbol` | Pattern loading mode (`:none`, `:checkerboard`, `:auto`) |
+| `pattern_loading` | `Symbol` | Pattern loading mode (currently `:none` by default; see `generate_load_patterns`) |
 | `diaphragm_mode` | `Symbol` | Diaphragm stiffness model |
-| `diaphragm_E`, `diaphragm_ν` | `Float64` | Diaphragm elastic properties |
-| `default_frame_E`, `default_frame_G`, `default_frame_ρ` | quantities | Default frame material properties |
+| `diaphragm_E` | `Union{typeof(1.0u"Pa"), Nothing}` | Diaphragm elastic modulus (when `diaphragm_mode` is enabled) |
+| `diaphragm_ν` | `Float64` | Diaphragm Poisson’s ratio |
+| `default_frame_E` | `typeof(1.0u"Pa")` | Default frame elastic modulus (pre-sizing) |
+| `default_frame_G` | `typeof(1.0u"Pa")` | Default frame shear modulus (pre-sizing) |
+| `default_frame_ρ` | `typeof(1.0u"kg/m^3")` | Default frame density (pre-sizing) |
 | `column_I_factor`, `beam_I_factor` | `Float64` | Stiffness reduction factors per ACI 318-11 §10.10.4.1 |
 | `max_iterations` | `Int` | Maximum design iterations |
 | `display_units` | `DisplayUnits` | Imperial or metric formatting |

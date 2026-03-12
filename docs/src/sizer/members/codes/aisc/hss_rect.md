@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > hss = HSS("HSS8X4X1/4")
 > mat = A992_Steel  # Fy = 50 ksi (same as A500 Gr. C for rect HSS)
 > ϕMn = get_ϕMn(hss, mat; Lb=10u"ft")
@@ -98,7 +99,13 @@ get_ϕTn
 get_Tn
 ```
 
-`get_Tn(s::HSSRectSection, mat)` — nominal torsional strength per H3-1: `Tn = Fcr × C` where `C` is the torsional constant for rectangular HSS.
+`get_Tn(s::HSSRectSection, mat)` — nominal torsional strength per H3-1:
+
+```math
+T_n = F_{cr} \, C
+```
+
+where \(C\) is the torsional constant for rectangular HSS.
 
 ```@docs
 torsional_constant_rect_hss

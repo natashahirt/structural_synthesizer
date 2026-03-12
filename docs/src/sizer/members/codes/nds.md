@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > checker = NDSChecker()
 > glulam = GlulamSection(5.125u"inch", 12.0u"inch")
 > # NDS checker is currently a stub — full implementation pending
@@ -75,7 +76,17 @@ The `CD` factor should be set based on the governing load combination:
 
 The NDS module is a **stub** — no capacity calculations are implemented. The planned scope includes:
 
-- **Flexure:** Adjusted bending stress `Fb′ = Fb × CD × CM × Ct × CL × CF × Cfu × Ci × Cr × CV` vs. `fb = M/S`
+- **Flexure:** Adjusted bending stress:
+
+```math
+F_b' = F_b \, C_D C_M C_t C_L C_F C_{fu} C_i C_r C_V
+```
+
+Compared against the actual bending stress:
+
+```math
+f_b = \frac{M}{S}
+```
 - **Compression:** Column stability factor `CP` per NDS §3.7, Euler buckling `FcE = 0.822 Emin′ / (Le/d)²`
 - **Tension:** Adjusted tension `Ft′` vs. `ft = P/A`
 - **Shear:** Adjusted shear `Fv′` vs. `fv = 3V/(2bd)` for rectangular sections

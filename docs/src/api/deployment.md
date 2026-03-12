@@ -62,7 +62,7 @@ The GitHub Actions workflow triggers on pushes to `main` and `workflow_dispatch`
 | Cold start | Fast — serves `/health` immediately | Slow — blocks until loaded |
 | Use case | Production (App Runner health checks) | Development |
 
-Bootstrap mode is preferred for production because App Runner requires a health check response within a timeout. The bootstrap server responds to `/health` immediately and returns `{"status": "warming"}` for `/status` until the full package is loaded.
+Bootstrap mode is preferred for production because App Runner requires a health check response within a timeout. The bootstrap server responds to `/health` immediately and returns `{"status":"warming","message":"Full API not ready yet"}` for `/status` until the full package is loaded.
 
 ## Environment Variables
 
@@ -70,13 +70,13 @@ Bootstrap mode is preferred for production because App Runner requires a health 
 |:---------|:------------|:--------|
 | `PORT` / `SIZER_PORT` | HTTP listen port | `8080` |
 | `SIZER_HOST` | Bind address | `0.0.0.0` |
-| `SS_ENABLE_VISUALIZATION` | Include visualization data in API output | `false` |
+| `SS_ENABLE_VISUALIZATION` | Reserved for optional visualization stack; not read by `design_to_json` | `false` |
 | `SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD` | Run a precompilation workload on startup to warm the JIT | `false` |
 
 ### Performance Tuning
 
 - **`SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD`** — runs a representative design on startup to compile all code paths. Increases startup time by ~30s but eliminates first-request latency.
-- **`SS_ENABLE_VISUALIZATION`** — visualization data (node positions, frame elements, deflected meshes) adds significant serialization overhead. Disable for API-only use cases.
+- **`SS_ENABLE_VISUALIZATION`** — currently not used by `StructuralSynthesizer`’s JSON serialization. Visualization output is produced by `design_to_json` when an analysis model is available.
 
 ## Health Check Configuration
 

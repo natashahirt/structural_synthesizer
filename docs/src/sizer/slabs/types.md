@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > ft = FlatPlate()
 > spanning_behavior(ft)                # BeamlessSpanning()
 > min_thickness(ft, 8.0u"m")           # ACI minimum slab thickness
@@ -55,6 +56,7 @@ size_slabs!(struc; options)          # Size all slabs in structure
 
 ```julia
 using StructuralSizer
+using Unitful
 
 # Configure a flat-plate design option set
 opts = FlatPlateOptions(method=DDM())
@@ -127,6 +129,14 @@ TwoWaySpanning
 BeamlessSpanning
 ```
 
+```@docs
+AbstractFloorSystem
+AbstractConcreteSlab
+AbstractSteelFloor
+AbstractTimberFloor
+AbstractFloorOptions
+```
+
 - `AbstractFloorSystem` — top-level abstract type for all floor/slab systems.
 - `AbstractConcreteSlab <: AbstractFloorSystem` — base type for cast-in-place and precast concrete slabs.
 - `AbstractSteelFloor <: AbstractFloorSystem` — base type for steel deck floor systems.
@@ -192,9 +202,15 @@ MassTimberJoist
 - `SupportCondition` — enum for one-way slab support conditions: `SIMPLE`, `ONE_END_CONT`, `BOTH_ENDS_CONT`, `CANTILEVER`.
 - `LoadDistributionType` — enum for load distribution method: `DISTRIBUTION_ONE_WAY`, `DISTRIBUTION_TWO_WAY`, `DISTRIBUTION_POINT`, `DISTRIBUTION_CUSTOM`.
 
+```@docs
+SupportCondition
+LoadDistributionType
+```
+
 ### Analysis Method Types
 
 ```@docs
+VaultAnalysisMethod
 FlatPlateAnalysisMethod
 DDM
 EFM
