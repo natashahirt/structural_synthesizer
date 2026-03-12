@@ -3,7 +3,7 @@ name: Deploy API
 on:
   push:
     branches:
-      - main
+      - aws-api
   workflow_dispatch:
 
 permissions:
