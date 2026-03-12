@@ -11,6 +11,9 @@ concurrency:
   group: docs-build
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     permissions:
@@ -20,7 +23,7 @@ jobs:
       statuses: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Clone Asap
         run: |
           mkdir -p external

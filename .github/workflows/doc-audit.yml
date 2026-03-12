@@ -11,11 +11,14 @@ on:
       - 'StructuralSynthesizer/src/**'
       - 'docs/**'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   check-and-launch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history for git log
 
@@ -41,29 +44,22 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           REPO_URL: https://github.com/${{ github.repository }}
         run: |
-          # Cannot use secrets in 'if' — handle missing key in script instead
-          if [ -z "$CURSOR_API_KEY" ]; then
+          if [ -z "${CURSOR_API_KEY}" ]; then
             echo "No CURSOR_API_KEY — skipping Cursor check, allowing launch."
             echo "cursor_agent_running=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # List agents: GET https://api.cursor.com/v0/agents (Basic Auth with API key)
-          # Skip launch if any agent is RUNNING for this repo
-          set +e
-          RESP=$(curl -s -w "\n%{http_code}" -u "$CURSOR_API_KEY:" \
-            "https://api.cursor.com/v0/agents?limit=50")
-          HTTP_BODY=$(echo "$RESP" | head -n -1)
-          HTTP_CODE=$(echo "$RESP" | tail -n 1)
-          set -e
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Cursor API returned $HTTP_CODE — allowing launch (no double-check)."
+          resp_file=$(mktemp)
+          code=$(curl -s -w "%{http_code}" -o "$resp_file" -u "${CURSOR_API_KEY}:" "https://api.cursor.com/v0/agents?limit=50")
+          if [ "$code" != "200" ]; then
+            echo "Cursor API returned $code — allowing launch (no double-check)."
             echo "cursor_agent_running=false" >> "$GITHUB_OUTPUT"
+            rm -f "$resp_file"
             exit 0
           fi
-          # Count RUNNING agents for this repo
-          RUNNING=$(echo "$HTTP_BODY" | jq --arg repo "$REPO_URL" \
-            '[.agents[]? | select(.status == "RUNNING" and (.source.repository // "") == $repo)] | length')
-          if [ "${RUNNING:-0}" -gt 0 ]; then
+          running=$(jq -c --arg repo "$REPO_URL" '[.agents[]? | select(.status == "RUNNING" and ((.source.repository // "") == $repo))] | length' "$resp_file" 2>/dev/null || echo "0")
+          rm -f "$resp_file"
+          if [ "${running:-0}" -gt 0 ] 2>/dev/null; then
             echo "A Cursor doc-audit agent is already RUNNING for this repo — skipping launch."
             echo "cursor_agent_running=true" >> "$GITHUB_OUTPUT"
           else
@@ -73,7 +69,7 @@ jobs:
       - name: Check for documentation-relevant changes
         id: check
         run: |
-          CHANGED=$(git log --since="24 hours ago" --name-only --pretty=format: origin/main | \
+          CHANGED=$(git log origin/main --since="24 hours ago" --name-only --pretty=format: | \
             grep -E '^(StructuralSizer/src/|StructuralSynthesizer/src/|docs/)' | \
             sort -u)
 
@@ -87,6 +83,11 @@ jobs:
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Launch step: Cursor Cloud Agent needs repo access via the Cursor GitHub App.
+      # If you see "repository that does not exist or is not accessible to the parent installation":
+      # - Install the Cursor GitHub App (https://github.com/apps/cursor) and grant it this repo.
+      # - Ensure the API key (CURSOR_API_KEY) is from the same Cursor team that has the app installed.
+      # - For org repos: install the app on the org and allow this repository.
       - name: Launch Cursor Cloud Agent
         if: steps.check.outputs.has_changes == 'true' && steps.concurrent.outputs.should_launch == 'true' && steps.cursor_agent.outputs.cursor_agent_running != 'true'
         env:
@@ -112,3 +113,9 @@ jobs:
 
           echo "Agent launched:"
           echo "$RESPONSE" | jq .
+
+          if echo "$RESPONSE" | jq -e '.error' >/dev/null 2>&1; then
+            echo "::error::Cursor API error: $(echo "$RESPONSE" | jq -r '.error')"
+            echo "::error::Ensure the Cursor GitHub App has access to this repo and the API key matches that installation. See workflow comments for troubleshooting."
+            exit 1
+          fi

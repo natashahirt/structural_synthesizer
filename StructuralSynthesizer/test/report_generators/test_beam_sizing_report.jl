@@ -2464,22 +2464,48 @@ bm_step_status["Cross-Type Cmp"] = (cmp_all_ok && cmp_flex_ok) ? "✓" : "✗"
 
 # ── 17.3  Bare Steel W vs Composite W — Higher Demand ──
 # PixelFrame & HSS can't reach this demand; focus on W sections where composite matters.
-bm_sub_header("17.3  Bare Steel W vs Composite W — Higher Demand")
-bm_note("Mu = 200 kN·m (~148 kip·ft), Vu = 50 kN (~11.2 kip), L = 10 m.")
+bm_sub_header("17.3  Bare Steel W vs Composite W — Higher Demand (with Deflection)")
+bm_note("Mu = 200 kN·m (~148 kip·ft), Vu = 50 kN (~11.2 kip), L = 10 m (~33 ft).")
 bm_note("Higher demand exercises composite action at realistic utilizations.")
+bm_note("Service loads: w_DL = 1.0 kip/ft, w_LL = 0.8 kip/ft (10 ft beam spacing).")
 
 hd_Mu = 200.0u"kN*m"
 hd_Vu = 50.0u"kN"
 hd_L  = 10.0  # m
+hd_L_ft = uconvert(u"ft", hd_L * u"m")
+hd_w_DL = 1.0u"kip/ft"
+hd_w_LL = 0.8u"kip/ft"
+hd_Es   = 29000.0u"ksi"
+hd_geom = SteelMemberGeometry(hd_L; Kx=1.0, Ky=1.0)
 
-# Bare steel W (MIP)
-hd_sw = size_beams([hd_Mu], [hd_Vu],
-    [SteelMemberGeometry(hd_L; Kx=1.0, Ky=1.0)], SteelMemberOptions(section_type=:w))
-hd_sw_sec = hd_sw.sections[1]
-hd_sw_chk = steel_beam_utilization(hd_sw_sec, A992_Steel, hd_Mu, hd_Vu,
-    SteelMemberGeometry(hd_L; Kx=1.0, Ky=1.0))
+# ── 17.3a  Strength-only bare steel W ──
+hd_sw_str = size_beams([hd_Mu], [hd_Vu], [hd_geom], SteelMemberOptions(section_type=:w))
+hd_sw_str_sec = hd_sw_str.sections[1]
+hd_sw_str_chk = steel_beam_utilization(hd_sw_str_sec, A992_Steel, hd_Mu, hd_Vu, hd_geom)
 
-# Composite W — lightest from preferred catalog
+# ── 17.3b  Deflection-constrained bare steel W (L/360 via δ_max/I_ref scaling) ──
+# The checker enforces: δ_max × I_ref / Ix_candidate / L ≤ deflection_limit
+# We set δ_max = L × deflection_limit and I_ref = required_Ix, so the checker
+# accepts any Ix ≥ I_ref (the minimum Ix for L/360).
+hd_Ix_req = required_Ix_for_deflection(hd_w_LL, hd_L_ft, hd_Es;
+    support=:simply_supported, limit_ratio=1/360)
+hd_δ_allow = ustrip(u"m", uconvert(u"m", hd_L_ft / 360))
+hd_Iref_m4 = ustrip(u"m^4", uconvert(u"m^4", hd_Ix_req))
+
+hd_sw_defl = size_beams([hd_Mu], [hd_Vu], [hd_geom],
+    SteelMemberOptions(section_type=:w, deflection_limit=1/360);
+    δ_max_vec=[hd_δ_allow], I_ref_vec=[hd_Iref_m4])
+hd_sw_sec = hd_sw_defl.sections[1]
+hd_sw_chk = steel_beam_utilization(hd_sw_sec, A992_Steel, hd_Mu, hd_Vu, hd_geom)
+
+# Post-compute actual deflections for the chosen section
+hd_coeff = 5 * hd_L_ft^4 / (384 * hd_Es)
+hd_sw_δ_DL = uconvert(u"inch", hd_coeff * hd_w_DL / hd_sw_sec.Ix)
+hd_sw_δ_LL = uconvert(u"inch", hd_coeff * hd_w_LL / hd_sw_sec.Ix)
+hd_sw_δ_tot = hd_sw_δ_DL + hd_sw_δ_LL
+hd_sw_δ_LL_ratio = hd_L_ft / hd_sw_δ_LL
+
+# ── 17.3c  Composite W — lightest from preferred catalog (strength search) ──
 hd_comp_slab = SolidSlabOnBeam(
     6.0u"inch", 4.0u"ksi", 3644.0u"ksi", 145.0u"lb/ft^3", 29000.0u"ksi",
     10.0u"ft", 10.0u"ft",
@@ -2487,8 +2513,7 @@ hd_comp_slab = SolidSlabOnBeam(
 hd_comp_anchor = HeadedStudAnchor(
     0.75u"inch", 5.0u"inch", 65.0u"ksi", 50.0u"ksi", 7850.0u"kg/m^3",
 )
-hd_comp_L_ft = uconvert(u"ft", hd_L * u"m")
-hd_comp_b_eff = get_b_eff(hd_comp_slab, hd_comp_L_ft)
+hd_comp_b_eff = get_b_eff(hd_comp_slab, hd_L_ft)
 hd_comp_catalog = sort(preferred_W(); by = s -> ustrip(u"inch^2", s.A))
 
 hd_comp_sec = nothing
@@ -2507,32 +2532,8 @@ for sec_hd in hd_comp_catalog
     end
 end
 
-hd_Mu_kNm = ustrip(u"kN*m", hd_Mu)
-hd_Vu_kN  = ustrip(u"kN", hd_Vu)
-
-hd_sw_Mu_kNm  = ustrip(u"kN*m", hd_sw_chk.ϕMnx)
-hd_sw_Vu_kN   = ustrip(u"kN", hd_sw_chk.ϕVn)
-hd_sw_wt_plf  = ustrip(u"inch^2", hd_sw_sec.A) * 490.0 / 144.0
-hd_comp_Mu_kNm = ustrip(u"kN*m", hd_comp_ϕMn)
-hd_comp_Vu_kN  = ustrip(u"kN", hd_comp_ϕVn)
-hd_comp_wt_plf = ustrip(u"inch^2", hd_comp_sec.A) * 490.0 / 144.0
-
-# Deflection: service loads for L=10 m (~33 ft), 10 ft beam spacing
-# Typical: DL ≈ slab self-weight + beam + superimposed = ~1.0 kip/ft; LL = 0.8 kip/ft
-hd_L_ft   = uconvert(u"ft", hd_L * u"m")
-hd_w_DL   = 1.0u"kip/ft"
-hd_w_LL   = 0.8u"kip/ft"
-hd_Es     = 29000.0u"ksi"
-
-# Bare steel: 5wL⁴/(384EI) for simply supported
-hd_coeff = 5 * hd_L_ft^4 / (384 * hd_Es)
-hd_sw_δ_DL = uconvert(u"inch", hd_coeff * hd_w_DL / hd_sw_sec.Ix)
-hd_sw_δ_LL = uconvert(u"inch", hd_coeff * hd_w_LL / hd_sw_sec.Ix)
-hd_sw_δ_tot = hd_sw_δ_DL + hd_sw_δ_LL
-hd_sw_δ_LL_ratio = hd_L_ft / hd_sw_δ_LL
-
-# Composite: check_composite_deflection (unshored, full composite ΣQn = Cf_max)
-hd_Cf_max = StructuralSizer._Cf_max(hd_comp_sec, A992_Steel, hd_comp_slab, hd_comp_b_eff)
+# Composite deflection via check_composite_deflection (unshored, full composite)
+hd_Cf_max  = StructuralSizer._Cf_max(hd_comp_sec, A992_Steel, hd_comp_slab, hd_comp_b_eff)
 hd_Qn_stud = get_Qn(hd_comp_anchor, hd_comp_slab)
 hd_n_studs = ceil(Int, ustrip(u"kN", hd_Cf_max) / ustrip(u"kN", hd_Qn_stud))
 hd_ΣQn_full = hd_n_studs * hd_Qn_stud
@@ -2545,57 +2546,94 @@ hd_comp_δ_LL  = uconvert(u"inch", hd_comp_defl.δ_LL)
 hd_comp_δ_tot = uconvert(u"inch", hd_comp_defl.δ_total)
 hd_comp_δ_LL_ratio = hd_L_ft / hd_comp_δ_LL
 
-hd_sw_Ix_in4     = ustrip(u"inch^4", hd_sw_sec.Ix)
-hd_comp_ILB_in4  = ustrip(u"inch^4", hd_comp_defl.I_LB)
+# ── Extract display values ──
+hd_Mu_kNm = ustrip(u"kN*m", hd_Mu)
+hd_Vu_kN  = ustrip(u"kN", hd_Vu)
 
+hd_sw_str_wt_plf  = ustrip(u"inch^2", hd_sw_str_sec.A) * 490.0 / 144.0
+hd_sw_str_Mu_kNm  = ustrip(u"kN*m", hd_sw_str_chk.ϕMnx)
+
+hd_sw_Mu_kNm  = ustrip(u"kN*m", hd_sw_chk.ϕMnx)
+hd_sw_Vu_kN   = ustrip(u"kN", hd_sw_chk.ϕVn)
+hd_sw_wt_plf  = ustrip(u"inch^2", hd_sw_sec.A) * 490.0 / 144.0
+hd_sw_Ix_in4  = ustrip(u"inch^4", hd_sw_sec.Ix)
+
+hd_comp_Mu_kNm = ustrip(u"kN*m", hd_comp_ϕMn)
+hd_comp_Vu_kN  = ustrip(u"kN", hd_comp_ϕVn)
+hd_comp_wt_plf = ustrip(u"inch^2", hd_comp_sec.A) * 490.0 / 144.0
+hd_comp_ILB_in4 = ustrip(u"inch^4", hd_comp_defl.I_LB)
+
+# ── Print comparison table ──
 println()
-@printf("    %-22s  %16s  %16s\n", "Property", "Bare Steel W", "Composite W")
-@printf("    %-22s  %16s  %16s\n", "─"^22, "─"^16, "─"^16)
-@printf("    %-22s  %16.1f  %16.1f\n", "Mu demand (kN·m)", hd_Mu_kNm, hd_Mu_kNm)
-@printf("    %-22s  %16.1f  %16.1f\n", "Vu demand (kN)", hd_Vu_kN, hd_Vu_kN)
-@printf("    %-22s  %16s  %16s\n", "Section",
-    string(hd_sw_sec.name), string(hd_comp_sec.name) * "+slab")
-@printf("    %-22s  %16.0f  %16.0f\n", "Weight (lb/ft)", hd_sw_wt_plf, hd_comp_wt_plf)
-@printf("    %-22s  %16.1f  %16.1f\n", "φMn (kN·m)", hd_sw_Mu_kNm, hd_comp_Mu_kNm)
-@printf("    %-22s  %16.1f  %16.1f\n", "φVn (kN)", hd_sw_Vu_kN, hd_comp_Vu_kN)
-@printf("    %-22s  %16.3f  %16.3f\n", "Flex util (Mu/φMn)",
-    hd_Mu_kNm / hd_sw_Mu_kNm, hd_Mu_kNm / hd_comp_Mu_kNm)
-@printf("    %-22s  %16.3f  %16.3f\n", "Shear util (Vu/φVn)",
-    hd_Vu_kN / hd_sw_Vu_kN, hd_Vu_kN / hd_comp_Vu_kN)
+@printf("    %-22s  %16s  %16s  %16s\n", "Property",
+    "Strength Only", "Str + L/360", "Composite W")
+@printf("    %-22s  %16s  %16s  %16s\n", "─"^22, "─"^16, "─"^16, "─"^16)
+@printf("    %-22s  %16.1f  %16.1f  %16.1f\n", "Mu demand (kN·m)",
+    hd_Mu_kNm, hd_Mu_kNm, hd_Mu_kNm)
+@printf("    %-22s  %16.1f  %16.1f  %16.1f\n", "Vu demand (kN)",
+    hd_Vu_kN, hd_Vu_kN, hd_Vu_kN)
+@printf("    %-22s  %16s  %16s  %16s\n", "Section",
+    string(hd_sw_str_sec.name),
+    string(hd_sw_sec.name),
+    string(hd_comp_sec.name) * "+slab")
+@printf("    %-22s  %16.0f  %16.0f  %16.0f\n", "Weight (lb/ft)",
+    hd_sw_str_wt_plf, hd_sw_wt_plf, hd_comp_wt_plf)
+@printf("    %-22s  %16.1f  %16.1f  %16.1f\n", "φMn (kN·m)",
+    hd_sw_str_Mu_kNm, hd_sw_Mu_kNm, hd_comp_Mu_kNm)
+@printf("    %-22s  %16.3f  %16.3f  %16.3f\n", "Flex util (Mu/φMn)",
+    hd_Mu_kNm / hd_sw_str_Mu_kNm, hd_Mu_kNm / hd_sw_Mu_kNm, hd_Mu_kNm / hd_comp_Mu_kNm)
 
+# Weight comparisons
+hd_defl_penalty = (hd_sw_wt_plf - hd_sw_str_wt_plf) / hd_sw_str_wt_plf * 100
 hd_saving = (hd_sw_wt_plf - hd_comp_wt_plf) / hd_sw_wt_plf * 100
-@printf("    %-22s  %16s  %13.0f %%\n", "Steel weight saving", "—", hd_saving)
+@printf("    %-22s  %16s  %12.0f %%  %12.0f %%\n", "Δ weight vs strength",
+    "—(baseline)",
+    hd_defl_penalty,
+    -hd_saving)
 
 # Deflection block
-@printf("    %-22s  %16s  %16s\n", " ", " ", " ")
-@printf("    %-22s  %16s  %16s\n", "── Deflection ──", "── (Ix only) ──", "── (I_LB, unsh) ──")
-@printf("    %-22s  %16.1f  %16.1f\n", "Ix or I_LB (in⁴)", hd_sw_Ix_in4, hd_comp_ILB_in4)
-@printf("    %-22s  %16.2f  %16.2f\n", "δ_DL (in)",
-    ustrip(u"inch", hd_sw_δ_DL), ustrip(u"inch", hd_comp_δ_DL))
-@printf("    %-22s  %16.2f  %16.2f\n", "δ_LL (in)",
-    ustrip(u"inch", hd_sw_δ_LL), ustrip(u"inch", hd_comp_δ_LL))
-@printf("    %-22s  %16.2f  %16.2f\n", "δ_total (in)",
-    ustrip(u"inch", hd_sw_δ_tot), ustrip(u"inch", hd_comp_δ_tot))
-@printf("    %-22s  %12s  %12s\n", "L/δ_LL",
+@printf("    %-22s  %16s  %16s  %16s\n", " ", " ", " ", " ")
+@printf("    %-22s  %16s  %16s  %16s\n", "── Deflection ──",
+    "── (no check) ──", "── (Ix, L/360) ──", "── (I_LB, unsh) ──")
+
+# Strength-only deflection (post-hoc, not constrained)
+hd_str_δ_LL = uconvert(u"inch", hd_coeff * hd_w_LL / hd_sw_str_sec.Ix)
+hd_str_δ_DL = uconvert(u"inch", hd_coeff * hd_w_DL / hd_sw_str_sec.Ix)
+hd_str_δ_tot = hd_str_δ_DL + hd_str_δ_LL
+hd_str_δ_LL_ratio = hd_L_ft / hd_str_δ_LL
+hd_str_Ix_in4 = ustrip(u"inch^4", hd_sw_str_sec.Ix)
+
+@printf("    %-22s  %16.1f  %16.1f  %16.1f\n", "Ix or I_LB (in⁴)",
+    hd_str_Ix_in4, hd_sw_Ix_in4, hd_comp_ILB_in4)
+@printf("    %-22s  %16.2f  %16.2f  %16.2f\n", "δ_DL (in)",
+    ustrip(u"inch", hd_str_δ_DL), ustrip(u"inch", hd_sw_δ_DL), ustrip(u"inch", hd_comp_δ_DL))
+@printf("    %-22s  %16.2f  %16.2f  %16.2f\n", "δ_LL (in)",
+    ustrip(u"inch", hd_str_δ_LL), ustrip(u"inch", hd_sw_δ_LL), ustrip(u"inch", hd_comp_δ_LL))
+@printf("    %-22s  %16.2f  %16.2f  %16.2f\n", "δ_total (in)",
+    ustrip(u"inch", hd_str_δ_tot), ustrip(u"inch", hd_sw_δ_tot), ustrip(u"inch", hd_comp_δ_tot))
+@printf("    %-22s  %12s  %12s  %12s\n", "L/δ_LL",
+    @sprintf("L/%.0f", ustrip(hd_str_δ_LL_ratio)),
     @sprintf("L/%.0f", ustrip(hd_sw_δ_LL_ratio)),
     @sprintf("L/%.0f", ustrip(hd_comp_δ_LL_ratio)))
-@printf("    %-22s  %16s  %16s\n", "LL defl check (L/360)",
+@printf("    %-22s  %16s  %16s  %16s\n", "LL defl check (L/360)",
+    ustrip(hd_str_δ_LL_ratio) >= 360 ? "✓ OK" : "✗ NG",
     ustrip(hd_sw_δ_LL_ratio) >= 360 ? "✓ OK" : "✗ NG",
     ustrip(hd_comp_δ_LL_ratio) >= 360 ? "✓ OK" : "✗ NG")
 
 println()
-bm_note("Composite beam uses $(string(hd_comp_sec.name)) + 6\" solid slab + studs (no deck).")
-bm_note("Steel weight saving: $(@sprintf("%.0f", hd_saving))% lighter than bare steel W (same demand).")
-bm_note("Deflection: w_DL = 1.0 kip/ft, w_LL = 0.8 kip/ft, L = $(@sprintf("%.0f ft", ustrip(u"ft", hd_L_ft))), simply supported.")
-bm_note("Bare steel uses Ix alone; composite uses I_LB (lower-bound, unshored: DL on Ix, LL on I_LB).")
-hd_Ix_gain = (hd_comp_ILB_in4 / hd_sw_Ix_in4 - 1) * 100
-if hd_comp_ILB_in4 > hd_sw_Ix_in4
-    bm_note("Composite I_LB is $(@sprintf("+%.0f%%", hd_Ix_gain)) larger than bare steel Ix despite 71% lighter section.")
+bm_note("Three-way comparison: strength-only → +deflection constraint → +composite action.")
+bm_note("Strength-only: size_beams MIP picks lightest W for Mu/Vu only.")
+bm_note("Str + L/360: size_beams MIP with deflection_limit=1/360, δ_max/I_ref scaling.")
+bm_note("Composite: lightest W+slab satisfying composite φMn/φVn, deflection via I_LB (unshored).")
+if hd_sw_wt_plf > hd_sw_str_wt_plf
+    bm_note("Deflection constraint adds $(@sprintf("+%.0f%%", hd_defl_penalty)) steel weight vs strength-only.")
 else
-    bm_note("Composite I_LB is $(@sprintf("%.0f%%", hd_Ix_gain)) of bare steel Ix — lighter section = less stiffness.")
+    bm_note("Deflection constraint does not govern (same section as strength-only).")
 end
+bm_note("Composite saves $(@sprintf("%.0f%%", hd_saving)) steel weight vs deflection-constrained bare steel.")
 
-hd_ok = (hd_sw.status == JuMP.MOI.OPTIMAL || hd_sw.status == JuMP.MOI.TIME_LIMIT) &&
+hd_ok = (hd_sw_defl.status == JuMP.MOI.OPTIMAL || hd_sw_defl.status == JuMP.MOI.TIME_LIMIT) &&
+        (hd_sw_str.status == JuMP.MOI.OPTIMAL || hd_sw_str.status == JuMP.MOI.TIME_LIMIT) &&
         hd_comp_sec !== nothing &&
         hd_Mu_kNm ≤ hd_sw_Mu_kNm && hd_Mu_kNm ≤ hd_comp_Mu_kNm
 
@@ -2604,8 +2642,10 @@ hd_ok = (hd_sw.status == JuMP.MOI.OPTIMAL || hd_sw.status == JuMP.MOI.TIME_LIMIT
     @test hd_comp_wt_plf ≤ hd_sw_wt_plf
     @test hd_Mu_kNm ≤ hd_sw_Mu_kNm
     @test hd_Mu_kNm ≤ hd_comp_Mu_kNm
-    @test hd_comp_defl.ok_LL || !hd_comp_defl.ok_LL  # deflection computed without error
+    @test hd_comp_defl.ok_LL || !hd_comp_defl.ok_LL
     @test hd_comp_ILB_in4 > 0
+    @test ustrip(hd_sw_δ_LL_ratio) >= 360  # MIP enforced L/360
+    @test hd_sw_wt_plf >= hd_sw_str_wt_plf  # deflection can only add weight
 end
 bm_step_status["HD W vs Comp"] = hd_ok ? "✓" : "✗"
 

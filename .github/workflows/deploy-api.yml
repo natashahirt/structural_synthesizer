@@ -30,14 +30,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       # Request 2-hour session so credentials don't expire during long Docker build + push + deploy.
       # IAM role must allow it: set MaxSessionDuration to 7200 (or higher) on the OIDC role.
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
@@ -48,7 +48,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Compute image tags
         id: meta
@@ -57,7 +57,7 @@ jobs:
           echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image (cached)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

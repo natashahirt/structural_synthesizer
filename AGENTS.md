@@ -56,3 +56,19 @@ Bootstrap mode: `/health` and `/status` respond immediately; `/design`, `/valida
 ### Runner scripts
 
 Per workspace rules, runner scripts belong in `scripts/runners/`. Do not place ad-hoc run scripts in the project root. Prefer Julia runner scripts over shell one-liners.
+
+### Nightly Doc Audit (Cursor Cloud Agent)
+
+The **Nightly Doc Audit** workflow (`.github/workflows/doc-audit.yml`) launches a Cursor Cloud Agent to align `docs/src/` with the Julia source. It runs on schedule, on push to `main` (doc/source paths), or via **Actions → Run workflow**.
+
+**Required:** Repo secret `CURSOR_API_KEY` (from [Cursor Dashboard → Integrations](https://cursor.com/dashboard)).
+
+**"Repository not accessible to the parent installation"**
+
+This error means the Cursor API key’s **GitHub App installation** does not have access to this repo. Fix it by:
+
+1. **Install the Cursor GitHub App** for the account that owns the repo: [github.com/apps/cursor](https://github.com/apps/cursor). During install, choose the correct account (user or org) and **select this repository** (or “All repositories”).
+2. **Use an API key from the same Cursor team** that performed that installation. Keys are per team; the key in `CURSOR_API_KEY` must belong to the team whose GitHub App has access to `natashahirt/menegroth`.
+3. **Org repos:** If the repo is under an organization, install the app on the **organization** and grant access to this repo (or all repos). User-level install only covers your personal repos.
+
+After fixing, re-run the workflow. The Launch step now fails explicitly (exit 1) when the API returns an error, so the run is red and the error is visible in the log.
