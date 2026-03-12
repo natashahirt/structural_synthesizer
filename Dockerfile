@@ -1,6 +1,9 @@
 # Use official Julia image
 FROM julia:1.12.4
 
+# PackageCompiler needs a C compiler + linker to build the sysimage.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 
