@@ -57,7 +57,7 @@ get_Pn
 ```
 
 `get_Pn(s::HSSRectSection, mat, L; axis=:weak)` — nominal compressive strength. Uses:
-- Flexural buckling (E3) with `Fe = π²E/(KL/r)²`
+ - Flexural buckling (E3) with ``F_e = \pi^2 E/(K L / r)^2``
 - Local buckling interaction via effective area `Ae` (E7) when flange or web is slender
 
 The effective area calculation uses AISC E7-3/E7-5 with c1 = 0.18, c2 = 1.31 per Table E7.1 for walls of rectangular HSS.
@@ -98,7 +98,11 @@ get_ϕTn
 get_Tn
 ```
 
-`get_Tn(s::HSSRectSection, mat)` — nominal torsional strength per H3-1: `Tn = Fcr × C` where `C` is the torsional constant for rectangular HSS.
+`get_Tn(s::HSSRectSection, mat)` — nominal torsional strength per H3-1, where `C` is the torsional constant for rectangular HSS.
+
+```math
+T_n = F_{cr}\,C
+```
 
 ```@docs
 torsional_constant_rect_hss
@@ -112,9 +116,13 @@ get_Fcr_torsion
 
 `get_Fcr_torsion(s::HSSRectSection, mat)` — torsional critical stress. Three regimes based on the larger of `b/t` and `h/t`:
 
-- Compact (`≤ 2.45√(E/Fy)`): `Fcr = 0.6 Fy` (H3-3)
+- Compact (``\le 2.45\sqrt{E/F_y}``): ``F_{cr} = 0.6\,F_y`` (H3-3)
 - Noncompact: linear interpolation (H3-4)
-- Slender (`> 3.07√(E/Fy)`): elastic buckling `Fcr = 0.6 E (2.45√(E/Fy))² / (b/t)²` (H3-5)
+- Slender (``> 3.07\sqrt{E/F_y}``): elastic buckling (H3-5)
+
+```math
+F_{cr} = \frac{0.6\,E\,(2.45\sqrt{E/F_y})^2}{(b/t)^2}
+```
 
 ```@docs
 check_combined_torsion_interaction
@@ -139,10 +147,10 @@ get_slenderness
 ```
 
 `get_slenderness(s::HSSRectSection, mat)` — flexural slenderness classification per Table B4.1b:
-- Flange: `λp = 1.12√(E/Fy)`, `λr = 1.40√(E/Fy)`
-- Web: `λp = 2.42√(E/Fy)`, `λr = 3.10√(E/Fy)` (adjusted for plastic neutral axis location on HSS webs; see Commentary §F7)
+- Flange: ``\lambda_p = 1.12\sqrt{E/F_y}``, ``\lambda_r = 1.40\sqrt{E/F_y}``
+- Web: ``\lambda_p = 2.42\sqrt{E/F_y}``, ``\lambda_r = 3.10\sqrt{E/F_y}`` (adjusted for plastic neutral axis location on HSS webs; see Commentary §F7)
 
-`get_compression_limits(s, mat)` — compression slenderness limit per Table B4.1a: `λr = 1.40√(E/Fy)` for walls of rectangular HSS.
+`get_compression_limits(s, mat)` — compression slenderness limit per Table B4.1a: ``\lambda_r = 1.40\sqrt{E/F_y}`` for walls of rectangular HSS.
 
 ## Implementation Details
 
@@ -158,7 +166,7 @@ where ``F_{el} = c_2\,k\,E / (b/t)^2`` with ``c_1 = 0.18``, ``c_2 = 1.31`` from 
 
 ### Shear Area Convention
 
-For strong-axis shear, `Aw = 2 h t` (both webs contribute). For weak-axis shear, `Aw = 2 b t` (both flanges contribute). This differs from the W-shape convention where only the web carries shear.
+For strong-axis shear, ``A_w = 2 h t`` (both webs contribute). For weak-axis shear, ``A_w = 2 b t`` (both flanges contribute). This differs from the W-shape convention where only the web carries shear.
 
 ### No LTB for HSS
 

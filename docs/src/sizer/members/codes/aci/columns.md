@@ -217,7 +217,7 @@ check_biaxial_capacity
 slenderness_ratio
 ```
 
-`slenderness_ratio(section, geometry)` — computes `kLu/r` per §10.10.1.2 (ACI 318-14) / §6.6.4 (ACI 318-19). Uses `r = 0.3h` for rectangular sections and `r = 0.25D` for circular sections.
+`slenderness_ratio(section, geometry)` — computes ``kL_u/r`` per §10.10.1.2 (ACI 318-14) / §6.6.4 (ACI 318-19). Uses ``r = 0.3h`` for rectangular sections and ``r = 0.25D`` for circular sections.
 
 ```@docs
 magnification_factor_nonsway

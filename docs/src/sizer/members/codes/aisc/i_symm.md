@@ -155,7 +155,7 @@ where ``A_w = d \times t_w`` (full-depth web area per AISC §G2.1).
 get_Cv1
 ```
 
-`get_Cv1(s, mat; kv=5.34, rolled=true)` — web shear coefficient per G2.1. For rolled shapes with `h/tw ≤ 2.24√(E/Fy)`, `Cv1 = 1.0`.
+`get_Cv1(s, mat; kv=5.34, rolled=true)` — web shear coefficient per G2.1. For rolled shapes with ``h/t_w \le 2.24\sqrt{E/F_y}``, ``C_{v1} = 1.0``.
 
 ### Torsion (AISC Design Guide 9)
 
@@ -182,8 +182,8 @@ check_torsion_yielding
 `get_slenderness` dispatches on `ISymmSection` for W-shape slenderness classification. See [AISC — HSS Rect](hss_rect.md) for the generic `@docs` entry.
 
 `get_slenderness(s::ISymmSection, mat)` — classifies flange and web as compact, noncompact, or slender for flexure per Table B4.1b. Returns slenderness ratios and limit values:
-- Flange (Case 10): `λp = 0.38√(E/Fy)`, `λr = 1.0√(E/Fy)`
-- Web (Case 15): `λp = 3.76√(E/Fy)`, `λr = 5.70√(E/Fy)`
+- Flange (Case 10): ``\lambda_p = 0.38\sqrt{E/F_y}``, ``\lambda_r = 1.0\sqrt{E/F_y}``
+- Web (Case 15): ``\lambda_p = 3.76\sqrt{E/F_y}``, ``\lambda_r = 5.70\sqrt{E/F_y}``
 
 `get_compression_factors(s, mat)` — computes the Q factor (Qs × Qa) for compression per Table B4.1a / §E7.
 
@@ -203,7 +203,7 @@ See [AISC — Generic](generic.md) for `check_PM_interaction` and `check_PMxMy_i
 
 The flexure calculation first checks LTB against `Lp` and `Lr` (F2-5, F2-6), then checks FLB against Table B4.1b limits. The governing `Mn` is the minimum of all applicable limit states, capped by `Mp`.
 
-For the elastic LTB critical stress (F2-4), the constant `c = 1.0` for doubly-symmetric I-shapes. The `rts` parameter is precomputed and stored on the section, following AISC Commentary Eq. C-F2-15.
+For the elastic LTB critical stress (F2-4), the constant ``c = 1.0`` for doubly-symmetric I-shapes. The `rts` parameter is precomputed and stored on the section, following AISC Commentary Eq. C-F2-15.
 
 ### Compression Algorithm
 

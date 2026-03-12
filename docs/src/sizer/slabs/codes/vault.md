@@ -217,7 +217,13 @@ continuous optimization of rise and/or thickness.  See
 
 ### Allowable Stress
 
-Default: **0.45 × fc'** (unreinforced concrete practice). Override with `VaultOptions(allowable_stress=10.0)` (MPa).
+Default (unreinforced concrete practice):
+
+```math
+0.45\,f'_c
+```
+
+Override with `VaultOptions(allowable_stress=10.0)` (MPa).
 
 ### Thrust Integration
 
@@ -267,7 +273,7 @@ Rise specification (four mutually exclusive forms):
 
 | Parameter | Description |
 |:----------|:------------|
-| `lambda_bounds` | Span-to-rise ratio bounds (`λ = span/rise`), e.g., `(10.0, 20.0)` |
+| `lambda_bounds` | Span-to-rise ratio bounds (\(\lambda = \text{span}/\text{rise}\)), e.g., `(10.0, 20.0)` |
 | `rise_bounds` | Explicit rise bounds in length units |
 | `lambda` | Fixed rise-to-span ratio |
 | `rise` | Fixed rise value |

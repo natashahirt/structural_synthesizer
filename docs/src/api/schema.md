@@ -21,10 +21,10 @@ The top-level input object sent to `POST /design` and `POST /validate`.
 | `vertices` | `Vector{Vector{Float64}}` | yes | 3D vertex coordinates `[[x,y,z], ...]` |
 | `edges` | `APIEdgeGroups` | yes | Edge connectivity by group |
 | `supports` | `Vector{Int}` | yes | 1-based vertex indices with support conditions |
-| `stories_z` | `Vector{Float64}` | no | Story elevation Z coordinates (inferred from vertices if omitted) |
-| `faces` | `APIFaceGroups` | no | Face definitions by group (auto-detected if omitted) |
+| `stories_z` | `Vector{Float64}` | no | Story elevation Z coordinates (inferred from vertices if empty / omitted) |
+| `faces` | `APIFaceGroups` | no | Face definitions by group (auto-detected if empty / omitted) |
 | `params` | `APIParams` | yes | Design parameters |
-| `geometry_hash` | `String` | no | Precomputed geometry hash for caching |
+| `geometry_hash` | `String` | no | Present in the schema, but currently ignored by the server (it recomputes the hash from geometry) |
 
 See [`APIInput`](@ref) in [API Overview](overview.md).
 
@@ -54,10 +54,10 @@ A dictionary mapping face group names to face-coordinate polylines:
 | Field | Type | Default | Description |
 |:------|:-----|:--------|:------------|
 | `unit_system` | `String` | `"imperial"` | `"imperial"` or `"metric"` |
-| `loads` | `APILoads` | — | Gravity loading |
+| `loads` | `APILoads` | `APILoads()` | Gravity loading |
 | `floor_type` | `String` | `"flat_plate"` | Floor system type: `"flat_plate"`, `"flat_slab"`, `"one_way"`, or `"vault"` |
-| `floor_options` | `APIFloorOptions` | — | Floor-specific options |
-| `materials` | `APIMaterials` | — | Material selections |
+| `floor_options` | `APIFloorOptions` | `APIFloorOptions()` | Floor-specific options |
+| `materials` | `APIMaterials` | `APIMaterials()` | Material selections |
 | `column_type` | `String` | `"rc_rect"` | `"rc_rect"`, `"rc_circular"`, `"steel_w"`, `"steel_hss"`, or `"steel_pipe"` |
 | `beam_type` | `String` | `"steel_w"` | `"steel_w"`, `"steel_hss"`, `"rc_rect"`, or `"rc_tbeam"` |
 | `fire_rating` | `Float64` | `0.0` | Fire resistance in hours |
@@ -224,7 +224,7 @@ See [`APIError`](@ref) in [API Overview](overview.md).
 ## Limitations & Future Work
 
 - All dimensions in the output are imperial (ft, in, lb); metric output is planned.
-- Visualization data is optional and controlled by the `SS_ENABLE_VISUALIZATION` environment variable.
+- The current server implementation always builds an analysis model and returns `visualization` data; making this optional (for performance) would require an API option.
 - The schema is versioned implicitly; explicit API versioning (`/v1/design`) is planned.
 
 ## References

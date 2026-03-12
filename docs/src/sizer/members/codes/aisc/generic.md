@@ -19,12 +19,12 @@ Source: `StructuralSizer/src/members/codes/aisc/generic/*.jl`
 ### Tension (AISC §D2)
 
 `get_Pn_tension(s, mat; Ae_ratio=0.75)` — nominal tensile strength, minimum of:
-- **Yielding on gross section (D2-1):** `Pn = Fy × Ag`
-- **Rupture on net section (D2-2):** `Pn = Fu × Ae` where `Ae = Ag × Ae_ratio`
+- **Yielding on gross section (D2-1):** ``P_n = F_y\,A_g``
+- **Rupture on net section (D2-2):** ``P_n = F_u\,A_e`` where ``A_e = A_g\,A_{e,\text{ratio}}``
 
 The default `Ae_ratio = 0.75` is a conservative approximation; use the actual effective net area ratio when connection details are known.
 
-`get_ϕPn_tension(s, mat; Ae_ratio=0.75)` — design tensile strength with `ϕ_t = 0.90` for yielding, `ϕ_t = 0.75` for rupture. Returns the governing (minimum) value.
+`get_ϕPn_tension(s, mat; Ae_ratio=0.75)` — design tensile strength with ``\phi_t = 0.90`` for yielding and ``\phi_t = 0.75`` for rupture. Returns the governing (minimum) value.
 
 ### P-M Interaction (AISC §H1)
 
@@ -50,8 +50,17 @@ check_PMxMy_interaction
 
 `check_PMxMy_interaction(Pu, Mux, Muy, ϕPn, ϕMnx, ϕMny)` — biaxial P-M interaction per H1-1a/b with both axes:
 
-- When `Pr/ϕPn ≥ 0.2`: `ur = Pr/ϕPn + (8/9)(Mrx/ϕMnx + Mry/ϕMny)`
-- When `Pr/ϕPn < 0.2`: `ur = Pr/(2ϕPn) + Mrx/ϕMnx + Mry/ϕMny`
+- When ``P_r/(\phi P_n) \ge 0.2``:
+
+```math
+u_r = \frac{P_r}{\phi P_n} + \frac{8}{9}\left(\frac{M_{rx}}{\phi M_{nx}} + \frac{M_{ry}}{\phi M_{ny}}\right)
+```
+
+- When ``P_r/(\phi P_n) < 0.2``:
+
+```math
+u_r = \frac{P_r}{2\,\phi P_n} + \frac{M_{rx}}{\phi M_{nx}} + \frac{M_{ry}}{\phi M_{ny}}
+```
 
 A convenience overload accepts section, material, unbraced lengths for both axes, and member length.
 
@@ -63,9 +72,13 @@ compute_Cm
 
 `compute_Cm(M1, M2; transverse_loading=false)` — equivalent uniform moment factor per A-8-4:
 
-`Cm = 0.6 - 0.4 (M1/M2)` clamped to [0.4, 1.0]
+```math
+C_m = 0.6 - 0.4\,(M_1/M_2)
+```
 
-When `transverse_loading = true`, `Cm = 1.0` regardless of end moments.
+clamped to \([0.4, 1.0]\).
+
+When `transverse_loading = true`, ``C_m = 1.0`` regardless of end moments.
 
 ```@docs
 compute_Pe1
@@ -97,7 +110,9 @@ compute_RM
 
 `compute_RM(Pmf, Pstory)` — reduction factor for first-order drift (A-8-8):
 
-`RM = 1 - 0.15 (Pmf/Pstory)`
+```math
+R_M = 1 - 0.15\,(P_{mf}/P_{story})
+```
 
 where `Pmf` is the total vertical load in columns that are part of the moment frame.
 
@@ -107,7 +122,9 @@ compute_Pe_story
 
 `compute_Pe_story(H, L, ΔH, RM)` — story elastic critical buckling load (A-8-7):
 
-`Pe_story = RM × H × L / ΔH`
+```math
+P_{e,\text{story}} = R_M\,H\,L/\Delta_H
+```
 
 where `H` is the total story shear, `L` is the story height, and `ΔH` is the first-order interstory drift.
 
