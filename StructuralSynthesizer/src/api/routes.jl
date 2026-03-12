@@ -59,10 +59,11 @@ function register_routes!()
                 ),
             ),
             "endpoints" => Dict(
-                "POST /design" => "Run full design pipeline",
+                "POST /design" => "Start design (returns 202 immediately; poll GET /status then GET /result)",
                 "POST /validate" => "Validate input without running design",
                 "GET /health" => "Server health check",
                 "GET /status" => "Server state: idle, running, queued",
+                "GET /result" => "Last completed design result (after POST /design and status idle)",
                 "GET /schema" => "This documentation",
             ),
         )
@@ -126,8 +127,34 @@ function register_routes!()
             ))
         end
 
-        # Run design (may loop if queued requests arrive)
-        return _run_design_loop(input)
+        # Run design in background so we can return before App Runner's 120s request limit.
+        # Client polls GET /status until idle then GET /result for the result.
+        DESIGN_CACHE.last_result = nothing
+        @async _run_design_loop(input)
+        return _json_resp(202, Dict(
+            "status" => "accepted",
+            "message" => "Design started. Poll GET /status until idle, then GET /result for the result.",
+        ))
+    end
+
+    # ─── GET /result ─────────────────────────────────────────────────────
+    # Returns the last completed design result (for async submit-then-poll flow).
+    # Use after POST /design returns 202 or "queued": poll GET /status until idle, then GET /result.
+    @get "/result" function (_::HTTP.Request)
+        st = status_string(SERVER_STATUS)
+        if st != "idle"
+            return _json_resp(503, Dict(
+                "status" => "running",
+                "message" => "Design still in progress. Poll GET /status until idle.",
+            ))
+        end
+        if isnothing(DESIGN_CACHE.last_result)
+            return _json_resp(404, Dict(
+                "status" => "error",
+                "message" => "No result available. Submit a design first.",
+            ))
+        end
+        return _json_ok(DESIGN_CACHE.last_result)
     end
 
     return nothing
@@ -234,6 +261,7 @@ function _execute_design(input::APIInput)
             message = sprint(showerror, e),
             traceback = sprint(Base.show_backtrace, catch_backtrace()),
         )
+        DESIGN_CACHE.last_result = err
         return _json_err(err)
     end
 end

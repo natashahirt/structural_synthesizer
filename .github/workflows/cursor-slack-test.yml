@@ -1,0 +1,46 @@
+# Manual run: launch a Cursor Cloud Agent that posts a test message to Slack.
+# The agent must have SLACK_WEBHOOK_URL in its environment (Cursor Dashboard).
+name: Cursor Slack test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Launch Cursor agent (Slack test)
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -z "${CURSOR_API_KEY}" ]; then
+            echo "::error::CURSOR_API_KEY secret is not set."
+            exit 1
+          fi
+          PROMPT='Your only task: send one short message to Slack.
+
+          1. The webhook URL is in the environment variable SLACK_WEBHOOK_URL in this environment.
+          2. Use curl to POST a JSON payload to that URL with a "text" field. Example:
+             curl -s -X POST -H "Content-Type: application/json" -d '\''{"text":"Test from Cursor agent (GitHub Actions)"}'\'' "$SLACK_WEBHOOK_URL"
+          3. Run the curl command. Confirm in your response that you did it, or report if SLACK_WEBHOOK_URL is not set.'
+          REPO_URL="https://github.com/${{ github.repository }}"
+          BRANCH="cursor/slack-test"
+          RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
+            -u "$CURSOR_API_KEY:" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              --arg repo "$REPO_URL" \
+              --arg branch "$BRANCH" \
+              '{
+                prompt: { text: $prompt },
+                model: "gpt-5.2",
+                source: { repository: $repo, ref: "main" },
+                target: { autoCreatePr: false, branchName: $branch }
+              }')")
+          echo "Agent launched:"
+          echo "$RESPONSE" | jq .
+          if echo "$RESPONSE" | jq -e '.error' >/dev/null 2>&1; then
+            echo "::error::Cursor API error: $(echo "$RESPONSE" | jq -r '.error')"
+            exit 1
+          fi

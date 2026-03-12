@@ -56,6 +56,8 @@ The deployment uses AWS App Runner for managed container hosting:
 - **Health checks** — `GET /health` used for liveness probing
 - **HTTPS termination** — handled by App Runner's load balancer
 
+**Request timeout:** App Runner enforces a **fixed 120-second limit** on each HTTP request. The API uses an **async submit-then-poll** pattern so long designs do not hit this limit: `POST /design` returns **202 Accepted** immediately and runs the design in the background; the client polls `GET /status` until idle, then fetches the result with `GET /result`. Each of those requests is short, so the 120s limit does not apply to the design computation itself.
+
 ## CI Pipeline
 
 **Source:** `.github/workflows/deploy-api.yml`

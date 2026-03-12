@@ -26,7 +26,7 @@ namespace StructuralSizer.GH.Components
     {
         private static readonly HttpClient _client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(300)
+            Timeout = TimeSpan.FromHours(1)
         };
 
         // ─── Cached results ──────────────────────────────────────────────
@@ -310,7 +310,7 @@ namespace StructuralSizer.GH.Components
                         ScheduleExpire(doc);
                         return;
                     }
-                    AppendLog(doc, "Server reachable. Waiting for API ready (cold start may take ~1 min)...");
+                    AppendLog(doc, "Server reachable. Waiting for API ready (cold start may take up to ~10 min)...");
 
                     _state = RunState.Polling;
                     ScheduleExpire(doc);
@@ -338,8 +338,45 @@ namespace StructuralSizer.GH.Components
 
                     _state = RunState.Sending;
                     ScheduleExpire(doc);
+                    UpdateWaitStatus(doc, "Waiting for design...", 0);
 
-                    string responseJson = await PostDesign(url, jsonBody);
+                    var designCts = new CancellationTokenSource();
+                    var designStart = DateTime.UtcNow;
+                    var timerTask = Task.Run(async () =>
+                    {
+                        int lastTick = 0;
+                        while (!designCts.Token.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                await Task.Delay(1000, designCts.Token);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            int elapsed = (int)(DateTime.UtcNow - designStart).TotalSeconds;
+                            if (elapsed != lastTick)
+                            {
+                                lastTick = elapsed;
+                                UpdateWaitStatus(doc, "Waiting for design...", elapsed);
+                                ScheduleExpire(doc);
+                            }
+                        }
+                    }, designCts.Token);
+
+                    string responseJson;
+                    try
+                    {
+                        responseJson = await PostDesign(url, jsonBody);
+                    }
+                    finally
+                    {
+                        designCts.Cancel();
+                        try { await timerTask; }
+                        catch (OperationCanceledException) { }
+                        ClearWaitStatus();
+                    }
 
                     string status = "ok";
                     double computeTime = 0;
@@ -350,9 +387,9 @@ namespace StructuralSizer.GH.Components
                         status = jobj["status"]?.ToString() ?? "unknown";
                         computeTime = jobj["compute_time_s"]?.ToObject<double>() ?? 0;
 
-                        if (status == "queued")
+                        if (status == "queued" || status == "accepted")
                         {
-                            AppendLog(doc, "Design queued. Waiting for server to become idle...");
+                            AppendLog(doc, "Design started. Waiting for server to become idle...");
                             _state = RunState.Polling;
                             ScheduleExpire(doc);
                             UpdateWaitStatus(doc, "Waiting for server idle...", 0);
@@ -366,8 +403,8 @@ namespace StructuralSizer.GH.Components
                                 ScheduleExpire(doc);
                                 return;
                             }
-                            AppendLog(doc, "Resubmitting to get design result...");
-                            responseJson = await PostDesign(url, jsonBody);
+                            AppendLog(doc, "Fetching design result...");
+                            responseJson = await GetResult(url);
                             var result = JObject.Parse(responseJson);
                             status = result["status"]?.ToString() ?? "unknown";
                             computeTime = result["compute_time_s"]?.ToObject<double>() ?? 0;
@@ -403,6 +440,8 @@ namespace StructuralSizer.GH.Components
                 {
                     AppendLog(doc, "✗ Error: " + ex.Message);
                     _pendingError = $"Unexpected error: {ex.Message}";
+                    if (ex.Message.Contains("504"))
+                        _pendingError += "\nApp Runner limits each request to 120 seconds. If the design takes longer, the request will time out. Consider simplifying the model or using a different host (e.g. ECS) for long-running designs.";
                     _state = RunState.Error;
                 }
 
@@ -451,6 +490,7 @@ namespace StructuralSizer.GH.Components
 
         /// <summary>
         /// POST /design. Throws if response is not success (e.g. 404 during warming, 400 validation).
+        /// May return 202 Accepted (status "accepted") — client should then poll GET /status and GET /result.
         /// </summary>
         private static async Task<string> PostDesign(string baseUrl, string jsonBody)
         {
@@ -464,6 +504,23 @@ namespace StructuralSizer.GH.Components
             }
             if (string.IsNullOrWhiteSpace(body))
                 throw new InvalidOperationException("Server returned empty response.");
+            return body;
+        }
+
+        /// <summary>
+        /// GET /result. Returns the last completed design result. Throws if 503 (still running) or 404 (no result).
+        /// </summary>
+        private static async Task<string> GetResult(string baseUrl)
+        {
+            var response = await _client.GetAsync($"{baseUrl.TrimEnd('/')}/result");
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Server returned {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+            }
+            if (string.IsNullOrWhiteSpace(body))
+                throw new InvalidOperationException("Server returned empty result.");
             return body;
         }
 
