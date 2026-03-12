@@ -53,4 +53,7 @@ EXPOSE 8080
 ENV JULIA_PROJECT=StructuralSynthesizer
 ENV SIZER_HOST=0.0.0.0
 
+# Optional: set GRB_LICENSE_CONTENTS at runtime to write gurobi.lic; then start the API
+RUN chmod +x /app/scripts/api/docker_entry.sh
+ENTRYPOINT ["/app/scripts/api/docker_entry.sh"]
 CMD ["julia", "--project=StructuralSynthesizer", "scripts/api/sizer_bootstrap.jl"]

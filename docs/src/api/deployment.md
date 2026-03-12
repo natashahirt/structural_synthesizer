@@ -21,6 +21,49 @@ The `Dockerfile` uses the official `julia:1.12.4` base image:
 
 The bootstrap entry point provides fast cold starts: the HTTP server is available immediately for health checks, while StructuralSynthesizer loads in the background.
 
+### Relying on the Docker image (build-time precompile)
+
+The Dockerfile runs a **build-time warmup** before the image is published:
+
+```dockerfile
+RUN timeout 1800 julia --project=StructuralSynthesizer -e '\
+  using StructuralSynthesizer; \
+  Base.invokelatest(register_routes!); \
+  @info "Build-time warmup complete"' \
+  || { echo "ERROR: build-time warmup timed out or failed"; exit 1; }
+```
+
+That step loads `StructuralSynthesizer` and registers routes so Julia precompiles the package and its dependency tree (JuMP, Gurobi, HiGHS, Meshes, etc.) **during `docker build`**. The compiled artifacts are stored in the image under `JULIA_DEPOT_PATH=/app/.julia`.
+
+**At runtime** (e.g. on App Runner), when the container starts it reuses that depot: `using StructuralSynthesizer` loads from the precompiled cache instead of compiling from source. So in theory cold start is only “load from disk” (often under a minute). In practice you may still see longer cold starts because:
+
+- **First-time load of native libs** — Gurobi, HiGHS, Ipopt, etc. are loaded and initialized when the package is first used; that can add tens of seconds.
+- **Cache or environment differences** — If the runtime environment differs from build (e.g. different glibc, CPU features, or depot path), Julia may re-precompile some modules, which can take several minutes (as in the “549 seconds” / “197 dependencies successfully precompiled” logs).
+- **Scale-to-zero** — When the service has been idle, App Runner may have stopped the container; the next request starts a new instance and pays full cold start.
+
+So “relying on the Docker image” means: the image is built with a full warmup so that **typical** cold start is much shorter than a clean machine. If the runtime matches the build environment well, startup is often on the order of 1–2 minutes; if not, the first request can still trigger a long precompile. The Grasshopper client waits up to 1 hour for “API ready” and offers a **Cancel** option so the user can stop waiting if needed.
+
+### Storing the environment so startup isn’t necessary
+
+The environment (packages + precompiled code) is already stored in the image under `/app/.julia`. Every new container gets that copy. There is no separate “cloud store” of the environment: App Runner doesn’t support persistent volumes, so you can’t persist a depot between container restarts. You can still reduce or hide cold start in these ways:
+
+1. **Keep one instance warm**  
+   In App Runner, set **Minimum capacity** to **1**. One container stays running; its in-memory state (loaded packages) stays hot. Cold start only happens when that instance is replaced (e.g. after a deploy). Trade-off: you pay for that instance even when idle.
+
+2. **Match build and run environment**  
+   Build the image for the same architecture and OS as the cloud (e.g. `linux/amd64`). In GitHub Actions, the default runner is amd64; App Runner is typically amd64. If they match, Julia is less likely to invalidate the precompiled cache at runtime. Ensure `JULIA_DEPOT_PATH` is the same at build and run (`/app/.julia` in the Dockerfile).
+
+3. **Custom sysimage (PackageCompiler)**  
+   You can “store” the environment as a single native image (a `.so` sysimage) that Julia loads at startup instead of loading many `.ji` files. That makes startup faster and more predictable (often tens of seconds instead of minutes).  
+   - Add a build step that uses [PackageCompiler.jl](https://julialang.github.io/PackageCompiler.jl/stable/) to create a custom sysimage that includes `StructuralSynthesizer` and the code paths used by the API (e.g. `register_routes!`, design pipeline).  
+   - Save the sysimage in the image (e.g. `/app/sys.so`) and run with `julia -J /app/sys.so --project=StructuralSynthesizer scripts/api/sizer_bootstrap.jl`.  
+   This requires a one-time setup (script or extra Docker stage) and longer image build times, but cold start in the cloud becomes much shorter and more consistent. The “environment” is then literally one file (the sysimage) plus the project.
+
+4. **Persistent volume (other services only)**  
+   If you move off App Runner to something that supports volumes (e.g. ECS with EFS, or an EC2 instance with an EBS volume), you could put `JULIA_DEPOT_PATH` on that volume. The first run would populate it; later runs (or new containers mounting the same volume) would reuse it. App Runner does not support this.
+
+**Summary:** The image already stores the environment; cold start is “load that environment into a new container.” To avoid waiting on that, keep one instance warm (min capacity 1) and/or add a custom sysimage so loading is faster.
+
 ## AWS App Runner
 
 The deployment uses AWS App Runner for managed container hosting:
@@ -72,6 +115,37 @@ Bootstrap mode is preferred for production because App Runner requires a health 
 | `SIZER_HOST` | Bind address | `0.0.0.0` |
 | `SS_ENABLE_VISUALIZATION` | Include visualization data in API output | `false` |
 | `SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD` | Run a precompilation workload on startup to warm the JIT | `false` |
+
+### Gurobi license (optional)
+
+To use Gurobi on the server instead of HiGHS, provide a license in one of these ways:
+
+**Option A — Web License Service (WLS)**  
+Set these environment variables in the App Runner service (e.g. in AWS Console → App Runner → your service → Configuration → Environment variables). Prefer storing values in AWS Secrets Manager and referencing them in App Runner.
+
+| Variable | Description |
+|:---------|:------------|
+| `GRB_WLSACCESSID` | WLS access ID from [Gurobi Web License Manager](https://license.gurobi.com/) → API Keys |
+| `GRB_WLSSECRET` | WLS secret from the same API key |
+| `GRB_LICENSEID` | License ID (numeric) |
+
+Gurobi will use these at runtime; no file is needed.
+
+**Option B — License file path**  
+If you have a `gurobi.lic` file in the image (e.g. baked in at build time via a Docker build secret):
+
+| Variable | Description |
+|:---------|:------------|
+| `GRB_LICENSE_FILE` | Path to the license file, e.g. `/opt/gurobi/gurobi.lic` |
+
+**Option C — License content via env var**  
+If the container uses the optional entrypoint (see below), you can set:
+
+| Variable | Description |
+|:---------|:------------|
+| `GRB_LICENSE_CONTENTS` | Full contents of `gurobi.lic` (single line or newlines). Written to a file at startup; `GRB_LICENSE_FILE` is set automatically. |
+
+Store the value in AWS Secrets Manager and inject it as an environment variable in App Runner so the license is not in the image.
 
 ### Performance Tuning
 

@@ -23,7 +23,7 @@ namespace StructuralSizer.GH.Components
             : base("Sizer Visualization",
                    "SizerViz",
                    "Visualize structural design with geometry and deflections",
-                   "StructuralSizer", "Visualization")
+                   "Menegroth", "Visualization")
         { }
 
         public override Guid ComponentGuid =>
