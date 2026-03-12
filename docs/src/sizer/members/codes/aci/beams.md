@@ -240,10 +240,29 @@ The Bischoff equation provides better accuracy for lightly reinforced sections a
 
 The flexure design uses direct solution of the Whitney stress block equilibrium rather than iterative methods. For singly reinforced beams:
 
-1. Compute `φRn = Mu / (b d²)`
-2. Solve `ρ = (0.85 fc′/fy)(1 - √(1 - 2Rn/(0.85 fc′)))` from the quadratic
-3. Check `εt ≥ 0.005` for tension-controlled behavior (φ = 0.9)
-4. Check `ρ ≥ ρ_min = max(3√fc′/fy, 200/fy)` per §9.6.1
+1. Compute:
+
+```math
+\phi R_n = \frac{M_u}{b\,d^2}
+```
+
+2. Solve:
+
+```math
+\rho = \left(\frac{0.85 f'_c}{f_y}\right)\left(1 - \sqrt{1 - \frac{2 R_n}{0.85 f'_c}}\right)
+```
+
+3. Check tension-controlled behavior:
+
+```math
+\varepsilon_t \ge 0.005 \qquad (\phi = 0.9)
+```
+
+4. Check minimum reinforcement (ACI 318-19 §9.6.1):
+
+```math
+\rho \ge \rho_{\min} = \max\!\left(\frac{3\sqrt{f'_c}}{f_y}, \frac{200}{f_y}\right)
+```
 
 When the section cannot be tension-controlled as singly reinforced, the design adds compression steel (`As_prime`) to maintain ductility while increasing capacity.
 

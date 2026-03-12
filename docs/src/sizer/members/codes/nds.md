@@ -75,10 +75,10 @@ The `CD` factor should be set based on the governing load combination:
 
 The NDS module is a **stub** — no capacity calculations are implemented. The planned scope includes:
 
-- **Flexure:** Adjusted bending stress `Fb′ = Fb × CD × CM × Ct × CL × CF × Cfu × Ci × Cr × CV` vs. `fb = M/S`
-- **Compression:** Column stability factor `CP` per NDS §3.7, Euler buckling `FcE = 0.822 Emin′ / (Le/d)²`
-- **Tension:** Adjusted tension `Ft′` vs. `ft = P/A`
-- **Shear:** Adjusted shear `Fv′` vs. `fv = 3V/(2bd)` for rectangular sections
+- **Flexure:** Adjusted bending stress ``F'_b = F_b\,C_D\,C_M\,C_t\,C_L\,C_F\,C_{fu}\,C_i\,C_r\,C_V`` vs. ``f_b = M/S``
+- **Compression:** Column stability factor ``C_P`` per NDS §3.7, Euler buckling ``F_{cE} = 0.822\,E'_{min}/(L_e/d)^2``
+- **Tension:** Adjusted tension ``F'_t`` vs. ``f_t = P/A``
+- **Shear:** Adjusted shear ``F'_v`` vs. ``f_v = 3V/(2bd)`` for rectangular sections
 - **Combined loading:** NDS §3.9 interaction equations for combined bending + axial
 - **Connections:** Not planned for initial implementation
 - **Material database:** NDS Supplement reference design values for sawn lumber and glulam

@@ -98,7 +98,11 @@ The `FiberReinforcedConcrete` type (in `materials/frc.jl`, `materials/types.jl`)
 pf_axial_capacity
 ```
 
-`pf_axial_capacity(s::PixelFrameSection; E_s, ϕ_compression)` — axial capacity per ACI 318-19 §22.4: `Po = 0.85 f'c Ag`, with 0.8 × Po reduction factor (ACI 318-19 Table 22.4.2.1) and ϕ = 0.65 for compression-controlled members.
+`pf_axial_capacity(s::PixelFrameSection; E_s, ϕ_compression)` — axial capacity per ACI 318-19 §22.4, with 0.8 × \(P_o\) reduction factor (ACI 318-19 Table 22.4.2.1) and \(\phi = 0.65\) for compression-controlled members.
+
+```math
+P_o = 0.85\,f'_c\,A_g
+```
 
 ### Flexural Capacity
 
@@ -112,7 +116,13 @@ pf_flexural_capacity
 
 Shear capacity follows the fib MC2010 §7.7-5 FRC shear model (in `codes/fib/frc_shear.jl`):
 - Linear `fFtuk` model using fR1 and fR3
-- Size-effect factor: `k = min(1 + √(200/d), 2)` (corrected from original thesis)
+- Size-effect factor:
+
+```math
+k = \min\left(1 + \sqrt{200/d}, 2\right)
+```
+
+  (corrected from original thesis)
 - `V_Rd,Fmin` floor value per fib MC2010
 
 ### Deflection
@@ -126,15 +136,31 @@ pf_deflection
 **Simplified** (`PFSimplified`, default):
 - Cracking moment `Mcr` per ACI 318-19 §24.2.3.5, plus decompression moment `Mdec` for EPT beams
 - Cracked moment of inertia `Icr` via `Asap.depth_from_area` + `OffsetSection`
-- Effective moment of inertia `Ie` using modified Branson's equation for EPT (Ng & Tan 2006): `Ie = k³ Ig + (1 − k³) Icr` where `k = (Mcr − Mdec) / (Ma − Mdec)`
-- Immediate deflection: `Δ = 5wL⁴ / (384 Ec Ie)`
+- Effective moment of inertia \(I_e\) using modified Branson's equation for EPT (Ng & Tan 2006):
+
+```math
+I_e = k^3 I_g + (1 - k^3) I_{cr}
+```
+
+  where
+
+```math
+k = (M_{cr} - M_{dec})/(M_a - M_{dec})
+```
+
+- Immediate deflection:
+
+```math
+\Delta = \frac{5 w L^4}{384\,E_c\,I_e}
+```
+
 - Serviceability check against ACI 318-19 Table 24.2.2 limits
 
 **Full Ng & Tan** (`PFThirdPointLoad`, `PFSinglePointLoad`):
 Full iterative model from Ng & Tan (2006) Part I with four deflection regimes:
-- `LINEAR_ELASTIC_UNCRACKED`: `Ma ≤ Mcr` — iterate on fps only
-- `LINEAR_ELASTIC_CRACKED`: `Mcr < Ma ≤ Mecl` — nested fps + Icr loops
-- `NONLINEAR_CRACKED`: `Mecl < Ma ≤ My` — same nested loops
+- `LINEAR_ELASTIC_UNCRACKED`: \(M_a \le M_{cr}\) — iterate on fps only
+- `LINEAR_ELASTIC_CRACKED`: \(M_{cr} < M_a \le M_{ecl}\) — nested fps + Icr loops
+- `NONLINEAR_CRACKED`: \(M_{ecl} < M_a \le M_y\) — same nested loops
 - Beyond `My` → returns `Inf` (failure)
 
 Includes cracked bond reduction factor Ωc (4-branch formula), Hognestad parabola concrete strain, and second-order eccentricity/tendon depth updates. `pf_deflection_curve` generates moment–deflection curves for research validation.
@@ -184,9 +210,26 @@ pf_tendon_deviation_force
 
 `pf_tendon_deviation_force(design, V_max; d_ps_support, f_ps, μ_s)` computes the additional clamping force needed at deviator points for friction-based shear transfer between pixels:
 - Tendon angle θ from eccentricity change over pixel length
-- Horizontal PT component: `A_ps × f_ps × cos(θ)`
-- Friction-required normal force: `V_max / μ_s` (default μ_s = 0.3)
-- Additional force: `N_friction − P_horizontal` (negative = PT alone suffices)
+- Horizontal PT component:
+
+```math
+P_{\text{horizontal}} = A_{ps}\, f_{ps}\, \cos(\theta)
+```
+
+- Friction-required normal force:
+
+```math
+N_{\text{friction}} = V_{\max}/\mu_s
+```
+
+  (default \(\mu_s = 0.3\))
+- Additional force:
+
+```math
+N_{\text{add}} = N_{\text{friction}} - P_{\text{horizontal}}
+```
+
+  (negative = PT alone suffices)
 
 Stored in `PixelFrameDesign.tendon_deviation`. Reference: Wongsittikan (2024), `designPixelframe.jl` lines 474–536.
 
@@ -198,18 +241,38 @@ The flexural capacity calculation uses an iterative strain compatibility approac
 
 1. Assume a neutral axis depth `c`
 2. Compute concrete compressive force using Whitney stress block
-3. Compute tendon stress from strain compatibility: `fps = fpe + Δfps` where `Δfps` depends on the tendon strain increment
-4. Add FRC tensile contribution from fibers in the tension zone: `Tf = fFtu × Af_tension`
-5. Iterate on `c` until force equilibrium is achieved
-6. Compute `Mn = ΣF × arm`
+3. Compute tendon stress from strain compatibility:
 
-The FRC tensile strength in the tension zone uses `fFtu = fR3/3` from the fib Model Code 2010.
+```math
+f_{ps} = f_{pe} + \Delta f_{ps}
+```
+
+4. Add FRC tensile contribution from fibers in the tension zone:
+
+```math
+T_f = f_{Ftu}\,A_{f,\text{tension}}
+```
+
+5. Iterate on `c` until force equilibrium is achieved
+6. Compute:
+
+```math
+M_n = \sum F \times \text{arm}
+```
+
+The FRC tensile strength in the tension zone uses:
+
+```math
+f_{Ftu} = f_{R3}/3
+```
+
+from the fib Model Code 2010.
 
 ### Deflection Regimes
 
 The deflection calculation transitions between regimes based on the applied moment relative to cracking moment:
 
-- `Ma < Mcr`: uncracked (`Ie = Ig`)
+- \(M_a < M_{cr}\): uncracked (\(I_e = I_g\))
 - `Ma ≥ Mcr`: cracked, using Bischoff-type effective moment of inertia
 - For high loads: nonlinear cracked behavior with reduced stiffness
 
@@ -235,7 +298,7 @@ PixelFrame sections use SI units (mm, MPa) throughout, unlike the US-customary u
 
 | Item | Original | This Implementation | Reason |
 |:-----|:---------|:--------------------|:-------|
-| Shear `k` factor | `min(√(200/d), 2)` (typo from thesis) | `min(1 + √(200/d), 2)` | Correct per fib MC2010 §7.7-5 |
+| Shear \(k\) factor | ``\min(\sqrt{200/d}, 2)`` (typo from thesis) | ``\min(1 + \sqrt{200/d}, 2)`` | Correct per fib MC2010 §7.7-5 |
 | `V_Rd,Fmin` floor | Not implemented | Implemented | Enhancement per fib MC2010 |
 | Unit handling | Bare `Float64` in mm/N/MPa | `Unitful.jl` quantities | Catches dimension errors at compile time |
 | Geometry engine | Custom polygon math | `Asap.jl` `CompoundSection` | Reuses validated structural analysis library |

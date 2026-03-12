@@ -2,6 +2,7 @@
 
 > ```julia
 > using StructuralSizer
+> using Unitful
 > VRd = frc_shear_capacity(bw=300u"mm", d=500u"mm", fc′=40u"MPa",
 >     fR1=4.0u"MPa", fR3=3.5u"MPa", ρ_l=0.015, σ_cp=0.0u"MPa", γ_c=1.5)
 > ```
@@ -47,19 +48,35 @@ Two methods are available:
 
 The shear resistance of FRC members without conventional shear reinforcement is:
 
-`VRd,F = { (0.18/γc) k [100 ρ₁ (1 + 7.5 fFtuk/fctk) fck]^(1/3) + 0.15 σcp } bw d`
+```math
+V_{Rd,F} = \left\{ \left(0.18/\gamma_c\right)\,k\,\left[100\,\rho_1\,\left(1 + 7.5\,f_{Ftuk}/f_{ctk}\right)\,f_{ck}\right]^{1/3} + 0.15\,\sigma_{cp} \right\}\, b_w\, d
+```
 
 where:
 
-- `k = 1 + √(200/d) ≤ 2.0` — size effect factor (d in mm)
-- `ρ₁ = As/(bw d) ≤ 0.02` — longitudinal reinforcement ratio
-- `fFtuk = fR3/3` — characteristic ultimate residual tensile strength
-- `fctk = 0.7 × 0.3 × fck^(2/3)` — characteristic tensile strength (for fck in MPa)
+- ```math
+  k = 1 + \sqrt{200/d} \le 2.0
+  ```
+  — size effect factor (\(d\) in mm)
+- ```math
+  \rho_1 = A_s/(b_w d) \le 0.02
+  ```
+  — longitudinal reinforcement ratio
+- ```math
+  f_{Ftuk} = f_{R3}/3
+  ```
+  — characteristic ultimate residual tensile strength
+- ```math
+  f_{ctk} = 0.7 \times 0.3 \times f_{ck}^{2/3}
+  ```
+  — characteristic tensile strength (for \(f_{ck}\) in MPa)
 - `fck` = characteristic compressive strength
 
 The minimum shear resistance is:
 
-`VRd,F,min = (0.035 k^(3/2) √fck + 0.15 σcp) bw d`
+```math
+V_{Rd,F,min} = \left(0.035\,k^{3/2}\,\sqrt{f_{ck}} + 0.15\,\sigma_{cp}\right)\, b_w\, d
+```
 
 The fiber contribution enters through the term `7.5 fFtuk/fctk`, which amplifies the effective longitudinal reinforcement ratio. This captures the fiber bridging effect that provides post-cracking tensile resistance across diagonal shear cracks.
 
