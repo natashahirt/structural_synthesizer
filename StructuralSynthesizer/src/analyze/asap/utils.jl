@@ -110,20 +110,12 @@ function to_asap!(struc::BuildingStructure{T, A, P};
             continue
         end
         
-        if use_patterns
-            dead, live = _create_cell_tributary_loads!(
-                loads, frame_elements, skel, struc, cell, cell_idx, params;
-                split_dead_live=true)
-            struc.cell_dead_loads[cell_idx] = dead
-            struc.cell_live_loads[cell_idx] = live
-            struc.cell_tributary_loads[cell_idx] = vcat(dead, live)
-        else
-            combined = _create_cell_tributary_loads!(
-                loads, frame_elements, skel, struc, cell, cell_idx, params)
-            struc.cell_tributary_loads[cell_idx] = combined
-            struc.cell_dead_loads[cell_idx] = Asap.TributaryLoad[]
-            struc.cell_live_loads[cell_idx] = Asap.TributaryLoad[]
-        end
+        dead, live = _create_cell_tributary_loads!(
+            loads, frame_elements, skel, struc, cell, cell_idx, params;
+            split_dead_live=true)
+        struc.cell_dead_loads[cell_idx] = dead
+        struc.cell_live_loads[cell_idx] = live
+        struc.cell_tributary_loads[cell_idx] = vcat(dead, live)
     end
     
     # 6. Add structural effects (e.g., vault thrust)
@@ -367,27 +359,17 @@ function sync_asap!(struc::BuildingStructure;
                    !isempty(struc.cell_dead_loads) &&
                    any(!isempty, values(struc.cell_dead_loads))
     
-    # 2. Update tributary load pressures
+    # 2. Update tributary load pressures (dead/live are always split)
     combo = governing_combo(params)
-    combos = params.load_combinations
     for (cell_idx, cell) in enumerate(struc.cells)
         cell.floor_type == :grade && continue
-        if use_patterns
-            dead_p = uconvert(u"Pa", combo.D * (cell.sdl + cell.self_weight))
-            live_p = uconvert(u"Pa", combo.L * cell.live_load)
-            for tload in get(struc.cell_dead_loads, cell_idx, Asap.TributaryLoad[])
-                tload.pressure = dead_p
-            end
-            for tload in get(struc.cell_live_loads, cell_idx, Asap.TributaryLoad[])
-                tload.pressure = live_p
-            end
-        else
-            # Only update combined loads if NOT using patterns
-            # (If using patterns, the dead/live updates above already updated the objects in tributary_loads)
-            new_pressure = uconvert(u"Pa", envelope_pressure(combos, cell.sdl + cell.self_weight, cell.live_load))
-            for tload in get(struc.cell_tributary_loads, cell_idx, Asap.TributaryLoad[])
-                tload.pressure = new_pressure
-            end
+        dead_p = uconvert(u"Pa", combo.D * (cell.sdl + cell.self_weight))
+        live_p = uconvert(u"Pa", combo.L * cell.live_load)
+        for tload in get(struc.cell_dead_loads, cell_idx, Asap.TributaryLoad[])
+            tload.pressure = dead_p
+        end
+        for tload in get(struc.cell_live_loads, cell_idx, Asap.TributaryLoad[])
+            tload.pressure = live_p
         end
     end
     

@@ -70,7 +70,8 @@ ratio = check_PMxMy_interaction(Pu, Mux, Muy, ϕPn, ϕMnx, ϕMny)
 | `ϕ_c` | 0.9 | Compression resistance factor |
 | `ϕ_v` | 1.0 | Shear resistance factor (rolled shapes) |
 | `ϕ_t` | 0.9 | Tension resistance factor |
-| `deflection_limit` | `nothing` | L/Δ limit (e.g. 360.0 for L/360) |
+| `deflection_limit` | `nothing` | L/Δ limit for live-load deflection (e.g. 360.0 for L/360) |
+| `total_deflection_limit` | `nothing` | L/Δ limit for total deflection (dead + live); when set, both limits are checked |
 | `max_depth` | `Inf` | Maximum section depth constraint |
 | `prefer_penalty` | 1.0 | Penalty multiplier for non-preferred sections |
 
@@ -219,9 +220,11 @@ The `AISCChecker` constructor accepts all fields as keyword arguments:
 
 ```julia
 checker = AISCChecker(ϕ_b=0.9, ϕ_c=0.9, ϕ_v=1.0, deflection_limit=360.0, max_depth=24.0)
+# Optionally add total deflection limit (e.g. L/240 for dead + live):
+checker = AISCChecker(deflection_limit=360.0, total_deflection_limit=240.0)
 ```
 
-Set `deflection_limit` to `nothing` to skip deflection checks. The `prefer_penalty` multiplies the objective coefficient for non-preferred sections (> 1.0 penalizes them in optimization).
+Set `deflection_limit` to `nothing` to skip live-load deflection checks. Set `total_deflection_limit` to enforce a limit on total (dead + live) deflection; when both are set, both limits are checked. The `prefer_penalty` multiplies the objective coefficient for non-preferred sections (> 1.0 penalizes them in optimization).
 
 ## Chapter I — Composite Members (Beams)
 
