@@ -23,6 +23,7 @@ using Oxygen
 println(stdout, "[bootstrap] loading HTTP...")
 flush(stdout)
 using HTTP
+using Unitful
 
 const PORT = parse(Int, get(ENV, "PORT", get(ENV, "SIZER_PORT", "8080")))
 const HOST = get(ENV, "SIZER_HOST", "0.0.0.0")
@@ -61,7 +62,6 @@ const SS_PKGID = Base.PkgId(Base.UUID("fc54e8a9-dab1-4bea-a64f-f8e9b3ce8a89"), "
 
         # Belt-and-suspenders: ensure Asap units are in Unitful.basefactors.
         # The __init__ chain should have done this, but log the state for debugging.
-        using Unitful
         n_bf = length(Unitful.basefactors)
         has_ksi = haskey(Unitful.basefactors, :KipPerSquareInch)
         println(stdout, "[bootstrap] basefactors: $n_bf entries, has :KipPerSquareInch = $has_ksi")
