@@ -200,12 +200,12 @@ namespace Menegroth.GH.Components
             }
 
             // ─── Face extraction (optional): curves or planar surfaces ───
-            var faceInputs = new List<Grasshopper.Kernel.Types.IGH_GeometricGoo>();
+            var faceInputs = new List<GeometryBase>();
             if (DA.GetDataList(3, faceInputs) && faceInputs.Count > 0)
             {
-                foreach (var goo in faceInputs)
+                foreach (var geom in faceInputs)
                 {
-                    if (goo?.Value is not Rhino.Geometry.GeometryBase geom) continue;
+                    if (geom == null) continue;
                     var coords = GetBoundaryPolylineCoords(geom);
                     if (coords == null || coords.Count < 3) continue;
 
@@ -216,10 +216,12 @@ namespace Menegroth.GH.Components
                     {
                         int vi = GetOrAddVertex(new Point3d(c[0], c[1], c[2]));
                         var v = geo.Vertices[vi - 1];
+                        var hasPrev = snapped.Count > 0;
+                        var prev = hasPrev ? snapped[snapped.Count - 1] : null;
                         if (snapped.Count == 0 ||
-                            Math.Abs(snapped[^1][0] - v[0]) > TOL ||
-                            Math.Abs(snapped[^1][1] - v[1]) > TOL ||
-                            Math.Abs(snapped[^1][2] - v[2]) > TOL)
+                            Math.Abs(prev[0] - v[0]) > TOL ||
+                            Math.Abs(prev[1] - v[1]) > TOL ||
+                            Math.Abs(prev[2] - v[2]) > TOL)
                         {
                             snapped.Add(new[] { v[0], v[1], v[2] });
                         }
