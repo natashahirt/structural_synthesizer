@@ -134,7 +134,7 @@ function _register_edge!(skel::BuildingSkeleton, idx::Int, v1::Int, v2::Int)
 end
 
 """Register a new face in the lookup (if enabled)."""
-function _register_face!(skel::BuildingSkeleton, idx::Int, v_indices::Vector{Int})
+function _register_face!(skel::BuildingSkeleton, idx::Int, v_indices::AbstractVector{Int})
     isnothing(skel.lookup) && return
     skel.lookup.face_index[_face_key(v_indices)] = idx
     skel.lookup.version += 1

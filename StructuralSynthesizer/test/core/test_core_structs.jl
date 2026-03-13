@@ -19,6 +19,17 @@ using Meshes
         @test length(skel.vertices) == 2
     end
 
+    @testset "BuildingSkeleton face lookup (quad / AbstractVector{Int})" begin
+        # Regression: _register_face! must accept AbstractVector{Int} (e.g. SizedVector from Meshes).
+        skel = BuildingSkeleton{Float64}()
+        enable_lookup!(skel)
+        pts = [Point(0.0, 0.0, 0.0), Point(1.0, 0.0, 0.0), Point(1.0, 1.0, 0.0), Point(0.0, 1.0, 0.0)]
+        quad = Meshes.Ngon(pts...)
+        idx = StructuralSynthesizer.add_face!(skel, quad; group=:slabs, level_idx=0)
+        @test idx == 1
+        @test find_face(skel, [1, 2, 3, 4]) == 1
+    end
+
     @testset "BuildingStructure" begin
         skel = BuildingSkeleton{Float64}()
         struc = BuildingStructure(skel)
