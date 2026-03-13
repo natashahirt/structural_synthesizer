@@ -231,7 +231,7 @@ function _add_explicit_faces!(skel::BuildingSkeleton{T}, face_groups::APIFaceGro
                                coord_unit, _to_m) where T
     for (category, polylines) in face_groups
         group = Symbol(category)
-        for poly_coords in polylines
+        for (poly_idx, poly_coords) in enumerate(polylines)
             pts = [Meshes.Point(_to_m(c[1]), _to_m(c[2]), _to_m(c[3]))
                    for c in poly_coords]
             polygon = Meshes.Ngon(pts...)
@@ -240,7 +240,14 @@ function _add_explicit_faces!(skel::BuildingSkeleton{T}, face_groups::APIFaceGro
             z_val = Meshes.coords(pts[1]).z
             level_idx = _find_level_idx(skel, z_val)
 
-            add_face!(skel, polygon; group=group, level_idx=level_idx)
+            face_idx = add_face!(skel, polygon; group=group, level_idx=level_idx)
+
+            # Explicit faces must map to existing skeleton edges; otherwise tributary loading is undefined.
+            if isempty(skel.face_edge_indices[face_idx])
+                throw(ArgumentError(
+                    "Explicit face \"$category\"[$poly_idx] could not be mapped to skeleton edges. " *
+                    "Ensure face boundary vertices align with existing edge vertices (same coordinates/units)."))
+            end
         end
     end
 end

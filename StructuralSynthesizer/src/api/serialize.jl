@@ -3,6 +3,8 @@
 #
 # All length/volume/mass values are converted to the display system specified
 # in design.params.display_units (from params.unit_system: "imperial" or "metric").
+# Positions and displacements sent to clients (e.g. Grasshopper) are forced to
+# regular length units (ft or m) so the API always returns consistent numeric data.
 # =============================================================================
 
 """Round a number to the given decimal digits (default 3). Used for consistent API output."""
@@ -11,17 +13,49 @@ _round_val(x; digits=3) = round(x; digits=digits)
 """Return sorted indices of a dict (e.g. design.slabs, design.columns)."""
 _sorted_indices(d::AbstractDict) = sort(collect(keys(d)))
 
-"""Convert a length value to display units as Float64. Accepts Number (assumed m) or Quantity."""
-function _to_display_length(du::DisplayUnits, value)
+"""Convert a length value to display units as Float64. Accepts Number (assumed m) or Quantity.
+Throws `ArgumentError` when a non-length quantity is passed into a length field.
+Optional `context` (e.g. (node_id=i, position_index=j)) is included for diagnostics."""
+function _to_display_length(du::DisplayUnits, value; context=nothing)
     len_unit = du.units[:length]
-    if value isa Number
+    if value isa Quantity
+        try
+            return ustrip(len_unit, uconvert(len_unit, value))
+        catch e
+            if e isa Unitful.DimensionError
+                d = dimension(value)
+                msg = context === nothing ?
+                      "Expected length (𝐋), got $d in a length output field." :
+                      "Expected length (𝐋), got $d in a length output field (context=$(context))."
+                throw(ArgumentError(msg))
+            end
+            rethrow()
+        end
+    elseif value isa Number
+        # Plain numerics are treated as SI meters by API convention.
         return ustrip(len_unit, value * u"m")
+    else
+        return Float64(value)
     end
-    return ustrip(len_unit, uconvert(len_unit, value))
 end
 
 """Length unit string for API consumers (e.g. Grasshopper): \"ft\" or \"m\"."""
 _length_unit_string(du::DisplayUnits) = du.units[:length] == u"ft" ? "ft" : "m"
+
+"""
+Force a 3D position (or any length-3 vector of numbers/quantities) into Float64s
+in display length units. Used so Grasshopper and other clients always receive positions
+in consistent units (ft or m). Non-length quantities throw immediately.
+"""
+function _position_to_display_lengths(du::DisplayUnits, position_vec; node_id=nothing)
+    n = length(position_vec)
+    out = Vector{Float64}(undef, n)
+    for j in 1:n
+        ctx = node_id !== nothing ? (node_id=node_id, position_index=j) : (position_index=j,)
+        out[j] = _to_display_length(du, position_vec[j]; context=ctx)
+    end
+    return out
+end
 
 """Convert a Quantity to display unit for a given category (:length, :thickness, :volume, :mass, etc.)."""
 _to_display(du::DisplayUnits, category::Symbol, value) =
@@ -210,12 +244,15 @@ function _serialize_visualization(design::BuildingDesign, du::DisplayUnits)
     )
 end
 
-"""Serialize model nodes with positions and displacements for visualization."""
+"""Serialize model nodes with positions and displacements for visualization.
+Positions and displacements are forced to display length units (ft or m) so Grasshopper
+always receives consistent numeric data."""
 function _serialize_visualization_nodes(model, du::DisplayUnits)
     nodes = APIVisualizationNode[]
     for (i, node) in enumerate(model.nodes)
-        pos = [_to_display_length(du, p) for p in node.position]
-        # node.displacement: first 3 components are translations; to_displacement_vec returns Float64 in m
+        # Force position to three lengths in display units (handles bad dimensions with 0.0 + warning)
+        pos = _position_to_display_lengths(du, node.position; node_id=i)
+        # Displacement: first 3 components are translations (Float64 in m from to_displacement_vec)
         disp_m = Asap.to_displacement_vec(node.displacement)[1:3]
         disp = _to_display_length.(du, disp_m)
         push!(nodes, APIVisualizationNode(
@@ -503,7 +540,7 @@ function _serialize_deflected_slab_meshes(design::BuildingDesign, model, du::Dis
                 tri_indices = Int[]
                 for node in shell_nodes
                     if !haskey(vertex_map, node)
-                        pos = [_to_display_length(du, p) for p in node.position]
+                        pos = _position_to_display_lengths(du, node.position)
                         push!(vertices, [_round_val(p; digits=6) for p in pos])
 
                         # to_displacement_vec returns Float64 in m; do not ustrip to ft (DimensionError)

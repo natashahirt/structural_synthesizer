@@ -14,6 +14,7 @@ using Asap  # ensures `u"kip"`, `u"ksi"`, etc resolve via Asap unit module
         include("core/test_design_architecture.jl")
         include("core/test_member_hierarchy.jl")
         include("core/test_design_api.jl")
+        include("core/test_api_units_faces.jl")
     end
 
     # ─── Geometry & Utilities ────────────────────────────────────────────
