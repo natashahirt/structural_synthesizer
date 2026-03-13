@@ -35,8 +35,8 @@ COPY StructuralVisualization/src ./StructuralVisualization/src
 COPY external/Asap/src ./external/Asap/src
 COPY scripts/api ./scripts/api
 
-# Precompile Oxygen + HTTP so the bootstrap binds quickly.
-RUN julia --project=StructuralSynthesizer -e 'using Oxygen; using HTTP'
+# Precompile Oxygen, HTTP, and Unitful so the bootstrap binds quickly (avoids runtime recompile).
+RUN julia --project=StructuralSynthesizer -e 'using Oxygen; using HTTP; using Unitful'
 
 # Precompile StructuralSynthesizer + register routes so runtime startup is fast.
 # This layer is cached until source or Project.toml files change.

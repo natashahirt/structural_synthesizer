@@ -11,7 +11,7 @@
 # Env: PORT or SIZER_PORT, SIZER_HOST (default 0.0.0.0)
 # =============================================================================
 
-println(stdout, "[bootstrap] starting")
+println(stdout, "[bootstrap] starting (JULIA_DEPOT_PATH=$(get(ENV, "JULIA_DEPOT_PATH", "unset")))")
 flush(stdout)
 
 ENV["SS_ENABLE_VISUALIZATION"] = get(ENV, "SS_ENABLE_VISUALIZATION", "false")
