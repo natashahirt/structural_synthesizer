@@ -73,6 +73,16 @@ See [ACI Foundation Design](codes/aci.md) for full docstrings.
 The `Soil` struct stores geotechnical parameters used for bearing, subgrade
 reaction, and pile capacity calculations.  See the table below for fields.
 
+```@docs
+Soil
+loose_sand
+medium_sand
+dense_sand
+soft_clay
+stiff_clay
+hard_clay
+```
+
 ### Soil Presets
 
 Six preset soils are provided (see table below).  Import them directly:
@@ -82,6 +92,10 @@ Six preset soils are provided (see table below).  Import them directly:
 
 `FoundationDemand` wraps the column-to-foundation interface including factored
 and service loads, moments, shears, and column geometry.
+
+```@docs
+FoundationDemand
+```
 
 ### Result Types
 
@@ -186,10 +200,17 @@ The option structs configure code-specific design parameters:
 
 - **`SpreadFootingOptions`** — cover, bar size, pier shape, strength reduction factors.
 - **`StripFootingOptions`** — similar to spread footing options, for continuous strips.
-- **`MatFootingOptions`** — analysis method selection, cover, bar size, overhang ratio, minimum thickness.
+- **`MatFootingOptions`** — analysis method selection, cover, bar sizes, minimum thickness, and optional edge overhang.
 - **`FoundationOptions`** — top-level container selecting code, strategy, and mat coverage threshold.
 
 See [ACI Foundation Design](codes/aci.md) for full docstrings and default values.
+
+```@docs
+SpreadFootingOptions
+StripFootingOptions
+MatFootingOptions
+FoundationOptions
+```
 
 Key `SpreadFootingOptions` fields:
 

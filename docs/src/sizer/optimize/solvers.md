@@ -46,6 +46,13 @@ evaluation and objective computation.
 
 - `optimize_continuous(problem; ...)` — solve a continuous NLP problem implementing the `AbstractNLPProblem` interface.
 
+```@docs
+optimize_discrete
+optimize_binary_search
+optimize_continuous
+expand_catalog_with_materials
+```
+
 ## Implementation Details
 
 ### MIP Discrete Optimization
