@@ -238,7 +238,7 @@ sp_demand = FoundationDemand(1; Pu=sp_Pu, Ps=sp_Ps,
     c1=sp_c1, c2=sp_c1, shape=:rectangular)
 sp_soil = Soil(sp_qa, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
 
-sp_opts = SpreadFootingOptions(
+sp_opts = SpreadParams(
     material = RC_3000_60,
     bar_size = 8,
     cover = sp_cover,
@@ -367,7 +367,7 @@ println("  Uniform soil pressure upward; V(x)/M(x) at 500 stations along length.
 str_positions = [0.0u"ft", 20.0u"ft"]
 str_soil = Soil(4.32ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
 
-str_opts = StripFootingOptions(
+str_opts = StripParams(
     material = RC_3000_60,
     bar_size_long = 8,
     bar_size_trans = 5,
@@ -545,7 +545,7 @@ Ps_total_mat = sum(to_kip(d.Ps) for d in mat_demands)
 mat_soil = Soil(3.0ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa";
                 ks=25000.0u"kN/m^3")
 
-mat_opts = MatFootingOptions(
+mat_opts = MatParams(
     material = RC_4000_60,
     bar_size_x = 8,
     bar_size_y = 8,
@@ -663,12 +663,12 @@ println("  FEA:        Shell plate on Winkler springs (ACI 336.2R §6.4/§6.7)")
 
 _rpt.sub("3b-A — Moderate Loading (same as Step 3)")
 
-mat_opts_shukla = MatFootingOptions(
+mat_opts_shukla = MatParams(
     material = RC_4000_60, bar_size_x = 8, bar_size_y = 8,
     cover = 3.0u"inch", min_depth = 24.0u"inch", depth_increment = 1.0u"inch",
     analysis_method = ShuklaAFM(),
 )
-mat_opts_fea = MatFootingOptions(
+mat_opts_fea = MatParams(
     material = RC_4000_60, bar_size_x = 8, bar_size_y = 8,
     cover = 3.0u"inch", min_depth = 24.0u"inch", depth_increment = 1.0u"inch",
     analysis_method = WinklerFEA(),
@@ -729,11 +729,11 @@ heavy_base = (material=RC_4000_60, bar_size_x=8, bar_size_y=8,
               cover=3.0u"inch", min_depth=24.0u"inch", depth_increment=1.0u"inch")
 
 heavy_rigid  = design_footing(MatFoundation(), heavy_demands, heavy_positions, heavy_soil;
-    opts=MatFootingOptions(; heavy_base..., analysis_method=RigidMat()))
+    opts=MatParams(; heavy_base..., analysis_method=RigidMat()))
 heavy_shukla = design_footing(MatFoundation(), heavy_demands, heavy_positions, heavy_soil;
-    opts=MatFootingOptions(; heavy_base..., analysis_method=ShuklaAFM()))
+    opts=MatParams(; heavy_base..., analysis_method=ShuklaAFM()))
 heavy_fea    = design_footing(MatFoundation(), heavy_demands, heavy_positions, heavy_soil;
-    opts=MatFootingOptions(; heavy_base..., analysis_method=WinklerFEA()))
+    opts=MatParams(; heavy_base..., analysis_method=WinklerFEA()))
 
 heavy_flex = [("Rigid", heavy_rigid), ("Analytical", heavy_shukla), ("FEA", heavy_fea)]
 
@@ -897,7 +897,7 @@ end
 _rpt.sub("3c-B — Analytical (Shukla) Equilibrium (Moderate Loading)")
 let
     plan = StructuralSizer._mat_plan_sizing(mat_positions,
-        MatFootingOptions(material=RC_4000_60, min_depth=mat_result_shukla.D);
+        MatParams(material=RC_4000_60, min_depth=mat_result_shukla.D);
         demands = mat_demands, soil = mat_soil)
     B = plan.B; Lm = plan.Lm
     h = mat_result_shukla.D
@@ -988,7 +988,7 @@ building_area = 50.0 * 25.0  # ft²
 _rpt.sub("4B — Strategy 1: All Spread Footings")
 
 spread_results = SpreadFootingResult[]
-spread_opts = SpreadFootingOptions(
+spread_opts = SpreadParams(
     material = RC_4000_60,
     bar_size = 7,
     cover = 3.0u"inch",
@@ -1026,7 +1026,7 @@ _rpt.sub("4C — Strategy 2: Strip Footings (Paired Columns)")
 println("  Pair columns along y-axis (2 per strip at each x-coordinate).")
 
 strip_results = StripFootingResult[]
-strip_opts = StripFootingOptions(
+strip_opts = StripParams(
     material = RC_4000_60,
     bar_size_long = 7,
     bar_size_trans = 5,
@@ -1067,7 +1067,7 @@ end
 
 _rpt.sub("4D — Strategy 3: Mat Foundation")
 
-mat_comp_opts = MatFootingOptions(
+mat_comp_opts = MatParams(
     material = RC_4000_60,
     bar_size_x = 7,
     bar_size_y = 7,
@@ -1131,7 +1131,7 @@ sweep_Pu = 500.0kip
 sweep_Ps = 350.0kip
 sweep_demand = FoundationDemand(1; Pu=sweep_Pu, Ps=sweep_Ps,
     c1=18.0u"inch", c2=18.0u"inch", shape=:rectangular)
-sweep_opts = SpreadFootingOptions(material=RC_4000_60)
+sweep_opts = SpreadParams(material=RC_4000_60)
 
 for qa_val in [2.0, 3.0, 4.0, 5.0, 6.0, 8.0]
     s = Soil(qa_val * ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")

@@ -25,7 +25,7 @@ namespace Menegroth.GH.Components
             : base("Design Results",
                    "DesignRes",
                    "Design results: summary statistics and per-element data",
-                   "Menegroth", "Core")
+                   "Menegroth", " Results")
         { }
 
         public override Guid ComponentGuid =>

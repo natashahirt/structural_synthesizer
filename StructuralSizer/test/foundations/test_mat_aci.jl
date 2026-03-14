@@ -51,13 +51,13 @@ function run_all_methods(demands, positions, soil; min_depth=24.0u"inch")
             depth_increment=1.0u"inch")
 
     r_rigid  = design_footing(MatFoundation(), demands, positions, soil;
-        opts=MatFootingOptions(; base..., analysis_method=RigidMat()))
+        opts=MatParams(; base..., analysis_method=RigidMat()))
 
     r_shukla = design_footing(MatFoundation(), demands, positions, soil;
-        opts=MatFootingOptions(; base..., analysis_method=ShuklaAFM()))
+        opts=MatParams(; base..., analysis_method=ShuklaAFM()))
 
     r_fea    = design_footing(MatFoundation(), demands, positions, soil;
-        opts=MatFootingOptions(; base..., analysis_method=WinklerFEA()))
+        opts=MatParams(; base..., analysis_method=WinklerFEA()))
 
     return Dict("Rigid" => r_rigid, "Analytical" => r_shukla, "FEA" => r_fea)
 end

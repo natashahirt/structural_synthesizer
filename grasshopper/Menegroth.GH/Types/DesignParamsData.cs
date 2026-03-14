@@ -32,11 +32,13 @@ namespace Menegroth.GH.Types
         // Member types
         public string ColumnType { get; set; } = "rc_rect";
         public string BeamType { get; set; } = "steel_w";
+        /// <summary>RC beam catalog when BeamType is rc_rect or rc_tbeam: standard, small, large, all. Default: large.</summary>
+        public string BeamCatalog { get; set; } = "large";
 
         // Design targets
         public double FireRating { get; set; } = 0;
         public string OptimizeFor { get; set; } = "weight";
-        public bool SizeFoundations { get; set; } = false;
+        public bool SizeFoundations { get; set; } = true;
         public string FoundationSoil { get; set; } = "medium_sand";
         public string UnitSystem { get; set; } = "imperial";
         public List<VaultParamsData> ScopedVaultOverrides { get; set; } = new List<VaultParamsData>();
@@ -73,6 +75,7 @@ namespace Menegroth.GH.Types
                 },
                 ["column_type"] = ColumnType,
                 ["beam_type"] = BeamType,
+                ["beam_catalog"] = BeamCatalog,
                 ["fire_rating"] = FireRating,
                 ["optimize_for"] = OptimizeFor,
                 ["size_foundations"] = SizeFoundations,

@@ -16,21 +16,21 @@ namespace Menegroth.GH.Components
     /// no external ValueList components needed.
     ///
     /// Menu structure:
-    ///   Floor System ▸ Flat Plate ▸ Analysis Method ▸ ...
-    ///                              ▸ Punching Strategy ▸ ...
-    ///                  Flat Slab ▸ Analysis Method ▸ ...
-    ///                           ▸ Punching Strategy ▸ ...
-    ///                  One-Way
-    ///                  Vault
-    ///                  Deflection Limit ▸ ...
+    ///   Slab Params ▸ Floor System ▸ Flat Plate ▸ Analysis Method ▸ ...
+    ///                                    ▸ Punching Strategy ▸ ...
+    ///               ▸ Flat Slab ▸ ...
+    ///               ▸ One-Way, Vault
+    ///               ▸ Deflection Limit ▸ ...
     ///   Columns ▸ Type ▸ ...
     ///   Beams ▸ Type ▸ ...
     ///   Materials ▸ Concrete ▸ ...
-    ///              ▸ Rebar ▸ ...
-    ///              ▸ Steel ▸ ...
     ///   Design ▸ Optimize For ▸ ...
     ///          ▸ Fire Rating ▸ ...
-    ///   Output ▸ Units ▸ ...
+    ///   Foundation Params ▸ Size Foundations ▸ Soil Type ▸ ...
+    ///   Units ▸ ...
+    ///
+    /// Override hierarchy when multiple params conflict: geometry-scoped overrides general;
+    /// Slab Params / Foundation Params (specific inputs) override generic Params; earlier in a list overrides later.
     /// </summary>
     public class DesignParams : GH_Component
     {
@@ -44,9 +44,10 @@ namespace Menegroth.GH.Components
         private string _steel = "A992";
         private string _columnType = "rc_rect";
         private string _beamType = "steel_w";
+        private string _beamCatalog = "large";
         private string _optimizeFor = "weight";
         private string _fireRating = "0";
-        private bool _sizeFoundations = false;
+        private bool _sizeFoundations = true;
         private string _foundationSoil = "medium_sand";
         private string _unitSystem = "imperial";
 
@@ -121,6 +122,14 @@ namespace Menegroth.GH.Components
             new("RC T-beam",     "rc_tbeam"),
         };
 
+        private static readonly Choice[] BeamCatalogs =
+        {
+            new("Standard (light–moderate loads)", "standard"),
+            new("Small (light loads)",             "small"),
+            new("Large (heavy loads, vaults)",     "large"),
+            new("All (comprehensive)",             "all"),
+        };
+
         private static readonly Choice[] Objectives =
         {
             new("Weight", "weight"),
@@ -159,11 +168,16 @@ namespace Menegroth.GH.Components
             : base("Design Params",
                    "DesignParams",
                    "Configure design parameters for structural sizing",
-                   "Menegroth", "Core")
+                   "Menegroth", "   Input")
         { }
 
         public override Guid ComponentGuid =>
             new Guid("75125D15-612B-495B-9544-AC4C08EBB8CE");
+
+        public override void CreateAttributes()
+        {
+            m_attributes = new DesignParamsAttributes(this);
+        }
 
         // ─── Wired inputs (numeric only) ─────────────────────────────────
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -187,15 +201,29 @@ namespace Menegroth.GH.Components
                 "Wall superimposed dead load in psf", GH_ParamAccess.item, 10.0);
 
             pManager.AddGenericParameter("Params", "Params",
-                "Optional list of per-system parameter overrides (e.g., VaultParams).",
+                "Optional overrides (VaultParams, future FoundationParams). Expand (+) for Slab Params / Foundation Params.",
                 GH_ParamAccess.list);
             pManager[6].Optional = true;
+
+            pManager.AddGenericParameter("Slab Params", "Slab",
+                "Optional slab/floor overrides (e.g. VaultParams). Shown when component is expanded.",
+                GH_ParamAccess.list);
+            pManager[7].Optional = true;
+
+            pManager.AddGenericParameter("Foundation Params", "Foundation",
+                "Optional foundation overrides. Reserved for future use. Shown when component is expanded.",
+                GH_ParamAccess.list);
+            pManager[8].Optional = true;
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddGenericParameter("Params", "Params",
                 "DesignParams for the Design Run component",
+                GH_ParamAccess.item);
+
+            pManager.AddTextParameter("Summary", "Summary",
+                "Human-readable summary for debugging and agent context; includes API values",
                 GH_ParamAccess.item);
         }
 
@@ -205,8 +233,9 @@ namespace Menegroth.GH.Components
             base.AppendAdditionalComponentMenuItems(menu);
             Menu_AppendSeparator(menu);
 
-            // ── Floor System ▸ ──
-            var floorMenu = Menu_AppendItem(menu, "Floor System");
+            // ── Slab Params ▸ Floor System ▸ ──
+            var slabParamsMenu = Menu_AppendItem(menu, "Slab Params");
+            var floorMenu = Menu_AppendItem(slabParamsMenu.DropDown, "Floor System");
 
             // Floor types as direct children
             foreach (var ft in FloorTypes)
@@ -268,6 +297,7 @@ namespace Menegroth.GH.Components
             // ── Beams ▸ ──
             var beamMenu = Menu_AppendItem(menu, "Beams");
             AddSubChoices(beamMenu, "Beam Type", BeamTypes, _beamType);
+            AddSubChoices(beamMenu, "RC Catalog", BeamCatalogs, _beamCatalog);
 
             // ── Materials ▸ ──
             var matMenu = Menu_AppendItem(menu, "Materials");
@@ -280,8 +310,8 @@ namespace Menegroth.GH.Components
             AddSubChoices(designMenu, "Optimize For", Objectives,  _optimizeFor);
             AddSubChoices(designMenu, "Fire Rating",  FireRatings, _fireRating);
 
-            // ── Foundations ▸ ──
-            var fdnMenu = Menu_AppendItem(menu, "Foundations");
+            // ── Foundation Params ▸ ──
+            var fdnMenu = Menu_AppendItem(menu, "Foundation Params");
 
             var fdnToggle = new ToolStripMenuItem("Size Foundations")
             {
@@ -301,9 +331,23 @@ namespace Menegroth.GH.Components
 
             Menu_AppendSeparator(menu);
 
-            // ── Output ▸ ──
-            var outputMenu = Menu_AppendItem(menu, "Output");
-            AddSubChoices(outputMenu, "Units", UnitSystems, _unitSystem);
+            // ── Units (displayed under component, same pattern as Geometry Input) ──
+            var unitsMenu = Menu_AppendItem(menu, "Units");
+            foreach (var choice in UnitSystems)
+            {
+                var item = new ToolStripMenuItem(choice.Label)
+                {
+                    Checked = _unitSystem == choice.Value,
+                    Tag = choice.Value
+                };
+                item.Click += (s, e) =>
+                {
+                    _unitSystem = (string)((ToolStripMenuItem)s).Tag;
+                    UpdateMessage();
+                    ExpireSolution(true);
+                };
+                unitsMenu.DropDownItems.Add(item);
+            }
         }
 
         /// <summary>
@@ -344,12 +388,12 @@ namespace Menegroth.GH.Components
                 case "Concrete":          _concrete    = tag.Value; break;
                 case "Rebar":             _rebar       = tag.Value; break;
                 case "Steel":             _steel        = tag.Value; break;
-                case "Column Type":       _columnType = tag.Value; break;
-                case "Beam Type":         _beamType   = tag.Value; break;
+                case "Column Type":       _columnType  = tag.Value; break;
+                case "Beam Type":         _beamType    = tag.Value; break;
+                case "RC Catalog":         _beamCatalog = tag.Value; break;
                 case "Optimize For":      _optimizeFor = tag.Value; break;
                 case "Fire Rating":       _fireRating  = tag.Value; break;
                 case "Soil Type":         _foundationSoil = tag.Value; break;
-                case "Units":             _unitSystem  = tag.Value; break;
             }
 
             UpdateMessage();
@@ -368,6 +412,7 @@ namespace Menegroth.GH.Components
             writer.SetString("Steel",       _steel);
             writer.SetString("ColumnType",  _columnType);
             writer.SetString("BeamType",    _beamType);
+            writer.SetString("BeamCatalog", _beamCatalog);
             writer.SetString("OptimizeFor", _optimizeFor);
             writer.SetString("FireRating",  _fireRating);
             writer.SetBoolean("SizeFoundations", _sizeFoundations);
@@ -387,6 +432,7 @@ namespace Menegroth.GH.Components
             if (reader.ItemExists("Steel"))        _steel       = reader.GetString("Steel");
             if (reader.ItemExists("ColumnType"))   _columnType  = reader.GetString("ColumnType");
             if (reader.ItemExists("BeamType"))     _beamType    = reader.GetString("BeamType");
+            if (reader.ItemExists("BeamCatalog"))  _beamCatalog = reader.GetString("BeamCatalog");
             if (reader.ItemExists("OptimizeFor"))  _optimizeFor = reader.GetString("OptimizeFor");
             if (reader.ItemExists("FireRating"))   _fireRating  = reader.GetString("FireRating");
             if (reader.ItemExists("SizeFoundations")) _sizeFoundations = reader.GetBoolean("SizeFoundations");
@@ -413,6 +459,7 @@ namespace Menegroth.GH.Components
             };
             if (_sizeFoundations)
                 parts.Add("Fdn: " + LabelFor(SoilTypes, _foundationSoil));
+            parts.Add(LabelFor(UnitSystems, _unitSystem));
             Message = string.Join(" | ", parts);
         }
 
@@ -433,8 +480,12 @@ namespace Menegroth.GH.Components
             DA.GetData(3, ref roofSDL);
             DA.GetData(4, ref gradeLL);
             DA.GetData(5, ref wallSDL);
-            var overrideParams = new List<IGH_Goo>();
-            DA.GetDataList(6, overrideParams);
+            var paramsList = new List<IGH_Goo>();
+            DA.GetDataList(6, paramsList);
+            var slabParams = new List<IGH_Goo>();
+            DA.GetDataList(7, slabParams);
+            var foundationParams = new List<IGH_Goo>();
+            DA.GetDataList(8, foundationParams);
 
             double fireRatingVal = 0;
             if (double.TryParse(_fireRating, System.Globalization.NumberStyles.Any,
@@ -460,42 +511,133 @@ namespace Menegroth.GH.Components
                 Steel           = _steel,
                 ColumnType      = _columnType,
                 BeamType        = _beamType,
+                BeamCatalog     = _beamCatalog,
                 OptimizeFor     = _optimizeFor,
                 SizeFoundations = _sizeFoundations,
                 FoundationSoil  = _foundationSoil,
                 UnitSystem      = _unitSystem,
             };
 
-            ApplyOverrides(p, overrideParams);
+            // Override hierarchy (highest wins): geometry-scoped > Slab/Foundation Params > generic Params; within a list, earlier > later.
+            var allOverrides = BuildOverrideList(paramsList, slabParams, foundationParams);
+            ApplyOverrides(p, allOverrides);
 
             DA.SetData(0, new GH_DesignParamsData(p));
+            DA.SetData(1, BuildSummary(p));
         }
 
-        private void ApplyOverrides(DesignParamsData target, List<IGH_Goo> overrideParams)
+        /// <summary>
+        /// Build a human-readable summary of design parameters for debugging and agent context.
+        /// Includes API payload values in parentheses for matching against serialized JSON.
+        /// </summary>
+        private string BuildSummary(DesignParamsData p)
         {
-            if (target == null || overrideParams == null || overrideParams.Count == 0)
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("Design Parameters Summary");
+            sb.AppendLine("────────────────────────");
+
+            sb.Append("Floor: ").Append(LabelFor(FloorTypes, p.FloorType))
+              .Append(" (").Append(p.FloorType).AppendLine(")");
+            if (p.FloorType == "flat_plate" || p.FloorType == "flat_slab")
+            {
+                sb.Append("  Method: ").Append(LabelFor(Methods, p.AnalysisMethod)).Append(" (").Append(p.AnalysisMethod).Append(")");
+                sb.Append(" | Deflection: ").Append(LabelFor(DeflLimits, p.DeflectionLimit)).Append(" (").Append(p.DeflectionLimit).Append(")");
+                sb.Append(" | Punching: ").Append(LabelFor(PunchStrategies, p.PunchingStrategy)).Append(" (").Append(p.PunchingStrategy).AppendLine(")");
+            }
+            if (p.FloorType == "vault" && p.VaultLambda.HasValue)
+                sb.Append("  Vault λ: ").AppendLine(p.VaultLambda.Value.ToString("F2"));
+
+            sb.Append("Columns: ").Append(LabelFor(ColumnTypes, p.ColumnType))
+              .Append(" (").Append(p.ColumnType).AppendLine(")");
+            sb.Append("Beams: ").Append(LabelFor(BeamTypes, p.BeamType)).Append(" (").Append(p.BeamType).Append(")");
+            if (p.BeamType == "rc_rect" || p.BeamType == "rc_tbeam")
+                sb.Append(" | catalog: ").Append(LabelFor(BeamCatalogs, p.BeamCatalog)).Append(" (").Append(p.BeamCatalog).Append(")");
+            sb.AppendLine();
+            sb.Append("Materials: ").Append(LabelFor(Concretes, p.Concrete)).Append(" (").Append(p.Concrete).Append(")");
+            sb.Append(", ").Append(LabelFor(Rebars, p.Rebar)).Append(" (").Append(p.Rebar).Append(")");
+            sb.Append(", ").Append(LabelFor(Steels, p.Steel)).Append(" (").Append(p.Steel).AppendLine(")");
+
+            sb.Append("Loads (psf): Floor LL ").Append(p.FloorLL.ToString("F0"));
+            sb.Append(", Roof LL ").Append(p.RoofLL.ToString("F0"));
+            sb.Append(", SDL ").Append(p.FloorSDL.ToString("F0")).Append("/").Append(p.RoofSDL.ToString("F0"));
+            sb.Append(", Grade ").Append(p.GradeLL.ToString("F0"));
+            sb.Append(", Wall SDL ").Append(p.WallSDL.ToString("F0")).AppendLine();
+
+            var fireLabel = LabelFor(FireRatings,
+                p.FireRating.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append("Design: Optimize for ").Append(LabelFor(Objectives, p.OptimizeFor)).Append(" (").Append(p.OptimizeFor).Append(")");
+            sb.Append(" | Fire rating: ").Append(fireLabel).Append(" (").Append(p.FireRating.ToString("F1")).Append(" hr)").AppendLine();
+
+            if (p.SizeFoundations)
+                sb.Append("Foundations: Size (").Append(LabelFor(SoilTypes, p.FoundationSoil))
+                  .Append(" / ").Append(p.FoundationSoil).AppendLine(")");
+            else
+                sb.AppendLine("Foundations: Not sizing");
+
+            sb.Append("Units: ").Append(LabelFor(UnitSystems, p.UnitSystem))
+              .Append(" (").Append(p.UnitSystem).AppendLine(")");
+
+            if (p.ScopedVaultOverrides != null && p.ScopedVaultOverrides.Count > 0)
+            {
+                sb.Append("Scoped vault overrides: ").Append(p.ScopedVaultOverrides.Count).AppendLine(" group(s)");
+                for (int i = 0; i < p.ScopedVaultOverrides.Count; i++)
+                {
+                    var ov = p.ScopedVaultOverrides[i];
+                    if (ov == null) continue;
+                    int nFaces = ov.Faces?.Count ?? 0;
+                    var part = $"  [{i + 1}] {nFaces} face(s)";
+                    if (ov.Lambda.HasValue)
+                        part += $", λ={ov.Lambda.Value:F2}";
+                    sb.AppendLine(part);
+                }
+            }
+
+            return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>
+        /// Build override list in application order so that hierarchy is respected:
+        /// geometry-scoped overrides general; Slab/Foundation Params override generic Params; earlier overrides later.
+        /// List is ordered: generic Params (reversed so earlier wins), then Slab Params (reversed), then Foundation Params (reversed).
+        /// </summary>
+        private static List<IGH_Goo> BuildOverrideList(
+            List<IGH_Goo> paramsList,
+            List<IGH_Goo> slabParams,
+            List<IGH_Goo> foundationParams)
+        {
+            var allOverrides = new List<IGH_Goo>(paramsList.Count + slabParams.Count + foundationParams.Count);
+            for (int i = paramsList.Count - 1; i >= 0; i--)
+                allOverrides.Add(paramsList[i]);
+            for (int i = slabParams.Count - 1; i >= 0; i--)
+                allOverrides.Add(slabParams[i]);
+            for (int i = foundationParams.Count - 1; i >= 0; i--)
+                allOverrides.Add(foundationParams[i]);
+            return allOverrides;
+        }
+
+        /// <summary>Apply all overrides (VaultParams, future FoundationParams). Order reflects hierarchy: later in list wins.</summary>
+        private void ApplyOverrides(DesignParamsData target, List<IGH_Goo> allOverrides)
+        {
+            if (target == null || allOverrides == null || allOverrides.Count == 0)
                 return;
 
-            foreach (var goo in overrideParams)
+            foreach (var goo in allOverrides)
             {
-                if (!TryGetVaultParams(goo, out var vault))
+                if (TryGetVaultParams(goo, out var vault))
+                {
+                    if (vault.Lambda.HasValue && vault.Lambda.Value <= 0.0)
+                    {
+                        AddRuntimeMessage(GH_RuntimeMessageLevel.Warning,
+                            "Ignoring VaultParams override with invalid lambda <= 0.");
+                        continue;
+                    }
+                    if (vault.HasScopedFaces)
+                        target.ScopedVaultOverrides.Add(vault.Clone());
+                    else
+                        vault.ApplyTo(target);
                     continue;
-
-                if (vault.Lambda.HasValue && vault.Lambda.Value <= 0.0)
-                {
-                    AddRuntimeMessage(GH_RuntimeMessageLevel.Warning,
-                        "Ignoring VaultParams override with invalid lambda <= 0.");
-                    continue;
                 }
-
-                if (vault.HasScopedFaces)
-                {
-                    target.ScopedVaultOverrides.Add(vault.Clone());
-                }
-                else
-                {
-                    vault.ApplyTo(target);
-                }
+                // Future: if (TryGetFoundationParams(goo, out var fdn)) { ... }
             }
         }
 

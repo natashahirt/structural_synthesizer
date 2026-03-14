@@ -89,7 +89,7 @@ bearing check with dowel design (ACI 22.8) at each column.
 - `soil::Soil`: `qa` = net allowable bearing pressure.
 
 # Keyword Arguments
-- `opts::StripFootingOptions`
+- `opts::StripParams`
 
 # Returns
 `StripFootingResult` with SI output quantities.
@@ -98,7 +98,7 @@ function design_footing(::StripFooting,
     demands::Vector{<:FoundationDemand},
     positions::Vector{<:Length},
     soil::Soil;
-    opts::StripFootingOptions = StripFootingOptions()
+    opts::StripParams = StripParams()
 )
     N = length(demands)
     N ≥ 2 || throw(ArgumentError("Strip footing requires ≥ 2 columns (got $N)"))

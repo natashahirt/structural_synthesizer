@@ -125,6 +125,7 @@ export has_analysis_model, build_analysis_model!
 # --- Design workflow ---
 export design_building, compare_designs, build_pipeline, PipelineStage, sync_asap!
 export prepare!, capture_design
+export PreSizingValidationError, run_pre_sizing_validation
 export snapshot!, restore!, has_snapshot, delete_snapshot!, snapshot_keys
 export DesignSnapshot, SlabSnapshot
 

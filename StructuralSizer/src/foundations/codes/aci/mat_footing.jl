@@ -49,7 +49,7 @@ If demands/soil are not provided (backward compatibility), falls back to
 """
 function _mat_plan_sizing(
     positions::Vector{<:NTuple{2, <:Length}},
-    opts::MatFootingOptions;
+    opts::MatParams;
     demands::Union{Vector{<:FoundationDemand}, Nothing} = nothing,
     soil::Union{Soil, Nothing} = nothing,
 )
@@ -265,7 +265,7 @@ function design_footing(::MatFoundation,
     demands::Vector{<:FoundationDemand},
     positions::Vector{<:NTuple{2, <:Length}},
     soil::Soil;
-    opts::MatFootingOptions = MatFootingOptions()
+    opts::MatParams = MatParams()
 )
     N = length(demands)
     length(positions) == N ||
@@ -329,7 +329,7 @@ function _design_mat_rigid(
     demands::Vector{<:FoundationDemand},
     positions::Vector{<:NTuple{2, <:Length}},
     soil::Soil;
-    opts::MatFootingOptions = MatFootingOptions()
+    opts::MatParams = MatParams()
 )
     N = length(demands)
 

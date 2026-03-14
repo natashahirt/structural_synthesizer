@@ -35,7 +35,7 @@ demand = FoundationDemand(1; Pu=912.0kip, Ps=670.0kip,
 soil = Soil(5.37ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
 
 # Set up options matching the reference problem
-opts = SpreadFootingOptions(
+opts = SpreadParams(
     material = RC_3000_60,
     bar_size = 8,
     cover = 3.0u"inch",

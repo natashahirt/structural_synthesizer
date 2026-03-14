@@ -7,7 +7,7 @@
 >     Pu=400.0kip, Ps=300.0kip, Mux=80.0kip * u"ft",
 >     c1=20u"inch", c2=20u"inch", shape=:rectangular,
 > )
-> opts   = SpreadFootingOptions(material=RC_4000_60)
+> opts   = SpreadParams(material=RC_4000_60)
 > result = design_footing(SpreadFooting(), demand, medium_sand; opts=opts)
 > uconvert(u"ft", result.B)
 > result.utilization
@@ -52,7 +52,7 @@ and column positions along the strip.
 ### Mat Foundation
 
 The `design_footing(::MatFoundation, ...)` function dispatches to one of three
-analysis methods based on `MatFootingOptions.analysis_method`:
+analysis methods based on `MatParams.analysis_method`:
 
 ```@docs
 recommend_foundation_strategy
@@ -95,7 +95,7 @@ The strip footing design treats the footing as a rigid beam:
 
 ### Mat Foundation Design
 
-Three analysis methods are available, selected via `MatFootingOptions.analysis_method`:
+Three analysis methods are available, selected via `MatParams.analysis_method`:
 
 #### RigidMat (ACI 336.2R §4.2)
 
@@ -135,7 +135,7 @@ Finite element plate model on Winkler springs:
 
 ## Options & Configuration
 
-### SpreadFootingOptions
+### SpreadParams
 
 | Field | Default | Description |
 |:------|:--------|:------------|
@@ -149,7 +149,7 @@ Finite element plate model on Winkler springs:
 | `ϕ_shear` | 0.75 | ACI 318-11 §9.3.2 strength reduction |
 | `ϕ_bearing` | 0.65 | Bearing strength reduction factor |
 
-### MatFootingOptions
+### MatParams
 
 | Field | Default | Description |
 |:------|:--------|:------------|

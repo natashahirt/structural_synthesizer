@@ -301,7 +301,7 @@ function _design_mat_shukla(
     positions::Vector{<:NTuple{2, <:Length}},
     soil::Soil,
     method::ShuklaAFM;
-    opts::MatFootingOptions = MatFootingOptions()
+    opts::MatParams = MatParams()
 )
     N = length(demands)
 

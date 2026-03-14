@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Attributes;
 using Grasshopper.Kernel.Parameters;
 using Grasshopper.Kernel.Types;
 using Newtonsoft.Json.Linq;
@@ -27,9 +28,11 @@ namespace Menegroth.GH.Components
         private const int COLOR_NONE = 0;
         private const int COLOR_UTILIZATION = 1;
         private const int COLOR_DEFLECTION = 2;
+        private const int COLOR_MATERIAL = 3;
         private static readonly Color COLUMN_TYPE_COLOR = Color.SteelBlue;
         private static readonly Color BEAM_TYPE_COLOR = Color.Coral;
         private static readonly Color OTHER_TYPE_COLOR = Color.DimGray;
+        private static readonly Color DEFAULT_MATERIAL_COLOR = Color.FromArgb(200, 200, 200);
         private const int DEFLECTION_SEGMENTS_MIN = 3;
         private const int DEFLECTION_SEGMENTS_MAX = 6;
         private const int SLAB_VERTEX_WARNING_THRESHOLD = 200000;
@@ -39,6 +42,10 @@ namespace Menegroth.GH.Components
         private bool _showBeams = true;
         private bool _showColumns = true;
         private bool _showFoundations = true;
+        private const int CLAMP_NONE = 0;
+        private const int CLAMP_SUPPORTS = 1;
+        private const int CLAMP_GLOBAL_GROUND = 2;
+        private int _clampMode = CLAMP_NONE;
         private bool _beamVisibilityInitialized = false;
         private readonly List<Curve> _previewColumnCurves = new List<Curve>();
         private readonly List<Color> _previewColumnColors = new List<Color>();
@@ -50,13 +57,18 @@ namespace Menegroth.GH.Components
 
         public Visualization()
             : base("Visualization",
-                   "Viz",
+                   "Visualization",
                    "Visualize structural design with geometry, deflections, and color mapping",
-                   "Menegroth", "Core")
+                   "Menegroth", " Results")
         { }
 
         public override Guid ComponentGuid =>
             new Guid("E7D94B2A-6C31-4D89-AF1E-2B8A3C5D7E9F");
+
+        public override void CreateAttributes()
+        {
+            m_attributes = new VisualizationAttributes(this);
+        }
 
         protected override void AppendAdditionalComponentMenuItems(ToolStripDropDown menu)
         {
@@ -74,6 +86,26 @@ namespace Menegroth.GH.Components
                 ExpirePreview(true);
                 ExpireSolution(true);
             }, true, _showOriginal);
+            var clampMenu = new ToolStripMenuItem("Clamp");
+            clampMenu.DropDownItems.Add(new ToolStripMenuItem("None", null, (s, e) =>
+            {
+                _clampMode = CLAMP_NONE;
+                ExpirePreview(true);
+                ExpireSolution(true);
+            }) { Checked = _clampMode == CLAMP_NONE });
+            clampMenu.DropDownItems.Add(new ToolStripMenuItem("Supports", null, (s, e) =>
+            {
+                _clampMode = CLAMP_SUPPORTS;
+                ExpirePreview(true);
+                ExpireSolution(true);
+            }) { Checked = _clampMode == CLAMP_SUPPORTS });
+            clampMenu.DropDownItems.Add(new ToolStripMenuItem("Global ground", null, (s, e) =>
+            {
+                _clampMode = CLAMP_GLOBAL_GROUND;
+                ExpirePreview(true);
+                ExpireSolution(true);
+            }) { Checked = _clampMode == CLAMP_GLOBAL_GROUND });
+            menu.Items.Add(clampMenu);
 
             var showMenu = new ToolStripMenuItem("Show");
             showMenu.DropDownItems.Add(new ToolStripMenuItem("Slabs", null, (s, e) =>
@@ -102,6 +134,10 @@ namespace Menegroth.GH.Components
                 ExpireSolution(true);
             }) { Checked = _showFoundations });
             menu.Items.Add(showMenu);
+
+            Menu_AppendSeparator(menu);
+            var gradientNote = Menu_AppendItem(menu, "Gradient colors: Expand component (+) for Utilization / Deflection", null, false, false);
+            gradientNote.ToolTipText = "Use the + button on the component to show optional Utilization Gradient and Deflection Gradient inputs.";
         }
 
         public override bool Write(GH_IO.Serialization.GH_IWriter writer)
@@ -112,6 +148,7 @@ namespace Menegroth.GH.Components
             writer.SetBoolean("ShowBeams", _showBeams);
             writer.SetBoolean("ShowColumns", _showColumns);
             writer.SetBoolean("ShowFoundations", _showFoundations);
+            writer.SetInt32("ClampMode", _clampMode);
             writer.SetBoolean("BeamVisibilityInitialized", _beamVisibilityInitialized);
             return base.Write(writer);
         }
@@ -130,6 +167,10 @@ namespace Menegroth.GH.Components
                 _showColumns = reader.GetBoolean("ShowColumns");
             if (reader.ItemExists("ShowFoundations"))
                 _showFoundations = reader.GetBoolean("ShowFoundations");
+            if (reader.ItemExists("ClampMode"))
+                _clampMode = reader.GetInt32("ClampMode");
+            else if (reader.ItemExists("ClampSupports"))
+                _clampMode = reader.GetBoolean("ClampSupports") ? CLAMP_SUPPORTS : CLAMP_NONE;
             if (reader.ItemExists("BeamVisibilityInitialized"))
                 _beamVisibilityInitialized = reader.GetBoolean("BeamVisibilityInitialized");
             else if (reader.ItemExists("ShowBeams"))
@@ -161,9 +202,10 @@ namespace Menegroth.GH.Components
             colorParam.AddNamedValue("None", COLOR_NONE);
             colorParam.AddNamedValue("Utilization", COLOR_UTILIZATION);
             colorParam.AddNamedValue("Deflection", COLOR_DEFLECTION);
+            colorParam.AddNamedValue("Material", COLOR_MATERIAL);
             pManager.AddParameter(colorParam, "Color By", "ColorBy",
-                "Color mapping: None, Utilization (green→red by demand/capacity), " +
-                "Deflection (blue→red by displacement magnitude)",
+                "Color mapping: None, Utilization (green→red by demand/capacity), Deflection (blue→red by displacement magnitude), " +
+                "Material (use serialized material color with neutral gray fallback).",
                 GH_ParamAccess.item);
             pManager[3].Optional = true;
 
@@ -180,18 +222,20 @@ namespace Menegroth.GH.Components
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddGenericParameter("Frame Geometry", "FrameGeometry",
-                "Frame element 3D section geometry (Brep)", GH_ParamAccess.list);
-            pManager.AddGenericParameter("Slab Geometry", "SlabGeometry",
-                "Slab + foundation geometry (Brep for Sized, Mesh for Deflected)", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Column Curves", "ColumnCurves",
-                "Column curves for preview/debug", GH_ParamAccess.list);
             pManager.AddCurveParameter("Beam Curves", "BeamCurves",
                 "Beam curves for preview/debug", GH_ParamAccess.list);
-            pManager.AddGenericParameter("Column Geometry", "ColumnGeometry",
-                "Column section geometry as Breps", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Column Curves", "ColumnCurves",
+                "Column curves for preview/debug", GH_ParamAccess.list);
+            pManager.AddGenericParameter("Slab Surfaces", "SlabSurfaces",
+                "Slab top-surface proxies for preview/debug (Brep/Mesh)", GH_ParamAccess.list);
             pManager.AddGenericParameter("Beam Geometry", "BeamGeometry",
                 "Beam section geometry as Breps", GH_ParamAccess.list);
+            pManager.AddGenericParameter("Column Geometry", "ColumnGeometry",
+                "Column section geometry as Breps", GH_ParamAccess.list);
+            pManager.AddGenericParameter("Slab Geometry", "SlabGeometry",
+                "Slab geometry only (Brep for Sized, Mesh for Deflected)", GH_ParamAccess.list);
+            pManager.AddGenericParameter("Foundation Geometry", "FoundationGeometry",
+                "Foundation geometry only (Brep)", GH_ParamAccess.list);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
@@ -234,7 +278,7 @@ namespace Menegroth.GH.Components
             bool isDeflected = modeInt == MODE_DEFLECTED_GLOBAL || modeInt == MODE_DEFLECTED_LOCAL;
             bool isLocal = modeInt == MODE_DEFLECTED_LOCAL;
             bool isOriginalMode = modeInt == MODE_ORIGINAL;
-            bool showFoundationsEffective = _showFoundations && !isDeflected;
+            bool showFoundationsEffective = _showFoundations;
             bool isBeamlessSystem = viz["is_beamless_system"]?.ToObject<bool>() ?? false;
             if (isBeamlessSystem && !_beamVisibilityInitialized)
             {
@@ -249,22 +293,42 @@ namespace Menegroth.GH.Components
             // Extract nodes
             var nodes = new Dictionary<int, (Point3d pos, Vector3d disp, Point3d defPos)>();
             var nodesArray = viz["nodes"] as JArray ?? new JArray();
+
+            // Pass 1: compute global ground Z (min of all support positions) when needed
+            double zGround = double.MaxValue;
+            if (_clampMode == CLAMP_GLOBAL_GROUND)
+            {
+                foreach (var n in nodesArray)
+                {
+                    bool isSupport = n["is_support"]?.ToObject<bool>() ?? false;
+                    if (!isSupport) continue;
+                    var posArr = n["position"]?.ToObject<double[]>() ?? n["position_ft"]?.ToObject<double[]>() ?? new double[3];
+                    if (posArr.Length >= 3 && posArr[2] < zGround)
+                        zGround = posArr[2];
+                }
+                if (double.IsInfinity(zGround)) zGround = 0.0;
+            }
+
             foreach (var n in nodesArray)
             {
                 int nodeId = n["node_id"]?.ToObject<int>() ?? 0;
+                bool isSupport = n["is_support"]?.ToObject<bool>() ?? false;
                 var posArr = n["position"]?.ToObject<double[]>() ?? n["position_ft"]?.ToObject<double[]>() ?? new double[3];
                 var dispArr = n["displacement"]?.ToObject<double[]>() ?? n["displacement_ft"]?.ToObject<double[]>() ?? new double[3];
                 var defPosArr = n["deflected_position"]?.ToObject<double[]>() ?? n["deflected_position_ft"]?.ToObject<double[]>();
                 var pos = new Point3d(posArr[0], posArr[1], posArr[2]);
-                var disp = new Vector3d(dispArr[0], dispArr[1], dispArr[2]);
                 var defPos = defPosArr != null && defPosArr.Length >= 3
                     ? new Point3d(defPosArr[0], defPosArr[1], defPosArr[2])
-                    : pos + disp;
-                nodes[nodeId] = (
-                    pos,
-                    disp,
-                    defPos
-                );
+                    : pos + new Vector3d(dispArr[0], dispArr[1], dispArr[2]);
+
+                if (isSupport && _clampMode != CLAMP_NONE)
+                {
+                    double zMin = _clampMode == CLAMP_SUPPORTS ? pos.Z : zGround;
+                    if (defPos.Z < zMin)
+                        defPos = new Point3d(defPos.X, defPos.Y, zMin);
+                }
+                var disp = defPos - pos;
+                nodes[nodeId] = (pos, disp, defPos);
             }
 
             double finalScale = scaleMult * result.SuggestedScaleFactor;
@@ -446,6 +510,10 @@ namespace Menegroth.GH.Components
                     double disp = ComputeElementDisplacement(elem, nodes, dispVecs);
                     elementColor = DeflectionColor(disp, maxDisp, deflectionGradient);
                 }
+                else if (colorByInt == COLOR_MATERIAL)
+                {
+                    elementColor = ResolveMaterialColor(elem["material_color_hex"]?.ToString(), DEFAULT_MATERIAL_COLOR);
+                }
                 else
                 {
                     // Keep line colors visible when Color By = None.
@@ -528,19 +596,26 @@ namespace Menegroth.GH.Components
             if (showFoundationsEffective)
                 visibleSlabGeometry.AddRange(foundationGeometry);
 
+            // SlabSurfaces is a top-level slab-only output slot for downstream GH wiring.
+            // Keep it aligned with slab-only geometry across all modes.
+            var slabSurfaces = new List<IGH_GeometricGoo>();
+            if (_showSlabs)
+                slabSurfaces.AddRange(slabGeometry);
+
             if (showOriginal && isOriginalMode)
             {
                 originalCurves.AddRange(frameCurves);
                 originalSlabs.AddRange(visibleSlabGeometry);
             }
 
-            // Set outputs (trimmed surface API; component provides internal preview colors)
-            DA.SetDataList(0, frameGeometry);
-            DA.SetDataList(1, visibleSlabGeometry);
-            DA.SetDataList(2, columnCurves);
-            DA.SetDataList(3, beamCurves);
+            // Set outputs in explicit downstream-friendly order.
+            DA.SetDataList(0, beamCurves);
+            DA.SetDataList(1, columnCurves);
+            DA.SetDataList(2, slabSurfaces);
+            DA.SetDataList(3, beamGeometry);
             DA.SetDataList(4, columnGeometry);
-            DA.SetDataList(5, beamGeometry);
+            DA.SetDataList(5, slabGeometry);
+            DA.SetDataList(6, foundationGeometry);
 
             UpdateInternalPreviewCache(
                 columnCurves, columnColors,
@@ -555,7 +630,8 @@ namespace Menegroth.GH.Components
                 : modeInt == MODE_ORIGINAL ? "Original"
                 : "Deflected (Global)";
             string colorName = colorByInt == COLOR_UTILIZATION ? "Utilization"
-                : colorByInt == COLOR_DEFLECTION ? "Deflection" : "";
+                : colorByInt == COLOR_DEFLECTION ? "Deflection"
+                : colorByInt == COLOR_MATERIAL ? "Material" : "";
             Message = colorName.Length > 0 ? $"{modeName} | {colorName}" : modeName;
         }
 
@@ -618,6 +694,8 @@ namespace Menegroth.GH.Components
         }
 
         // ─── Section sweep ──────────────────────────────────────────────
+        // Robust sweep using PerpendicularFrameAt for orientation (handles vertical/near-vertical
+        // elements without degenerate cross-products). Falls back to pipe when sweep fails.
 
         private static Brep SweepSection(Curve elementCurve, JToken elem)
         {
@@ -637,39 +715,68 @@ namespace Menegroth.GH.Components
                 };
             }
 
+            double tol = Rhino.RhinoDoc.ActiveDoc?.ModelAbsoluteTolerance ?? 0.001;
+            if (elementCurve == null || !elementCurve.IsValid) return null;
+
             try
             {
                 elementCurve.Domain = new Interval(0.0, 1.0);
-                var tangent = elementCurve.TangentAtStart;
-                tangent.Unitize();
+                double t0 = elementCurve.Domain.T0;
 
-                Vector3d up = Math.Abs(tangent.Z) < 0.9
-                    ? new Vector3d(0, 0, 1)
-                    : new Vector3d(1, 0, 0);
-                var localY = Vector3d.CrossProduct(up, tangent); localY.Unitize();
-                var localZ = Vector3d.CrossProduct(tangent, localY); localZ.Unitize();
+                // Use PerpendicularFrameAt for robust orientation (handles vertical elements).
+                Plane frame;
+                if (!elementCurve.PerpendicularFrameAt(t0, out frame))
+                {
+                    // Fallback: manual frame when PerpendicularFrameAt fails (e.g. zero-length curve).
+                    var tangent = elementCurve.TangentAtStart;
+                    if (!tangent.Unitize()) return PipeFallback(elementCurve, width, depth, tol);
+                    Vector3d up = Math.Abs(tangent.Z) < 0.9 ? new Vector3d(0, 0, 1) : new Vector3d(1, 0, 0);
+                    var localY = Vector3d.CrossProduct(up, tangent);
+                    if (!localY.Unitize()) return PipeFallback(elementCurve, width, depth, tol);
+                    var localZ = Vector3d.CrossProduct(tangent, localY);
+                    if (!localZ.Unitize()) return PipeFallback(elementCurve, width, depth, tol);
+                    frame = new Plane(elementCurve.PointAtStart, localY, localZ);
+                }
 
+                // Build closed section in frame (poly vertices are [y, z] in local coords).
                 var pts = new List<Point3d>();
-                var origin = elementCurve.PointAtStart;
                 foreach (var v in poly)
-                    pts.Add(origin + localY * v[0] + localZ * v[1]);
-                if (pts.Count > 0 && pts[0].DistanceTo(pts[pts.Count - 1]) > 1e-6)
+                {
+                    if (v == null || v.Length < 2) continue;
+                    pts.Add(frame.Origin + frame.YAxis * v[0] + frame.ZAxis * v[1]);
+                }
+                if (pts.Count < 3) return PipeFallback(elementCurve, width, depth, tol);
+                if (pts[0].DistanceTo(pts[pts.Count - 1]) > tol)
                     pts.Add(pts[0]);
 
                 var sectionCurve = new PolylineCurve(pts);
-                var sweep = Brep.CreateFromSweep(elementCurve, sectionCurve, true, 0.01);
-                if (sweep?.Length > 0) return sweep[0];
+                if (sectionCurve == null || !sectionCurve.IsValid)
+                    return PipeFallback(elementCurve, width, depth, tol);
+
+                // Sweep with capping; use document tolerance.
+                var sweep = Brep.CreateFromSweep(elementCurve, sectionCurve, true, tol);
+                if (sweep != null && sweep.Length > 0)
+                {
+                    var brep = sweep[0];
+                    var capped = brep.CapPlanarHoles(tol);
+                    return capped ?? brep;
+                }
             }
             catch
             {
-                // Fall through to robust pipe fallback.
+                // Fall through to pipe fallback.
             }
 
-            // Robust fallback for unsupported/degenerate section sweeps.
-            // Equivalent radius from rectangular area keeps approximate visual mass.
-            double area = Math.Max(width, 0.01) * Math.Max(depth, 0.01);
-            double radius = Math.Sqrt(area / Math.PI);
-            var pipe = Brep.CreatePipe(elementCurve, radius, false, PipeCapMode.Flat, true, 0.01, 0.01);
+            return PipeFallback(elementCurve, width, depth, tol);
+        }
+
+        private static Brep PipeFallback(Curve path, double width, double depth, double tol)
+        {
+            if (path == null || !path.IsValid) return null;
+            double minDim = Math.Max(Math.Max(width, depth), 0.05);
+            double area = minDim * minDim;
+            double radius = Math.Max(Math.Sqrt(area / Math.PI), 0.01);
+            var pipe = Brep.CreatePipe(path, radius, false, PipeCapMode.Flat, true, tol, tol);
             return pipe != null && pipe.Length > 0 ? pipe[0] : null;
         }
 
@@ -869,10 +976,7 @@ namespace Menegroth.GH.Components
 
         private static string NormalizeElementType(string rawType)
         {
-            string t = (rawType ?? "").Trim().ToLowerInvariant();
-            if (t == "brace")
-                return "strut";
-            return t;
+            return (rawType ?? "").Trim().ToLowerInvariant();
         }
 
         private static Color? ParseHexColor(string hex)
@@ -904,6 +1008,12 @@ namespace Menegroth.GH.Components
             }
 
             return null;
+        }
+
+        private static Color ResolveMaterialColor(string hex, Color fallback)
+        {
+            var parsed = ParseHexColor(hex);
+            return parsed ?? fallback;
         }
 
         private static Color InterpolateGradient(IList<Color> gradient, double t)
@@ -1374,6 +1484,14 @@ namespace Menegroth.GH.Components
                 {
                     colors.Add(DeflectionColor(0.0, 1.0, deflectionGradient));
                 }
+                else if (colorBy == COLOR_MATERIAL)
+                {
+                    colors.Add(ResolveMaterialColor(f["material_color_hex"]?.ToString(), DEFAULT_MATERIAL_COLOR));
+                }
+                else
+                {
+                    colors.Add(DEFAULT_MATERIAL_COLOR);
+                }
             }
         }
 
@@ -1408,6 +1526,14 @@ namespace Menegroth.GH.Components
                     }
                 }
                 colors.Add(DeflectionColor(maxVertDisp, maxDisp, deflectionGradient));
+            }
+            else if (colorBy == COLOR_MATERIAL)
+            {
+                colors.Add(ResolveMaterialColor(element["material_color_hex"]?.ToString(), DEFAULT_MATERIAL_COLOR));
+            }
+            else
+            {
+                colors.Add(DEFAULT_MATERIAL_COLOR);
             }
         }
     }

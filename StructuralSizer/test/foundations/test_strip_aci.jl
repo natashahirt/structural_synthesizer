@@ -46,7 +46,7 @@ soil = Soil(4.32ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
 # L/2 = 12 + overhang → L ≈ 25.33 ft
 positions = [0.0u"ft", 20.0u"ft"]
 
-opts = StripFootingOptions(
+opts = StripParams(
     material = RC_3000_60,
     bar_size_long = 8,
     bar_size_trans = 5,

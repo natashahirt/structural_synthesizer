@@ -16,8 +16,8 @@ s3 = StructuralSizer.Soil(100.0u"kPa", 18.0u"kN/m^3", 30.0, 0.0u"kPa", 20.0u"MPa
 println("ks explicit = ", s3.ks)
 
 # Test options
-opts = SpreadFootingOptions()
-println("SpreadFootingOptions OK: bar_size=", opts.bar_size)
+opts = SpreadParams()
+println("SpreadParams OK: bar_size=", opts.bar_size)
 
 fopts = FoundationOptions()
 println("FoundationOptions OK: strategy=", fopts.strategy)

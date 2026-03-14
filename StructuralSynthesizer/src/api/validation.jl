@@ -165,6 +165,11 @@ function validate_input(input::APIInput)
         push!(errors, "Invalid beam_type \"$(p.beam_type)\". Must be one of: $(join(valid_beam_types, ", ")).")
     end
 
+    valid_beam_catalogs = ("standard", "small", "large", "all")
+    if !(p.beam_catalog in valid_beam_catalogs)
+        push!(errors, "Invalid beam_catalog \"$(p.beam_catalog)\". Must be one of: $(join(valid_beam_catalogs, ", ")).")
+    end
+
     if p.fire_rating ∉ (0.0, 1.0, 1.5, 2.0, 3.0, 4.0)
         push!(errors, "Invalid fire_rating $(p.fire_rating). Must be one of: 0, 1, 1.5, 2, 3, 4.")
     end
@@ -192,6 +197,22 @@ function validate_input(input::APIInput)
         end
         if !haskey(CONCRETE_MAP, p.foundation_concrete)
             push!(errors, "Unknown foundation_concrete \"$(p.foundation_concrete)\". Options: $(join(keys(CONCRETE_MAP), ", ")).")
+        end
+        if p.foundation_options !== nothing
+            fo = p.foundation_options
+            strategy_ok = lowercase(strip(fo.strategy)) in ("auto", "all_spread", "all_strip", "mat")
+            if !strategy_ok
+                push!(errors, "foundation_options.strategy must be one of: auto, all_spread, all_strip, mat (got \"$(fo.strategy)\").")
+            end
+            if !(0.0 <= fo.mat_coverage_threshold <= 1.0)
+                push!(errors, "foundation_options.mat_coverage_threshold must be between 0 and 1 (got $(fo.mat_coverage_threshold)).")
+            end
+            if fo.mat_params !== nothing && fo.mat_params.analysis_method !== nothing
+                am = lowercase(strip(fo.mat_params.analysis_method))
+                if !(am in ("rigid", "shukla", "winkler"))
+                    push!(errors, "foundation_options.mat_params.analysis_method must be rigid, shukla, or winkler (got \"$(fo.mat_params.analysis_method)\").")
+                end
+            end
         end
     end
 

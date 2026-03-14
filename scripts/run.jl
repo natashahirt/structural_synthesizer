@@ -157,9 +157,9 @@ design = design_building(struc, DesignParameters(
         options = FoundationOptions(
             strategy = :auto,
             mat_coverage_threshold = 0.50,
-            # spread = SpreadFootingOptions(min_depth = 12.0u"inch"),
-            # strip  = StripFootingOptions(min_depth = 12.0u"inch"),
-            # mat    = MatFootingOptions(
+            # spread_params = SpreadParams(min_depth = 12.0u"inch"),
+            # strip_params  = StripParams(min_depth = 12.0u"inch"),
+            # mat_params    = MatParams(
             #     analysis_method = RigidMat(),   # or ShuklaAFM(), WinklerFEA()
             #     min_depth = 24.0u"inch",
             # ),

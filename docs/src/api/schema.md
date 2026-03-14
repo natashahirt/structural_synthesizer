@@ -62,6 +62,7 @@ A dictionary mapping face group names to face-coordinate polylines:
 | `materials` | `APIMaterials` | `APIMaterials()` | Material selections |
 | `column_type` | `String` | `"rc_rect"` | `"rc_rect"`, `"rc_circular"`, `"steel_w"`, `"steel_hss"`, or `"steel_pipe"` |
 | `beam_type` | `String` | `"steel_w"` | `"steel_w"`, `"steel_hss"`, `"rc_rect"`, or `"rc_tbeam"` |
+| `beam_catalog` | `String` | `"large"` | RC beam catalog when `beam_type` is RC: `"standard"`, `"small"`, `"large"`, or `"all"`. Ignored for steel. |
 | `fire_rating` | `Float64` | `0.0` | Fire resistance in hours |
 | `optimize_for` | `String` | `"weight"` | `"weight"`, `"carbon"`, or `"cost"` |
 | `size_foundations` | `Bool` | `false` | Whether to size foundations |
@@ -246,7 +247,7 @@ Output field names are unit-neutral. Unit interpretation comes from top-level un
 The visualization schema contains several related types:
 
 - **`APIVisualization`** — Top-level container for all visualization payloads.
-- **`APIVisualizationNode`** — A single node with `position`, `displacement`, and `deflected_position`.
+- **`APIVisualizationNode`** — A single node with `position`, `displacement`, `deflected_position`, and support metadata (`is_support`).
 - **`APIVisualizationFrameElement`** — A frame element with start/end node indices, section geometry, member type, and optional `material_color_hex`.
 - **`APISizedSlab`** — A slab boundary polygon with thickness (`thickness`, `z_top`) and `drop_panels`.
 - **`APIDropPanelPatch`** — A rectangular drop-panel patch (`center`, `length`, `width`, `extra_depth`) used in both sized and deflected slab views.
@@ -299,6 +300,7 @@ Example snippet (abbreviated) showing beamless-state and one drop-panel patch:
 | `position` | `Vector{Float64}` | Original node position `[x,y,z]` |
 | `displacement` | `Vector{Float64}` | Nodal displacement vector `[dx,dy,dz]` |
 | `deflected_position` | `Vector{Float64}` | Deflected node position `[x,y,z]` |
+| `is_support` | `Bool` | True when this node is a structural support node |
 
 #### APIVisualizationFrameElement
 

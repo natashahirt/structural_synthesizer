@@ -231,26 +231,26 @@ end
 
 """Dispatch a single foundation through the ACI 318 sizing path (spread, strip, or mat)."""
 function _size_fnd_aci!(struc, f_idx, fnd, n_supp, demands, soil, opts)
-    mat = opts.spread.material   # ReinforcedConcreteMaterial (concrete + rebar)
+    mat = opts.spread_params.material   # ReinforcedConcreteMaterial (concrete + rebar)
 
     if fnd.foundation_type == :mat
         # Mat foundation — all supports in one slab
         mat_demands = [demands[i] for i in fnd.support_indices]
         positions = _support_positions_xy(struc, fnd.support_indices)
         result = StructuralSizer.design_footing(StructuralSizer.MatFoundation(), 
-            mat_demands, positions, soil; opts=opts.mat)
+            mat_demands, positions, soil; opts=opts.mat_params)
         _assign_foundation!(struc, f_idx, fnd, result, :mat, mat)
 
     elseif fnd.foundation_type == :spread && n_supp == 1
         demand = demands[fnd.support_indices[1]]
-        result = StructuralSizer.design_footing(StructuralSizer.SpreadFooting(), demand, soil; opts=opts.spread)
+        result = StructuralSizer.design_footing(StructuralSizer.SpreadFooting(), demand, soil; opts=opts.spread_params)
         _assign_foundation!(struc, f_idx, fnd, result, :spread, mat)
 
     elseif fnd.foundation_type in (:combined, :strip) || n_supp > 1
         strip_demands = [demands[i] for i in fnd.support_indices]
         positions = _support_positions_along_axis(struc, fnd.support_indices)
         result = StructuralSizer.design_footing(StructuralSizer.StripFooting(), 
-            strip_demands, positions, soil; opts=opts.strip)
+            strip_demands, positions, soil; opts=opts.strip_params)
         _assign_foundation!(struc, f_idx, fnd, result, :strip, mat)
     else
         @warn "Foundation type $(fnd.foundation_type) not wired for ACI, skipping"
@@ -606,7 +606,7 @@ function size_foundations_grouped!(
 
         if opts.code == :aci
             group_results_vec[k] = StructuralSizer.design_footing(StructuralSizer.SpreadFooting(), 
-                gov_demand, soil; opts=opts.spread)
+                gov_demand, soil; opts=opts.spread_params)
         else
             group_results_vec[k] = StructuralSizer.design_footing(StructuralSizer.SpreadFooting(), 
                 gov_demand, soil, concrete, rebar;
@@ -634,7 +634,7 @@ function size_foundations_grouped!(
 
     # Determine material source for volume computation
     if opts.code == :aci
-        mat = opts.spread.material
+        mat = opts.spread_params.material
         c_mat, r_mat = mat.concrete, mat.rebar
     else
         c_mat, r_mat = concrete, rebar
@@ -770,7 +770,7 @@ function _resolve_strategy(struc, demands, soil, opts)
 
     coverage = ustrip(u"m^2", total_req) / footprint_m2
 
-    if coverage > opts.mat_coverage_threshold
+    if coverage > opts.mat_params_coverage_threshold
         return :mat
     elseif coverage > 0.30
         return :strip
@@ -807,7 +807,7 @@ function _auto_merge_to_strips!(struc, demands, soil, opts)
         push!(spreads, (idx=fi, x=ustrip(u"m", v[1]), y=ustrip(u"m", v[2]), B=B, D=D))
     end
 
-    merge_factor = opts.strip.merge_gap_factor
+    merge_factor = opts.strip_params.merge_gap_factor
     merged = Set{Int}()   # foundation indices already merged
     new_groups = Vector{Vector{Int}}()   # groups of support indices to merge
 

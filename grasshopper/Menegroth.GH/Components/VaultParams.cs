@@ -15,7 +15,7 @@ namespace Menegroth.GH.Components
             : base("Vault Params",
                    "VaultParams",
                    "Configure vault-specific design parameter overrides",
-                   "Menegroth", "Design Params")
+                   "Menegroth", "Params")
         { }
 
         public override Guid ComponentGuid =>

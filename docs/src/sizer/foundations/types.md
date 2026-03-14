@@ -8,7 +8,7 @@
 >     Pu=500.0kip, Ps=400.0kip, Mux=100.0kip * u"ft",
 >     c1=24u"inch", c2=24u"inch", shape=:rectangular,
 > )
-> opts   = SpreadFootingOptions(material=RC_4000_60)
+> opts   = SpreadParams(material=RC_4000_60)
 > result = design_footing(SpreadFooting(), demand, soil; opts=opts)
 > uconvert(u"ft^2", footprint_area(result))
 > utilization(result)
@@ -201,21 +201,21 @@ All result types implement a common interface:
 
 The option structs configure code-specific design parameters:
 
-- **`SpreadFootingOptions`** — cover, bar size, pier shape, strength reduction factors.
-- **`StripFootingOptions`** — similar to spread footing options, for continuous strips.
-- **`MatFootingOptions`** — analysis method selection, cover, bar sizes, minimum thickness, and optional edge overhang.
+- **`SpreadParams`** — cover, bar size, pier shape, strength reduction factors.
+- **`StripParams`** — similar to spread footing options, for continuous strips.
+- **`MatParams`** — analysis method selection, cover, bar sizes, minimum thickness, and optional edge overhang.
 - **`FoundationOptions`** — top-level container selecting code, strategy, and mat coverage threshold.
 
 See [ACI Foundation Design](codes/aci.md) for full docstrings and default values.
 
 ```@docs
-SpreadFootingOptions
-StripFootingOptions
-MatFootingOptions
+SpreadParams
+StripParams
+MatParams
 FoundationOptions
 ```
 
-Key `SpreadFootingOptions` fields:
+Key `SpreadParams` fields:
 
 | Field | Default | Description |
 |:------|:--------|:------------|
@@ -232,7 +232,7 @@ Key `SpreadFootingOptions` fields:
 | `ϕ_bearing` | 0.65 | Bearing strength reduction factor |
 | `objective` | `MinVolume()` | Optimization objective for sizing (volume/quantity) |
 
-`MatFootingOptions` selects the analysis method:
+`MatParams` selects the analysis method:
 
 | Method | Description |
 |:-------|:------------|

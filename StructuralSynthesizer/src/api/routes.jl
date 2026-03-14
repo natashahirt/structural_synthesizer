@@ -342,6 +342,18 @@ function _execute_design(input::APIInput)
         return _json_ok(output)
 
     catch e
+        if e isa PreSizingValidationError
+            @warn "Pre-sizing validation failed" errors=e.errors
+            _append_design_log!("Pre-sizing validation failed: $(join(e.errors, "; "))")
+            resp = Dict(
+                "status" => "error",
+                "error" => "ValidationError",
+                "message" => "Method applicability check failed: $(length(e.errors)) violation(s)",
+                "errors" => e.errors,
+            )
+            DESIGN_CACHE.last_result = resp
+            return _json_bad(resp)
+        end
         @error "Design failed" exception=(e, catch_backtrace())
         _append_design_log!("Design failed: $(sprint(showerror, e))")
         err = APIError(

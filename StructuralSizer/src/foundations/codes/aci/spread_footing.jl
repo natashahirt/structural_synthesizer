@@ -133,7 +133,7 @@ Uses the StructurePoint 7-step workflow:
 - `soil::Soil`: `qa` = net allowable bearing pressure.
 
 # Keyword Arguments
-- `opts::SpreadFootingOptions`: Material, cover, depth/size increments, and checks.
+- `opts::SpreadParams`: Material, cover, depth/size increments, and checks.
   Column dimensions are taken from `demand`, not from `opts`.
 
 # Returns
@@ -143,14 +143,14 @@ Uses the StructurePoint 7-step workflow:
 ```julia
 d = FoundationDemand(1; Pu=912.0kip, Ps=670.0kip, c1=18u"inch", c2=18u"inch", shape=:rectangular)
 s = Soil(5.37ksf, 18.0u"kN/m^3", 30.0, 0.0u"kPa", 25.0u"MPa")
-opts = SpreadFootingOptions(material=RC_3000_60)
+opts = SpreadParams(material=RC_3000_60)
 result = design_footing(SpreadFooting(), d, s; opts)
 ```
 """
 function design_footing(::SpreadFooting,
     demand::FoundationDemand,
     soil::Soil;
-    opts::SpreadFootingOptions = SpreadFootingOptions()
+    opts::SpreadParams = SpreadParams()
 )
     # Column geometry: single source of truth is FoundationDemand (ACI 318-11)
     c1     = demand.c1

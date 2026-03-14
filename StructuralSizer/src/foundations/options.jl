@@ -80,14 +80,14 @@ end
 # =============================================================================
 
 """
-    SpreadFootingOptions
+    SpreadParams
 
 Design parameters for ACI 318-11 spread (isolated) footing design.
 
 All lengths stored as Unitful quantities — stripped to imperial at the
 calculation boundary inside `design_footing(::SpreadFooting, ...)`.
 """
-Base.@kwdef struct SpreadFootingOptions
+Base.@kwdef struct SpreadParams
     # Materials & Detailing
     material::ReinforcedConcreteMaterial = RC_4000_60
     cover::Length            = 3.0u"inch"       # ACI 7.7.1: ≥ 3" cast against soil
@@ -130,11 +130,11 @@ end
 # =============================================================================
 
 """
-    StripFootingOptions
+    StripParams
 
 Design parameters for ACI 318-11 strip / combined footing design.
 """
-Base.@kwdef struct StripFootingOptions
+Base.@kwdef struct StripParams
     # Materials & Detailing
     material::ReinforcedConcreteMaterial = RC_4000_60
     cover::Length            = 3.0u"inch"
@@ -179,11 +179,11 @@ end
 # =============================================================================
 
 """
-    MatFootingOptions
+    MatParams
 
 Design parameters for mat foundation design per ACI 336.2R.
 """
-Base.@kwdef struct MatFootingOptions
+Base.@kwdef struct MatParams
     # Materials & Detailing
     material::ReinforcedConcreteMaterial = RC_4000_60
     cover::Length            = 3.0u"inch"
@@ -217,20 +217,16 @@ end
 Top-level container for all foundation design parameters.
 
 # Fields
-- `code`: Design code — `:aci` (ACI 318-11 / 336.2R) or `:is` (IS 456).
-  Only `:aci` is wired into the auto-dispatch pipeline; IS footings can still
-  be called directly via the standalone `design_footing(::SpreadFooting, ...)` overload.
 - `strategy`: Auto-selection mode — `:auto`, `:all_spread`, `:all_strip`, `:mat`.
 - `mat_coverage_threshold`: Switch to mat when coverage ratio exceeds this (default 0.50).
+- `spread_params`, `strip_params`, `mat_params`: Option blocks for each foundation type;
+  each can be overridden by API or param components.
 """
 Base.@kwdef struct FoundationOptions
-    # Design code
-    code::Symbol = :aci             # :aci or :is (only :aci wired for now)
-
     # Sub-option blocks
-    spread::SpreadFootingOptions   = SpreadFootingOptions()
-    strip::StripFootingOptions     = StripFootingOptions()
-    mat::MatFootingOptions         = MatFootingOptions()
+    spread_params::SpreadParams   = SpreadParams()
+    strip_params::StripParams     = StripParams()
+    mat_params::MatParams         = MatParams()
 
     # Auto-selection strategy
     strategy::Symbol = :auto        # :auto, :all_spread, :all_strip, :mat

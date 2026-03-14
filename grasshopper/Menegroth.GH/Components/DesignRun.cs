@@ -68,7 +68,7 @@ namespace Menegroth.GH.Components
             : base("Design Run",
                    "DesignRun",
                    "Send geometry and parameters to the Julia sizing server",
-                   "Menegroth", "Core")
+                   "Menegroth", "  Analysis")
         { }
 
         public override Guid ComponentGuid =>
@@ -314,11 +314,12 @@ namespace Menegroth.GH.Components
                 foreach (var err in validationErrors)
                     AddRuntimeMessage(GH_RuntimeMessageLevel.Error, err);
                 lock (_logLock) { _statusLog.Clear(); }
-                AppendLog(OnPingDocument(), $"\u2717 Validation failed ({validationErrors.Count} error{(validationErrors.Count > 1 ? "s" : "")}):");
+                AppendLog(OnPingDocument(), $"\u2717 Geometry/params validation failed ({validationErrors.Count} error{(validationErrors.Count > 1 ? "s" : "")}) — not calling API:");
                 foreach (var err in validationErrors)
                     AppendLog(OnPingDocument(), "  \u2022 " + err);
                 DA.SetData(2, GetLogSnapshot());
-                SetFailureOutputs(DA, null);
+                DA.SetData(3, validationErrors.Count);
+                DA.SetDataList(4, validationErrors);
                 Message = $"\u2717 {validationErrors.Count} validation error{(validationErrors.Count > 1 ? "s" : "")}";
                 return;
             }
@@ -731,6 +732,8 @@ namespace Menegroth.GH.Components
             new HashSet<string> { "rc_rect", "rc_circular", "steel_w", "steel_hss", "steel_pipe" };
         private static readonly HashSet<string> ValidBeamTypes =
             new HashSet<string> { "steel_w", "steel_hss", "rc_rect", "rc_tbeam" };
+        private static readonly HashSet<string> ValidBeamCatalogs =
+            new HashSet<string> { "standard", "small", "large", "all" };
         private static readonly HashSet<string> ValidConcretes =
             new HashSet<string> { "NWC_3000", "NWC_4000", "NWC_5000", "NWC_6000" };
         private static readonly HashSet<string> ValidRebars =
@@ -757,6 +760,59 @@ namespace Menegroth.GH.Components
             for (int i = 0; i < nVerts; i++)
                 if (geo.Vertices[i].Length != 3)
                     errors.Add($"Vertex {i + 1} has {geo.Vertices[i].Length} coordinates (expected 3).");
+
+            // Geometry: at least 2 distinct story elevations (from Z coordinates or stories_z)
+            if (nVerts >= 4)
+            {
+                var zValues = geo.StoriesZ != null && geo.StoriesZ.Count > 0
+                    ? geo.StoriesZ
+                    : geo.Vertices.Select(v => v.Length >= 3 ? v[2] : 0.0).Distinct().ToList();
+                if (geo.StoriesZ != null && geo.StoriesZ.Count > 0 && geo.StoriesZ.Count < 2)
+                    errors.Add("If stories_z is provided, need at least 2 story elevations (got " + geo.StoriesZ.Count + ").");
+                else if (zValues.Count < 2)
+                    errors.Add("Need at least 2 distinct Z coordinates to infer stories (got " + zValues.Count + "). " +
+                        "Ensure vertices span multiple floor levels.");
+            }
+
+            // Faces: each polyline must have at least 3 vertices
+            if (geo.Faces != null)
+            {
+                foreach (var kv in geo.Faces)
+                {
+                    for (int j = 0; j < kv.Value.Count; j++)
+                    {
+                        if (kv.Value[j].Count < 3)
+                            errors.Add($"Face \"{kv.Key}\"[{j + 1}] has {kv.Value[j].Count} vertices (need ≥ 3).");
+                        else
+                        {
+                            for (int k = 0; k < kv.Value[j].Count; k++)
+                            {
+                                if (kv.Value[j][k].Length != 3)
+                                    errors.Add($"Face \"{kv.Key}\"[{j + 1}] vertex {k + 1} has {kv.Value[j][k].Length} coords (expected 3).");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Scoped overrides: if HasScopedFaces, must have at least one face with ≥3 vertices
+            if (prms.ScopedVaultOverrides != null)
+            {
+                for (int i = 0; i < prms.ScopedVaultOverrides.Count; i++)
+                {
+                    var ov = prms.ScopedVaultOverrides[i];
+                    if (ov != null && ov.HasScopedFaces && (ov.Faces == null || ov.Faces.Count == 0))
+                        errors.Add($"Scoped override {i + 1} must include at least one face polygon.");
+                    else if (ov != null && ov.Faces != null)
+                    {
+                        for (int j = 0; j < ov.Faces.Count; j++)
+                        {
+                            if (ov.Faces[j].Count < 3)
+                                errors.Add($"Scoped override {i + 1} face {j + 1} has {ov.Faces[j].Count} vertices (need ≥ 3).");
+                        }
+                    }
+                }
+            }
 
             // Edges
             var allEdges = geo.BeamEdges.Concat(geo.ColumnEdges).Concat(geo.StrutEdges).ToList();
@@ -787,6 +843,8 @@ namespace Menegroth.GH.Components
                 errors.Add($"Invalid column type \"{prms.ColumnType}\". Options: {string.Join(", ", ValidColumnTypes)}");
             if (!ValidBeamTypes.Contains(prms.BeamType))
                 errors.Add($"Invalid beam type \"{prms.BeamType}\". Options: {string.Join(", ", ValidBeamTypes)}");
+            if (!ValidBeamCatalogs.Contains(prms.BeamCatalog ?? "large"))
+                errors.Add($"Invalid beam_catalog \"{prms.BeamCatalog}\". Options: {string.Join(", ", ValidBeamCatalogs)}");
             if (!ValidConcretes.Contains(prms.Concrete))
                 errors.Add($"Unknown concrete \"{prms.Concrete}\". Options: {string.Join(", ", ValidConcretes)}");
             if (!ValidRebars.Contains(prms.Rebar))

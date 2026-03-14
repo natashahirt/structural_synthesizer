@@ -191,7 +191,7 @@ function _design_mat_winkler_fea(
     positions::Vector{<:NTuple{2, <:Length}},
     soil::Soil,
     method::WinklerFEA;
-    opts::MatFootingOptions = MatFootingOptions()
+    opts::MatParams = MatParams()
 )
     N_col = length(demands)
     soil.ks !== nothing || error("WinklerFEA requires soil.ks to be provided")

@@ -226,7 +226,12 @@ function _serialize_visualization(design::BuildingDesign, du::DisplayUnits)
     # Extract nodes with displacements.
     # Structural offsets are already baked into the Asap model node positions
     # (applied in to_asap!) so no additional shifting is needed here.
-    nodes = _serialize_visualization_nodes(model, du)
+    support_node_ids = Set{Int}()
+    for sup in struc.supports
+        1 <= sup.node_idx <= length(model.nodes) || continue
+        push!(support_node_ids, sup.node_idx)
+    end
+    nodes = _serialize_visualization_nodes(model, du, support_node_ids)
 
     # Extract frame elements
     frame_elements = _serialize_visualization_frame_elements(design, model, du)
@@ -267,7 +272,7 @@ always receives consistent numeric data.
 Structural offsets are already applied in `to_asap!` — the model node positions
 reflect the structural centerlines, so no additional shifting is needed here.
 """
-function _serialize_visualization_nodes(model, du::DisplayUnits)
+function _serialize_visualization_nodes(model, du::DisplayUnits, support_node_ids::Set{Int}=Set{Int}())
     nodes = APIVisualizationNode[]
     for (i, node) in enumerate(model.nodes)
         pos = _position_to_display_lengths(du, node.position; node_id=i)
@@ -279,6 +284,7 @@ function _serialize_visualization_nodes(model, du::DisplayUnits)
             position = [_round_val(p; digits=6) for p in pos],
             displacement = [_round_val(d; digits=9) for d in disp],
             deflected_position = [_round_val(p; digits=9) for p in def_pos],
+            is_support = in(i, support_node_ids),
         ))
     end
     return nodes
@@ -850,8 +856,8 @@ function _serialize_visualization_foundations(design::BuildingDesign, struc::Bui
             v_idx > length(skel.vertices) && continue
             c = Meshes.coords(skel.vertices[v_idx])
             off = get(col_offset_by_vertex, v_idx, nothing)
-            push!(xs, _to_display_length(du, c.x + (isnothing(off) ? 0.0 : off[1])))
-            push!(ys, _to_display_length(du, c.y + (isnothing(off) ? 0.0 : off[2])))
+            push!(xs, _to_display_length(du, c.x + (isnothing(off) ? 0.0u"m" : off[1] * u"m")))
+            push!(ys, _to_display_length(du, c.y + (isnothing(off) ? 0.0u"m" : off[2] * u"m")))
             push!(zs, _to_display_length(du, c.z))
         end
         isempty(xs) && continue

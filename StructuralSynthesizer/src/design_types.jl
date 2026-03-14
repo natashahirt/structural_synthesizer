@@ -134,13 +134,13 @@ Foundation sizing parameters.
 
 # Fields
 - `soil`: Soil profile (bearing capacity, settlement params)
-- `options`: ACI/IS design options (`FoundationOptions` from StructuralSizer).
-  Controls code selection (`:aci` / `:is`), strategy (`:auto`, `:all_spread`,
-  `:all_strip`, `:mat`), and per-type knobs (spread, strip, mat options).
-- `concrete`: Concrete grade for footings (IS path only; ACI uses `options.spread.material`)
+- `options`: Design options (`FoundationOptions` from StructuralSizer).
+  Controls strategy (`:auto`, `:all_spread`, `:all_strip`, `:mat`) and per-type
+  knobs (`options.spread_params`, `options.strip_params`, `options.mat_params`).
+- `concrete`: Concrete grade for footings (IS path only; ACI uses `options.spread_params.material`)
 - `rebar`: Rebar grade for footings (IS path only)
-- `pier_width`: Column/pier width (IS path only; ACI uses `options.spread.pier_c1`)
-- `min_depth`: Minimum footing depth (IS path only; ACI uses `options.spread.min_depth`)
+- `pier_width`: Column/pier width (IS path only; ACI uses `options.spread_params.pier_c1`)
+- `min_depth`: Minimum footing depth (IS path only; ACI uses `options.spread_params.min_depth`)
 - `group_tolerance`: Tolerance for grouping similar foundations (default 0.15 = 15%)
 
 # Example
@@ -148,12 +148,10 @@ Foundation sizing parameters.
 # ACI (default) — material/detailing in options
 fp = FoundationParameters(soil = medium_sand)
 
-# IS legacy path
+# With strategy override
 fp = FoundationParameters(
     soil = medium_sand,
-    options = FoundationOptions(code = :is),
-    concrete = NWC_4000,
-    min_depth = 0.5u"m",
+    options = FoundationOptions(strategy = :all_spread),
 )
 ```
 """

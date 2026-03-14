@@ -37,6 +37,83 @@
 using Dates
 
 # =============================================================================
+# Pre-Sizing Validation
+# =============================================================================
+
+"""
+    PreSizingValidationError <: Exception
+
+Thrown when method applicability checks (DDM, EFM, etc.) fail before sizing.
+The `.errors` field contains human-readable violation messages.
+"""
+struct PreSizingValidationError <: Exception
+    errors::Vector{String}
+end
+
+Base.showerror(io::IO, e::PreSizingValidationError) =
+    print(io, "PreSizingValidationError: ", join(e.errors, "; "))
+
+"""
+    run_pre_sizing_validation(struc::BuildingStructure, params::DesignParameters)
+        -> (ok::Bool, errors::Vector{String})
+
+Run method applicability checks (DDM, EFM, FEA) for all flat-plate/flat-slab panels
+*before* sizing. Returns `(false, errors)` if any slab fails its chosen method;
+otherwise `(true, String[])`.
+
+Used to fail fast with a 400 validation response instead of discovering
+inapplicability mid-pipeline (or silently falling back to FEA).
+"""
+function run_pre_sizing_validation(struc::BuildingStructure, params::DesignParameters)
+    errors = String[]
+    floor_opts = resolve_floor_options(params)
+    fp_opts = floor_opts isa StructuralSizer.FlatSlabOptions ? floor_opts.base : floor_opts
+
+    # Only FlatPlateOptions / FlatSlabOptions have method applicability checks
+    if !(fp_opts isa StructuralSizer.FlatPlateOptions)
+        return (true, String[])
+    end
+
+    method = fp_opts.method
+    ρ_concrete = fp_opts.material.concrete.ρ
+
+    for (slab_idx, slab) in enumerate(struc.slabs)
+        slab.floor_type in (:flat_plate, :flat_slab) || continue
+
+        slab_cell_indices = Set(slab.cell_indices)
+        columns = StructuralSizer.find_supporting_columns(struc, slab_cell_indices)
+        n_cols = length(columns)
+
+        prefix = "Slab $slab_idx: "
+
+        if method isa StructuralSizer.DDM
+            result = StructuralSizer.check_ddm_applicability(
+                struc, slab, columns; throw_on_failure=false, ρ_concrete=ρ_concrete)
+            if !result.ok
+                for v in result.violations
+                    push!(errors, prefix * v)
+                end
+            end
+        elseif method isa StructuralSizer.EFM
+            result = StructuralSizer.check_efm_applicability(
+                struc, slab, columns; throw_on_failure=false)
+            if !result.ok
+                for v in result.violations
+                    push!(errors, prefix * v)
+                end
+            end
+        elseif method isa StructuralSizer.FEA
+            if n_cols < 2
+                push!(errors, prefix * "FEA requires at least 2 supporting columns; found $n_cols")
+            end
+        end
+        # RuleOfThumb has no applicability checks
+    end
+
+    return (isempty(errors), errors)
+end
+
+# =============================================================================
 # Pipeline Construction
 # =============================================================================
 
@@ -216,6 +293,12 @@ function design_building(struc::BuildingStructure, params::DesignParameters)
     t_start = time()
     
     prepare!(struc, params)
+
+    # Pre-sizing validation: fail fast if DDM/EFM/FEA applicability checks fail
+    ok, val_errors = run_pre_sizing_validation(struc, params)
+    if !ok
+        throw(PreSizingValidationError(val_errors))
+    end
     
     for stage in build_pipeline(params)
         stage.fn(struc)
@@ -366,12 +449,48 @@ Beams and columns are coupled: beam self-weight affects column demands, and
 column stiffness affects beam moments. This loop converges their sizes.
 """
 function _size_beams_columns!(struc::BuildingStructure, params::DesignParameters)
+    # Defensive guard: slab-only systems should not run beam sizing.
+    # This keeps flat-plate/flat-slab workflows resilient even if an upstream
+    # caller accidentally routes into the beam+column stage.
+    if !isempty(struc.slabs)
+        floor_types = Set(s.floor_type for s in struc.slabs)
+        if all(ft -> ft in (:flat_plate, :flat_slab, :grade, :roof), floor_types)
+            @warn "Skipping beam sizing for slab-only floor system in beam+column stage" floor_types=collect(floor_types)
+            _reconcile_columns!(struc, params)
+            return struc
+        end
+    end
+
     beam_opts   = something(params.beams,   StructuralSizer.SteelBeamOptions())
     column_opts = something(params.columns, StructuralSizer.SteelColumnOptions())
+    skel = struc.skeleton
+    beam_edge_ids = Set(get(skel.groups_edges, :beams, Int[]))
+
+    # Skip beam sizing when no beam edges (e.g. beam-based floor type but geometry has no beams)
+    if isempty(beam_edge_ids)
+        @warn "Skipping beam sizing: no beam edges in geometry. Sizing columns only."
+        size_columns!(struc, column_opts; reanalyze=false)
+        if struc.asap_model.processed
+            Asap.update!(struc.asap_model)
+        else
+            Asap.process!(struc.asap_model)
+        end
+        Asap.solve!(struc.asap_model)
+        _run_p_delta_if_needed!(struc, column_opts; verbose=hasproperty(params, :verbose) ? params.verbose : false)
+        if has_fire_rating(params)
+            n_col = add_coating_loads!(struc, params; member_edge_group=:columns, resolve=false)
+            if n_col > 0
+                Asap.process!(struc.asap_model)
+                Asap.solve!(struc.asap_model)
+            end
+        end
+        return struc
+    end
+
     tol = 0.05
     max_iter = params.max_iterations
     verbose = hasproperty(params, :verbose) ? params.verbose : false
-    
+
     n_cols_bc = length(struc.columns)
     prev_demands = Vector{Float64}(undef, n_cols_bc)
     curr_demands = Vector{Float64}(undef, n_cols_bc)
@@ -487,6 +606,10 @@ end
 """Size foundations using FoundationParameters."""
 function _size_foundations!(struc::BuildingStructure, fp::FoundationParameters)
     initialize_supports!(struc)
+    if isempty(struc.supports)
+        @warn "Skipping foundation sizing: no supports found. Ensure support vertices are at grade."
+        return
+    end
     initialize_foundations!(struc)
     group_foundations_by_reaction!(struc; tolerance=fp.group_tolerance)
     size_foundations_grouped!(struc;

@@ -85,11 +85,19 @@ function api_input_schema()
                 ),
                 "column_type" => "rc_rect | rc_circular | steel_w | steel_hss | steel_pipe. Default: rc_rect.",
                 "beam_type" => "steel_w | steel_hss | rc_rect | rc_tbeam. Default: steel_w.",
+                "beam_catalog" => "RC beam catalog when beam_type is rc_rect or rc_tbeam: standard | small | large | all. Default: large.",
                 "fire_rating" => "Fire rating (hours): 0, 1, 1.5, 2, 3, or 4. Default: 0.",
                 "optimize_for" => "weight | carbon | cost. Default: weight.",
                 "size_foundations" => "Boolean. Default: false.",
                 "foundation_soil" => "Soil name (e.g. medium_sand). Required when size_foundations is true. Default: medium_sand.",
                 "foundation_concrete" => "Foundation concrete (e.g. NWC_3000). Default: NWC_3000.",
+                "foundation_options" => Dict(
+                    "strategy" => "auto | all_spread | all_strip | mat. Default: auto.",
+                    "mat_coverage_threshold" => "Switch to mat when coverage ratio exceeds this (0–1). Default: 0.5.",
+                    "spread_params" => "Optional. cover_in, min_depth_in, bar_size, depth_increment_in, size_increment_in (inches).",
+                    "strip_params" => "Optional. cover_in, min_depth_in, bar_size_long, bar_size_trans, width_increment_in, max_depth_ratio, merge_gap_factor, eccentricity_limit.",
+                    "mat_params" => "Optional. cover_in, min_depth_in, bar_size_x, bar_size_y, depth_increment_in, edge_overhang_in, analysis_method (rigid | shukla | winkler).",
+                ),
             ),
         ),
         "geometry_hash" => Dict(
@@ -154,6 +162,48 @@ Base.@kwdef mutable struct APIMaterials
     steel::String = "A992"
 end
 
+# ─── Foundation options (optional overrides when size_foundations is true) ───
+"""Optional spread footing params from JSON. All lengths in inches."""
+Base.@kwdef mutable struct APISpreadParams
+    cover_in::Union{Float64, Nothing} = nothing
+    min_depth_in::Union{Float64, Nothing} = nothing
+    bar_size::Union{Int, Nothing} = nothing
+    depth_increment_in::Union{Float64, Nothing} = nothing
+    size_increment_in::Union{Float64, Nothing} = nothing
+end
+
+"""Optional strip footing params from JSON. All lengths in inches."""
+Base.@kwdef mutable struct APIStripParams
+    cover_in::Union{Float64, Nothing} = nothing
+    min_depth_in::Union{Float64, Nothing} = nothing
+    bar_size_long::Union{Int, Nothing} = nothing
+    bar_size_trans::Union{Int, Nothing} = nothing
+    width_increment_in::Union{Float64, Nothing} = nothing
+    max_depth_ratio::Union{Float64, Nothing} = nothing
+    merge_gap_factor::Union{Float64, Nothing} = nothing
+    eccentricity_limit::Union{Float64, Nothing} = nothing
+end
+
+"""Optional mat footing params from JSON. All lengths in inches."""
+Base.@kwdef mutable struct APIMatParams
+    cover_in::Union{Float64, Nothing} = nothing
+    min_depth_in::Union{Float64, Nothing} = nothing
+    bar_size_x::Union{Int, Nothing} = nothing
+    bar_size_y::Union{Int, Nothing} = nothing
+    depth_increment_in::Union{Float64, Nothing} = nothing
+    edge_overhang_in::Union{Float64, Nothing} = nothing
+    analysis_method::Union{String, Nothing} = nothing  # "rigid" | "shukla" | "winkler"
+end
+
+"""Optional foundation options from JSON (strategy + per-type overrides)."""
+Base.@kwdef mutable struct APIFoundationOptions
+    strategy::String = "auto"
+    mat_coverage_threshold::Float64 = 0.5
+    spread_params::Union{APISpreadParams, Nothing} = nothing
+    strip_params::Union{APIStripParams, Nothing} = nothing
+    mat_params::Union{APIMatParams, Nothing} = nothing
+end
+
 """Design parameters block from JSON."""
 Base.@kwdef mutable struct APIParams
     unit_system::String = "imperial"
@@ -163,11 +213,13 @@ Base.@kwdef mutable struct APIParams
     materials::APIMaterials = APIMaterials()
     column_type::String = "rc_rect"
     beam_type::String = "steel_w"
+    beam_catalog::String = "large"   # RC beam catalog: standard | small | large | all. Ignored for steel.
     fire_rating::Float64 = 0.0
     optimize_for::String = "weight"
     size_foundations::Bool = false
     foundation_soil::String = "medium_sand"
     foundation_concrete::String = "NWC_3000"
+    foundation_options::Union{APIFoundationOptions, Nothing} = nothing
     scoped_overrides::Vector{APIScopedOverride} = APIScopedOverride[]
     geometry_is_centerline::Bool = false
 end
@@ -198,6 +250,10 @@ StructTypes.StructType(::Type{APIFloorOptions}) = StructTypes.Mutable()
 StructTypes.StructType(::Type{APIScopedFloorOptions}) = StructTypes.Mutable()
 StructTypes.StructType(::Type{APIScopedOverride}) = StructTypes.Mutable()
 StructTypes.StructType(::Type{APIMaterials}) = StructTypes.Mutable()
+StructTypes.StructType(::Type{APISpreadParams}) = StructTypes.Mutable()
+StructTypes.StructType(::Type{APIStripParams}) = StructTypes.Mutable()
+StructTypes.StructType(::Type{APIMatParams}) = StructTypes.Mutable()
+StructTypes.StructType(::Type{APIFoundationOptions}) = StructTypes.Mutable()
 StructTypes.StructType(::Type{APIParams}) = StructTypes.Mutable()
 StructTypes.StructType(::Type{APIInput}) = StructTypes.Mutable()
 
@@ -277,6 +333,7 @@ Base.@kwdef struct APIVisualizationNode
     position::Vector{Float64} = [0.0, 0.0, 0.0]  # Original position [x, y, z] in display length units
     displacement::Vector{Float64} = [0.0, 0.0, 0.0]  # [dx, dy, dz] in display length units
     deflected_position::Vector{Float64} = [0.0, 0.0, 0.0]  # position + displacement in display length units
+    is_support::Bool = false       # True if node corresponds to a structural support
 end
 
 """Frame element with connectivity and design data."""
