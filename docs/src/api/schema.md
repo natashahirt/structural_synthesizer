@@ -9,7 +9,9 @@
 
 The API schema defines the JSON input and output structures for the HTTP API. Input types are mutable structs (for JSON deserialization via StructTypes.jl), and output types are immutable structs (for serialization).
 
-## Input Types
+## Key Types
+
+### Input Types
 
 ### APIInput
 
@@ -65,6 +67,7 @@ A dictionary mapping face group names to face-coordinate polylines:
 | `size_foundations` | `Bool` | `false` | Whether to size foundations |
 | `foundation_soil` | `String` | `"medium_sand"` | Soil type name (used when `size_foundations=true`): `"loose_sand"`, `"medium_sand"`, `"dense_sand"`, `"soft_clay"`, `"stiff_clay"`, `"hard_clay"` |
 | `geometry_is_centerline` | `Bool` | `false` | How to interpret input vertex coordinates — see [Structural Column Offsets](#structural-column-offsets) |
+| `foundation_concrete` | `String` | `"NWC_3000"` | Foundation concrete grade (used when `size_foundations=true`) |
 
 See [`APIParams`](@ref) in [API Overview](overview.md).
 
@@ -96,12 +99,13 @@ See [`APIParams`](@ref) in [API Overview](overview.md).
 | Field | Type | Default | Description |
 |:------|:-----|:--------|:------------|
 | `concrete` | `String` | `"NWC_4000"` | Concrete name (e.g., `"NWC_4000"`, `"NWC_5000"`) |
+| `column_concrete` | `String` | `"NWC_6000"` | Column concrete name (used for RC column sizing) |
 | `rebar` | `String` | `"Rebar_60"` | Rebar grade (e.g., `"Rebar_60"`, `"Rebar_75"`) |
 | `steel` | `String` | `"A992"` | Structural steel grade |
 
-`APIMaterials` selects the material grades for concrete, rebar, and structural steel used throughout the design.
+`APIMaterials` selects the material grades used throughout the design. Note that RC columns default to a higher-strength concrete (`column_concrete`, default `"NWC_6000"`) unless overridden.
 
-## Output Types
+### Output Types
 
 ### APIOutput
 
