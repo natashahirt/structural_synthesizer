@@ -941,7 +941,7 @@ function build_analysis_model!(design::BuildingDesign;
                                load_combination::LoadCombination=service,
                                mesh_density::Int=2,
                                frame_groups::Union{Symbol, Vector{Symbol}}=:auto,
-                               target_edge_length=1.0u"m",
+                               target_edge_length=nothing,
                                refinement_edge_length=nothing,
                                refinement_radius=nothing,
                                refinement_targets=nothing)
@@ -970,7 +970,16 @@ function build_analysis_model!(design::BuildingDesign;
         union!(included_edges, get(skel.groups_edges, group, Int[]))
     end
     
-    # ─── 2. Create nodes (same as struc.asap_model) ───
+    # ─── 2. Resolve shell meshing controls from floor FEA method / defaults ───
+    mesh_controls = _resolve_visualization_shell_mesh_controls(
+        design;
+        target_edge_length=target_edge_length,
+        refinement_edge_length=refinement_edge_length,
+        refinement_radius=refinement_radius,
+        refinement_targets=refinement_targets,
+    )
+
+    # ─── 3. Create nodes (same as struc.asap_model) ───
     support_set = Set(get(skel.groups_vertices, :support, Int[]))
     vc = skel.geometry.vertex_coords
     nodes = [begin
@@ -978,7 +987,7 @@ function build_analysis_model!(design::BuildingDesign;
         Asap.Node([vc[i,1]*u"m", vc[i,2]*u"m", vc[i,3]*u"m"], dofs)
     end for i in eachindex(skel.vertices)]
     
-    # ─── 3. Copy frame elements from selected groups ───
+    # ─── 4. Copy frame elements from selected groups ───
     # Use existing elements from struc.asap_model (preserves sized sections)
     src_model = struc.asap_model
     frame_elements = Asap.FrameElement[]
@@ -998,7 +1007,7 @@ function build_analysis_model!(design::BuildingDesign;
         push!(frame_elements, el)
     end
     
-    # ─── 4. Create shell elements for slabs ───
+    # ─── 5. Create shell elements for slabs ───
     # NOTE: Mesh entire slab boundary as one continuous shell, not per-cell
     shell_elements = Asap.ShellElement[]
     slab_shell_map = Dict{Int, Vector{Asap.ShellElement}}()  # slab_idx → shells
@@ -1037,8 +1046,16 @@ function build_analysis_model!(design::BuildingDesign;
             
             # Find interior column nodes (not on boundary) - passed to Shell for node sharing
             interior_nodes = _get_interior_column_nodes(struc, slab, boundary_vert_indices, nodes)
+            # Include ALL slab column nodes (including boundary columns) as mesh refinement targets.
+            column_refinement_nodes = _get_slab_column_nodes(struc, slab, nodes)
+            effective_target_edge_length = _resolve_slab_target_edge_length(
+                struc, slab, mesh_controls.target_edge_length)
+            effective_refinement_edge_length = _resolve_slab_refinement_edge_length(
+                struc, slab, effective_target_edge_length, mesh_controls.refinement_edge_length)
+            effective_refinement_targets = isnothing(refinement_targets) ?
+                column_refinement_nodes : mesh_controls.refinement_targets
             
-            @debug "Slab $slab_idx mesh" n_cells=n_cells scale_factor=scale_factor effective_n=effective_n n_corners=length(boundary_vert_indices) n_interior_nodes=length(interior_nodes)
+            @debug "Slab $slab_idx mesh" n_cells=n_cells scale_factor=scale_factor effective_n=effective_n n_corners=length(boundary_vert_indices) n_interior_nodes=length(interior_nodes) n_refinement_nodes=length(column_refinement_nodes)
             
             # Create shell mesh from entire slab boundary polygon
             # Asap.Shell uses interior_nodes to share actual column Node objects with the mesh
@@ -1048,14 +1065,21 @@ function build_analysis_model!(design::BuildingDesign;
                                      id=Symbol("slab_$(slab_idx)"),
                                      interior_nodes=interior_nodes,
                                      edge_support_type=:free,
-                                     target_edge_length=target_edge_length,
-                                     refinement_edge_length=refinement_edge_length,
-                                     refinement_radius=refinement_radius,
-                                     refinement_targets=refinement_targets)
+                                     target_edge_length=effective_target_edge_length,
+                                     refinement_edge_length=effective_refinement_edge_length,
+                                     refinement_radius=mesh_controls.refinement_radius,
+                                     refinement_targets=effective_refinement_targets)
         else
             # Fallback to per-cell meshing for degenerate cases
             slab_shells = Asap.ShellElement[]
             face_indices = [struc.cells[ci].face_idx for ci in slab.cell_indices]
+            column_refinement_nodes = _get_slab_column_nodes(struc, slab, nodes)
+            effective_target_edge_length = _resolve_slab_target_edge_length(
+                struc, slab, mesh_controls.target_edge_length)
+            effective_refinement_edge_length = _resolve_slab_refinement_edge_length(
+                struc, slab, effective_target_edge_length, mesh_controls.refinement_edge_length)
+            effective_refinement_targets = isnothing(refinement_targets) ?
+                column_refinement_nodes : mesh_controls.refinement_targets
             
             for face_idx in face_indices
                 vert_indices = skel.face_vertex_indices[face_idx]
@@ -1065,10 +1089,10 @@ function build_analysis_model!(design::BuildingDesign;
                                          id=Symbol("slab_$(slab_idx)"),
                                          edge_support_type=:free, 
                                          interior_support_type=:free,
-                                         target_edge_length=target_edge_length,
-                                         refinement_edge_length=refinement_edge_length,
-                                         refinement_radius=refinement_radius,
-                                         refinement_targets=refinement_targets)
+                                         target_edge_length=effective_target_edge_length,
+                                         refinement_edge_length=effective_refinement_edge_length,
+                                         refinement_radius=mesh_controls.refinement_radius,
+                                         refinement_targets=effective_refinement_targets)
                 append!(slab_shells, face_shells)
             end
         end
@@ -1078,7 +1102,7 @@ function build_analysis_model!(design::BuildingDesign;
         append!(shell_elements, slab_shells)
     end
     
-    # ─── 5. Create loads ───
+    # ─── 6. Create loads ───
     loads = Asap.AbstractLoad[]
     
     # Self-weight of shells (concrete weight)
@@ -1105,7 +1129,7 @@ function build_analysis_model!(design::BuildingDesign;
         push!(loads, area_load)
     end
     
-    # ─── 6. Build and solve model ───
+    # ─── 7. Build and solve model ───
     model = Asap.Model(nodes, frame_elements, shell_elements, loads)
     
     Asap.process!(model)
@@ -1117,6 +1141,111 @@ function build_analysis_model!(design::BuildingDesign;
     
     return model
 end
+
+"""
+Resolve shell mesh controls from the floor analysis method, then apply explicit overrides.
+Keeps visualization analysis meshing aligned with flat-plate FEA options.
+"""
+function _resolve_visualization_shell_mesh_controls(design::BuildingDesign;
+    target_edge_length=nothing,
+    refinement_edge_length=nothing,
+    refinement_radius=nothing,
+    refinement_targets=nothing)
+
+    floor_opts = resolve_floor_options(design.params)
+    method = if floor_opts isa StructuralSizer.FlatSlabOptions
+        floor_opts.base.method
+    elseif floor_opts isa StructuralSizer.FlatPlateOptions
+        floor_opts.method
+    else
+        nothing
+    end
+
+    fea_target_edge = (method isa StructuralSizer.FEA) ? method.target_edge : nothing
+
+    resolved_target = isnothing(target_edge_length) ? fea_target_edge : target_edge_length
+
+    return (
+        target_edge_length = resolved_target,
+        refinement_edge_length = refinement_edge_length,
+        refinement_radius = refinement_radius,
+        refinement_targets = refinement_targets,
+    )
+end
+
+"""
+Resolve slab target edge length, matching flat-plate FEA adaptive default:
+clamp(min_span/20, 0.15, 0.75) m when no explicit target is provided.
+"""
+function _resolve_slab_target_edge_length(struc::BuildingStructure, slab::Slab, target_edge_length)
+    if target_edge_length !== nothing
+        return target_edge_length
+    end
+
+    min_span_m = try
+        minimum(ustrip(u"m", struc.cells[ci].spans.primary) for ci in slab.cell_indices)
+    catch
+        1.0
+    end
+    return clamp(min_span_m / 20.0, 0.15, 0.75) * u"m"
+end
+
+"""
+Resolve slab refinement edge length, matching flat-plate FEA default:
+clamp(min_col_dim/2, 0.04, target_edge/2) m when no explicit refinement size is provided.
+"""
+function _resolve_slab_refinement_edge_length(
+    struc::BuildingStructure, slab::Slab, target_edge_length, refinement_edge_length)
+    refinement_edge_length !== nothing && return refinement_edge_length
+
+    slab_cols = _get_slab_columns(struc, slab)
+    isempty(slab_cols) && return nothing
+
+    min_col_dim_m = minimum(min(ustrip(u"m", c.c1), ustrip(u"m", c.c2)) for c in slab_cols)
+    target_m = try
+        ustrip(u"m", target_edge_length)
+    catch
+        Float64(target_edge_length)
+    end
+    return clamp(min_col_dim_m / 2.0, 0.04, target_m / 2.0) * u"m"
+end
+
+"""
+Return columns whose vertex lies on this slab footprint.
+"""
+function _get_slab_columns(struc::BuildingStructure, slab::Slab)
+    skel = struc.skeleton
+    slab_vert_set = Set{Int}()
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        for vi in skel.face_vertex_indices[cell.face_idx]
+            push!(slab_vert_set, vi)
+        end
+    end
+    return [c for c in struc.columns if c.vertex_idx in slab_vert_set]
+end
+
+"""
+Return all column nodes that lie on the slab footprint (interior or boundary).
+Used as refinement targets to improve shell quality near slab-column interfaces.
+"""
+function _get_slab_column_nodes(struc::BuildingStructure, slab::Slab, nodes::Vector{Asap.Node})
+    skel = struc.skeleton
+    column_vert_set = Set{Int}(c.vertex_idx for c in struc.columns if c.vertex_idx > 0)
+    isempty(column_vert_set) && return Asap.Node[]
+
+    slab_vert_set = Set{Int}()
+    for cell_idx in slab.cell_indices
+        cell = struc.cells[cell_idx]
+        for vi in skel.face_vertex_indices[cell.face_idx]
+            push!(slab_vert_set, vi)
+        end
+    end
+
+    target_verts = intersect(slab_vert_set, column_vert_set)
+    return [nodes[vi] for vi in target_verts if 1 <= vi <= length(nodes)]
+end
+
 
 
 # =============================================================================

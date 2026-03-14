@@ -257,6 +257,7 @@ Base.@kwdef struct APIVisualizationNode
     node_id::Int = 0              # 1-based node index in analysis model
     position_ft::Vector{Float64} = [0.0, 0.0, 0.0]  # Original position [x, y, z] in feet
     displacement_ft::Vector{Float64} = [0.0, 0.0, 0.0]  # [dx, dy, dz] in feet
+    deflected_position_ft::Vector{Float64} = [0.0, 0.0, 0.0]  # position + displacement in feet
 end
 
 """Frame element with connectivity and design data."""

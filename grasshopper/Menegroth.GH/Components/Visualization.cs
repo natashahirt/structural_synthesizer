@@ -25,6 +25,11 @@ namespace Menegroth.GH.Components
         private const int COLOR_NONE = 0;
         private const int COLOR_UTILIZATION = 1;
         private const int COLOR_DEFLECTION = 2;
+        private static readonly Color COLUMN_TYPE_COLOR = Color.SteelBlue;
+        private static readonly Color BEAM_TYPE_COLOR = Color.Coral;
+        private static readonly Color OTHER_TYPE_COLOR = Color.DimGray;
+        private const int DEFLECTION_SEGMENTS_MIN = 5;
+        private const int DEFLECTION_SEGMENTS_MAX = 10;
 
         public Visualization()
             : base("Visualization",
@@ -142,16 +147,23 @@ namespace Menegroth.GH.Components
             bool isOriginalMode = modeInt == MODE_ORIGINAL;
 
             // Extract nodes
-            var nodes = new Dictionary<int, (Point3d pos, Vector3d disp)>();
+            var nodes = new Dictionary<int, (Point3d pos, Vector3d disp, Point3d defPos)>();
             var nodesArray = viz["nodes"] as JArray ?? new JArray();
             foreach (var n in nodesArray)
             {
                 int nodeId = n["node_id"]?.ToObject<int>() ?? 0;
                 var posArr = n["position_ft"]?.ToObject<double[]>() ?? new double[3];
                 var dispArr = n["displacement_ft"]?.ToObject<double[]>() ?? new double[3];
+                var defPosArr = n["deflected_position_ft"]?.ToObject<double[]>();
+                var pos = new Point3d(posArr[0], posArr[1], posArr[2]);
+                var disp = new Vector3d(dispArr[0], dispArr[1], dispArr[2]);
+                var defPos = defPosArr != null && defPosArr.Length >= 3
+                    ? new Point3d(defPosArr[0], defPosArr[1], defPosArr[2])
+                    : pos + disp;
                 nodes[nodeId] = (
-                    new Point3d(posArr[0], posArr[1], posArr[2]),
-                    new Vector3d(dispArr[0], dispArr[1], dispArr[2])
+                    pos,
+                    disp,
+                    defPos
                 );
             }
 
@@ -175,14 +187,16 @@ namespace Menegroth.GH.Components
             {
                 var origPts = elem["original_points"]?.ToObject<double[][]>() ?? new double[0][];
                 var dispVecs = elem["displacement_vectors"]?.ToObject<double[][]>() ?? new double[0][];
+                int ns = elem["node_start"]?.ToObject<int>() ?? 0;
+                int ne = elem["node_end"]?.ToObject<int>() ?? 0;
+                bool hasStartNode = nodes.ContainsKey(ns);
+                bool hasEndNode = nodes.ContainsKey(ne);
 
                 Curve elementCurve;
                 List<Point3d> origCurvePoints = null;
 
                 if (origPts.Length == 0 || dispVecs.Length == 0)
                 {
-                    int ns = elem["node_start"]?.ToObject<int>() ?? 0;
-                    int ne = elem["node_end"]?.ToObject<int>() ?? 0;
                     if (!nodes.ContainsKey(ns) || !nodes.ContainsKey(ne)) continue;
 
                     var p1 = nodes[ns].pos;
@@ -191,10 +205,10 @@ namespace Menegroth.GH.Components
                     if (showOriginal && isDeflected && finalScale > 0)
                         originalCurves.Add(new Line(p1, p2).ToNurbsCurve());
 
-                    if (isDeflected && finalScale > 0)
+                    if (isDeflected && finalScale > 0 && !isLocal)
                     {
-                        p1 += nodes[ns].disp * finalScale;
-                        p2 += nodes[ne].disp * finalScale;
+                        p1 = p1 + (nodes[ns].defPos - nodes[ns].pos) * finalScale;
+                        p2 = p2 + (nodes[ne].defPos - nodes[ne].pos) * finalScale;
                     }
 
                     elementCurve = new Line(p1, p2).ToNurbsCurve();
@@ -218,9 +232,13 @@ namespace Menegroth.GH.Components
 
                             if (isLocal && dispVecs.Length >= 2)
                             {
-                                var uStart = new Vector3d(dispVecs[0][0], dispVecs[0][1], dispVecs[0][2]);
+                                var uStart = hasStartNode
+                                    ? nodes[ns].disp
+                                    : new Vector3d(dispVecs[0][0], dispVecs[0][1], dispVecs[0][2]);
                                 int last = dispVecs.Length - 1;
-                                var uEnd = new Vector3d(dispVecs[last][0], dispVecs[last][1], dispVecs[last][2]);
+                                var uEnd = hasEndNode
+                                    ? nodes[ne].disp
+                                    : new Vector3d(dispVecs[last][0], dispVecs[last][1], dispVecs[last][2]);
                                 double t = origPts.Length > 1 ? (double)i / (origPts.Length - 1) : 0.0;
                                 dv -= uStart + t * (uEnd - uStart);
                             }
@@ -230,6 +248,24 @@ namespace Menegroth.GH.Components
                         else
                         {
                             pts.Add(op);
+                        }
+                    }
+
+                    if (isDeflected && finalScale > 0 && !isLocal && pts.Count > 1 && hasStartNode && hasEndNode)
+                    {
+                        // Anchor interpolated deflected curves to nodal displacements from Asap.
+                        // This prevents rigid vertical drift from interpolation mismatch and keeps
+                        // scale behavior consistent with node-level deflection output.
+                        var targetStart = nodes[ns].pos + (nodes[ns].defPos - nodes[ns].pos) * finalScale;
+                        var targetEnd = nodes[ne].pos + (nodes[ne].defPos - nodes[ne].pos) * finalScale;
+                        var corrStart = targetStart - pts[0];
+                        int lastPt = pts.Count - 1;
+                        var corrEnd = targetEnd - pts[lastPt];
+
+                        for (int i = 0; i < pts.Count; i++)
+                        {
+                            double t = pts.Count > 1 ? (double)i / (pts.Count - 1) : 0.0;
+                            pts[i] += corrStart + t * (corrEnd - corrStart);
                         }
                     }
 
@@ -253,34 +289,57 @@ namespace Menegroth.GH.Components
                         beamGeometry.Add(new GH_Brep(brep));
                 }
 
-                Color elementColor = Color.Empty;
-                bool hasColor = false;
+                Color elementColor;
                 if (colorByInt == COLOR_UTILIZATION)
                 {
                     double ratio = elem["utilization_ratio"]?.ToObject<double>() ?? 0;
                     bool ok = elem["ok"]?.ToObject<bool>() ?? true;
                     elementColor = UtilizationColor(ratio, ok);
-                    hasColor = true;
                 }
                 else if (colorByInt == COLOR_DEFLECTION)
                 {
                     double disp = ComputeElementDisplacement(elem, nodes, dispVecs);
                     elementColor = DeflectionColor(disp, maxDisp);
-                    hasColor = true;
+                }
+                else
+                {
+                    // Keep line colors visible when Color By = None.
+                    // Member-type defaults make CC/BC previews immediately readable.
+                    elementColor = elemType == "column" ? COLUMN_TYPE_COLOR
+                        : elemType == "beam" ? BEAM_TYPE_COLOR
+                        : OTHER_TYPE_COLOR;
                 }
 
-                if (hasColor)
-                    frameColors.Add(elementColor);
+                // Always parallel to frameCurves
+                frameColors.Add(elementColor);
 
                 if (elemType == "column")
                 {
-                    columnCurves.Add(elementCurve);
-                    if (hasColor) columnColors.Add(elementColor);
+                    if (colorByInt == COLOR_DEFLECTION)
+                    {
+                        AppendDeflectionSegmentedCurves(
+                            elementCurve, dispVecs, nodes, ns, ne, isLocal, maxDisp,
+                            columnCurves, columnColors);
+                    }
+                    else
+                    {
+                        columnCurves.Add(elementCurve);
+                        columnColors.Add(elementColor);
+                    }
                 }
                 else if (elemType == "beam")
                 {
-                    beamCurves.Add(elementCurve);
-                    if (hasColor) beamColors.Add(elementColor);
+                    if (colorByInt == COLOR_DEFLECTION)
+                    {
+                        AppendDeflectionSegmentedCurves(
+                            elementCurve, dispVecs, nodes, ns, ne, isLocal, maxDisp,
+                            beamCurves, beamColors);
+                    }
+                    else
+                    {
+                        beamCurves.Add(elementCurve);
+                        beamColors.Add(elementColor);
+                    }
                 }
             }
 
@@ -328,7 +387,7 @@ namespace Menegroth.GH.Components
         // ─── Displacement magnitude for a frame element ──────────────────
 
         private static double ComputeElementDisplacement(JToken elem,
-            Dictionary<int, (Point3d pos, Vector3d disp)> nodes,
+            Dictionary<int, (Point3d pos, Vector3d disp, Point3d defPos)> nodes,
             double[][] dispVecs)
         {
             if (dispVecs != null && dispVecs.Length > 0)
@@ -482,6 +541,121 @@ namespace Menegroth.GH.Components
                 Math.Max(0, Math.Min(255, b)));
         }
 
+        private static void AppendDeflectionSegmentedCurves(
+            Curve sourceCurve,
+            double[][] dispVecs,
+            Dictionary<int, (Point3d pos, Vector3d disp, Point3d defPos)> nodes,
+            int nodeStart,
+            int nodeEnd,
+            bool isLocal,
+            double maxDisp,
+            List<Curve> targetCurves,
+            List<Color> targetColors)
+        {
+            if (sourceCurve == null)
+                return;
+
+            var mags = ComputeDisplacementMagnitudes(dispVecs, nodes, nodeStart, nodeEnd, isLocal);
+            int baseSegments = mags.Length > 1 ? mags.Length - 1 : DEFLECTION_SEGMENTS_MIN;
+            int segments = Math.Max(DEFLECTION_SEGMENTS_MIN, Math.Min(DEFLECTION_SEGMENTS_MAX, baseSegments));
+
+            if (segments <= 1)
+            {
+                targetCurves.Add(sourceCurve);
+                targetColors.Add(DeflectionColor(mags.Length > 0 ? mags[0] : 0.0, maxDisp));
+                return;
+            }
+
+            var domain = sourceCurve.Domain;
+            for (int s = 0; s < segments; s++)
+            {
+                double t0n = (double)s / segments;
+                double t1n = (double)(s + 1) / segments;
+                double tmn = 0.5 * (t0n + t1n);
+
+                double t0 = domain.T0 + t0n * domain.Length;
+                double t1 = domain.T0 + t1n * domain.Length;
+                var p0 = sourceCurve.PointAt(t0);
+                var p1 = sourceCurve.PointAt(t1);
+
+                targetCurves.Add(new Line(p0, p1).ToNurbsCurve());
+                targetColors.Add(DeflectionColor(InterpolateMagnitude(mags, tmn), maxDisp));
+            }
+        }
+
+        private static double[] ComputeDisplacementMagnitudes(
+            double[][] dispVecs,
+            Dictionary<int, (Point3d pos, Vector3d disp, Point3d defPos)> nodes,
+            int nodeStart,
+            int nodeEnd,
+            bool isLocal)
+        {
+            if (dispVecs != null && dispVecs.Length > 0)
+            {
+                int n = dispVecs.Length;
+                var mags = new double[n];
+
+                Vector3d uStart, uEnd;
+                if (nodes.ContainsKey(nodeStart))
+                    uStart = nodes[nodeStart].disp;
+                else
+                    uStart = dispVecs[0].Length >= 3
+                        ? new Vector3d(dispVecs[0][0], dispVecs[0][1], dispVecs[0][2])
+                        : Vector3d.Zero;
+
+                if (nodes.ContainsKey(nodeEnd))
+                    uEnd = nodes[nodeEnd].disp;
+                else
+                {
+                    int last = n - 1;
+                    uEnd = dispVecs[last].Length >= 3
+                        ? new Vector3d(dispVecs[last][0], dispVecs[last][1], dispVecs[last][2])
+                        : Vector3d.Zero;
+                }
+
+                for (int i = 0; i < n; i++)
+                {
+                    var dv = dispVecs[i].Length >= 3
+                        ? new Vector3d(dispVecs[i][0], dispVecs[i][1], dispVecs[i][2])
+                        : Vector3d.Zero;
+
+                    if (isLocal && n > 1)
+                    {
+                        double t = (double)i / (n - 1);
+                        var uChord = uStart + t * (uEnd - uStart);
+                        dv -= uChord;
+                    }
+
+                    mags[i] = dv.Length;
+                }
+
+                return mags;
+            }
+
+            var dStart = nodes.ContainsKey(nodeStart) ? nodes[nodeStart].disp : Vector3d.Zero;
+            var dEnd = nodes.ContainsKey(nodeEnd) ? nodes[nodeEnd].disp : Vector3d.Zero;
+
+            if (isLocal)
+                return new[] { 0.0, 0.0 };
+
+            return new[] { dStart.Length, dEnd.Length };
+        }
+
+        private static double InterpolateMagnitude(double[] mags, double tNorm)
+        {
+            if (mags == null || mags.Length == 0)
+                return 0.0;
+            if (mags.Length == 1)
+                return mags[0];
+
+            tNorm = Math.Max(0.0, Math.Min(1.0, tNorm));
+            double idx = tNorm * (mags.Length - 1);
+            int i0 = (int)Math.Floor(idx);
+            int i1 = Math.Min(i0 + 1, mags.Length - 1);
+            double a = idx - i0;
+            return mags[i0] * (1.0 - a) + mags[i1] * a;
+        }
+
         // ─── Slab helpers ───────────────────────────────────────────────
 
         private static void BuildSizedSlabs(JToken viz, List<IGH_GeometricGoo> output,
@@ -561,7 +735,9 @@ namespace Menegroth.GH.Components
                     origMesh?.Faces.AddFace(i0, i1, i2);
                 }
 
-                // Per-vertex coloring for deflection mode on meshes
+                // Per-vertex coloring for mesh preview:
+                // - Deflection mode: color by per-vertex displacement magnitude
+                // - Utilization mode: apply a uniform utilization color per mesh vertex
                 if (colorBy == COLOR_DEFLECTION && disps.Length > 0)
                 {
                     for (int i = 0; i < rhinoMesh.Vertices.Count; i++)
@@ -573,6 +749,14 @@ namespace Menegroth.GH.Components
                                             disps[i][2] * disps[i][2]);
                         rhinoMesh.VertexColors.Add(DeflectionColor(mag, maxDisp));
                     }
+                }
+                else if (colorBy == COLOR_UTILIZATION)
+                {
+                    double ratio = m["utilization_ratio"]?.ToObject<double>() ?? 0;
+                    bool ok = m["ok"]?.ToObject<bool>() ?? true;
+                    var utilColor = UtilizationColor(ratio, ok);
+                    for (int i = 0; i < rhinoMesh.Vertices.Count; i++)
+                        rhinoMesh.VertexColors.Add(utilColor);
                 }
 
                 if (rhinoMesh.Vertices.Count > 0 && rhinoMesh.Faces.Count > 0)

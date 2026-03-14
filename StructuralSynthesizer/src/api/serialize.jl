@@ -259,10 +259,12 @@ function _serialize_visualization_nodes(model, du::DisplayUnits)
         # Displacement: first 3 components are translations (Float64 in m from to_displacement_vec)
         disp_m = Asap.to_displacement_vec(node.displacement)[1:3]
         disp = _to_display_length.(Ref(du), disp_m)
+        def_pos = pos .+ disp
         push!(nodes, APIVisualizationNode(
             node_id = i,
             position_ft = [_round_val(p; digits=6) for p in pos],
             displacement_ft = [_round_val(d; digits=9) for d in disp],
+            deflected_position_ft = [_round_val(p; digits=9) for p in def_pos],
         ))
     end
     return nodes
@@ -344,19 +346,32 @@ function _serialize_visualization_frame_elements(design::BuildingDesign, model, 
     # Import section_polygon from visualization utilities
     # section_polygon returns Vector{NTuple{2, Float64}} in meters (local y-z coordinates)
     
+    # Map analysis-model elements back to skeleton edge indices by node connectivity.
+    # This is robust when analysis models include a subset/reordering of skeleton edges.
+    edge_by_nodes = Dict{Tuple{Int, Int}, Int}()
+    for (edge_idx, (v1, v2)) in enumerate(skel.edge_indices)
+        key = v1 <= v2 ? (v1, v2) : (v2, v1)
+        edge_by_nodes[key] = edge_idx
+    end
+
     # Serialize elements
     elements = APIVisualizationFrameElement[]
     for (elem_idx, elem) in enumerate(model.elements)
         node_start_id = elem.nodeStart.nodeID
         node_end_id = elem.nodeEnd.nodeID
-        
-        ratio = get(element_ratios, elem_idx, 0.0)
-        ok = get(element_ok, elem_idx, true)
-        sec_name = get(element_section, elem_idx, "")
-        elem_type = get(element_type, elem_idx, :other)
+
+        edge_key = node_start_id <= node_end_id ?
+            (node_start_id, node_end_id) :
+            (node_end_id, node_start_id)
+        src_edge_idx = get(edge_by_nodes, edge_key, 0)
+
+        ratio = src_edge_idx > 0 ? get(element_ratios, src_edge_idx, 0.0) : 0.0
+        ok = src_edge_idx > 0 ? get(element_ok, src_edge_idx, true) : true
+        sec_name = src_edge_idx > 0 ? get(element_section, src_edge_idx, "") : ""
+        elem_type = src_edge_idx > 0 ? get(element_type, src_edge_idx, :other) : :other
         
         # Extract section geometry
-        sec_obj = get(element_section_obj, elem_idx, nothing)
+        sec_obj = src_edge_idx > 0 ? get(element_section_obj, src_edge_idx, nothing) : nothing
         section_type, depth_ft, width_ft, flange_width_ft, web_thickness_ft, flange_thickness_ft =
             _extract_section_geometry(sec_obj, du)
 
