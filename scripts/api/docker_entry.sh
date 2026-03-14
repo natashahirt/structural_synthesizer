@@ -4,6 +4,8 @@
 # without baking it into the image. If unset, this script does nothing and execs the CMD.
 # JULIA_DEPOT_PATH must match the build (so runtime reuses precompiled cache).
 export JULIA_DEPOT_PATH="${JULIA_DEPOT_PATH:-/app/.julia}"
+export JULIA_CPU_TARGET="${JULIA_CPU_TARGET:-generic}"
+export JULIA_PKG_PRECOMPILE_AUTO="${JULIA_PKG_PRECOMPILE_AUTO:-0}"
 
 set -e
 if [ -n "${GRB_LICENSE_CONTENTS}" ]; then

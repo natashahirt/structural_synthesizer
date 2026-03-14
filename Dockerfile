@@ -23,6 +23,10 @@ RUN sed -i 's|\\\\|/|g' StructuralSynthesizer/Project.toml StructuralSizer/Proje
 # API runtime is headless; disable visualization-heavy package loading.
 ENV SS_ENABLE_VISUALIZATION=false
 ENV SS_ENABLE_HEAVY_PRECOMPILE_WORKLOAD=false
+# Ensure build-time precompile artifacts are portable to runtime hosts on AWS.
+ENV JULIA_CPU_TARGET=generic
+# Prevent runtime automatic precompile during bootstrap/health-check window.
+ENV JULIA_PKG_PRECOMPILE_AUTO=0
 
 # Install dependencies in a cache-friendly layer.
 RUN julia --project=StructuralSynthesizer -e 'using Pkg; Pkg.instantiate()'
